@@ -73,7 +73,6 @@ const getLeafCount = (column: ETableColumn,): number => {
   if (!column.children?.length) {
     return 1;
   }
-
   return column.children.reduce((total, child) => {
     return (
       total +
