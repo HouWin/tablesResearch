@@ -29,6 +29,11 @@ export default defineConfig({
       path: '/table',
       component: './Table',
     },
+    {
+      name: 'UniverTable',
+      path: '/univerTable',
+      component: './UniverTable',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},
