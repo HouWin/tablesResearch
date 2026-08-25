@@ -13,8 +13,10 @@
   "dependencies": {
     "@ant-design/icons": "^5.0.1",
     "@ant-design/pro-components": "^2.4.4",
+    "@handsontable/react-wrapper": "^18.0.0",
     "@umijs/max": "^4.7.7",
-    "antd": "^5.4.0"
+    "antd": "^5.4.0",
+    "handsontable": "^18.0.0"
   },
   "devDependencies": {
     "@types/react": "^18.0.33",
