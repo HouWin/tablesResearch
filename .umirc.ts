@@ -29,21 +29,17 @@ export default defineConfig({
       path: '/table',
       component: './Table',
     },
-<<<<<<< HEAD
-=======
     {
       name: 'UniverTable',
       path: '/univerTable',
       component: './UniverTable',
     },
-        {
+    {
       name: 'Vtable',
       path: '/vtable',
       component: './Vtable',
     },
->>>>>>> e6bdb9de5ceed5fda29ac6636546b35a4c843fa6
   ],
   npmClient: 'yarn',
   utoopack: {},
 });
-
