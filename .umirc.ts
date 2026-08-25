@@ -29,6 +29,11 @@ export default defineConfig({
       path: '/table',
       component: './Table',
     },
+        {
+      name: 'Vtable',
+      path: '/vtable',
+      component: './Vtable',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},
