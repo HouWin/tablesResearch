@@ -34,6 +34,11 @@ export default defineConfig({
       path: '/univerTable',
       component: './UniverTable',
     },
+        {
+      name: 'Vtable',
+      path: '/vtable',
+      component: './Vtable',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},
