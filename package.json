@@ -13,10 +13,18 @@
   "dependencies": {
     "@ant-design/icons": "^5.0.1",
     "@ant-design/pro-components": "^2.4.4",
+<<<<<<< HEAD
     "@handsontable/react-wrapper": "^18.0.0",
     "@umijs/max": "^4.7.7",
     "antd": "^5.4.0",
     "handsontable": "^18.0.0"
+=======
+    "@umijs/max": "^4.7.7",
+    "@univerjs/preset-sheets-advanced": "^0.25.1",
+    "@univerjs/presets": "^0.25.1",
+    "@visactor/react-vtable": "^1.26.7",
+    "antd": "^5.4.0"
+>>>>>>> e6bdb9de5ceed5fda29ac6636546b35a4c843fa6
   },
   "devDependencies": {
     "@types/react": "^18.0.33",

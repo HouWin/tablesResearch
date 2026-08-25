@@ -18,3 +18,8 @@
 /src/.umi-production
 /src/.umi-test
 /.env.local
+<<<<<<< HEAD
+=======
+.turbopack/
+.turbopack/
+>>>>>>> e6bdb9de5ceed5fda29ac6636546b35a4c843fa6
