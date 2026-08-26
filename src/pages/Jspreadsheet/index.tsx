@@ -21,10 +21,8 @@ import './index.less';
 // 批注扩展依赖全局 lemonade
 (window as any).lemonade = lemonade;
 
-jspreadsheet.setLicense(
-  // 官方文档一日试用 license；过期后表格会只读。可到 https://jspreadsheet.com 重新生成。
-  'ZjU5MmI5OTg4NDM1NGQ0YWYzMDU1NGYxMjNkN2EwYzU4ODdjNWI4NDZkNjFkNWJjMWU5ZmE0ZTk3ZjNlMzUzNmZmNDliYjU5ZjEwNDk5ZDIwYTc2MGU1YmU4YWRiMDZlZThjNmU4NTY5NjVlZTAzZjQ4MGJmYzQ3NjA5ZTA3YWMsZXlKamJHbGxiblJKWkNJNklpSXNJbTVoYldVaU9pSktjM0J5WldGa2MyaGxaWFFpTENKa1lYUmxJam94TnpnM09ERTRNall5TENKa2IyMWhhVzRpT2xzaWFuTndjbVZoWkhOb1pXVjBMbU52YlNJc0ltTnZaR1Z6WVc1a1ltOTRMbWx2SWl3aWFuTm9aV3hzTG01bGRDSXNJbU56WWk1aGNIQWlMQ0p6ZEdGamEySnNhWFI2TG1sdklpd2lkMlZpWTI5dWRHRnBibVZ5TG1sdklpd2liRzlqWVd4b2IzTjBJbDBzSW5Cc1lXNGlPaUl6TkNJc0luTmpiM0JsSWpwYkluWTNJaXdpZGpnaUxDSjJPU0lzSW5ZeE1DSXNJbll4TVNJc0luWXhNaUlzSW1Ob1lYSjBjeUlzSW1admNtMXpJaXdpWm05eWJYVnNZU0lzSW5CaGNuTmxjaUlzSW5KbGJtUmxjaUlzSW1OdmJXMWxiblJ6SWl3aWFXMXdiM0owWlhJaUxDSmlZWElpTENKMllXeHBaR0YwYVc5dWN5SXNJbk5sWVhKamFDSXNJbkJ5YVc1MElpd2ljMmhsWlhSeklpd2lZMnhwWlc1MElpd2ljMlZ5ZG1WeUlpd2ljMmhoY0dWeklpd2labTl5YldGMElpd2ljR2wyYjNRaVhTd2laR1Z0YnlJNmRISjFaWDA9',
-);
+jspreadsheet.setLicense('evaluation');
+// localhost 开发用内置 evaluation（不过期）。非 localhost 需到 https://jspreadsheet.com 生成证书。
 jspreadsheet.setDictionary(zhCN);
 
 comments({
@@ -393,18 +391,47 @@ export default function JspreadsheetPage() {
     [],
   );
 
-  // Spreadsheet React 只初始化一次；用插件 onevent + 挂载后包装 config.onevent 双保险
+  // Spreadsheet React 只初始化一次；插件 onevent + config 回调三路绑定
   useEffect(() => {
     const bind = () => {
       const list = getWorksheetList(spreadsheet);
       const parent = list[0]?.parent;
       if (!parent?.config) return false;
       if ((parent.config as any).__historyBound) return true;
-      const prev = parent.config.onevent;
+
+      const prevOnevent = parent.config.onevent;
       parent.config.onevent = function historyOnevent(event: string, ...rest: any[]) {
         cellHistoryPlugin.onevent(event, ...rest);
-        return prev?.call(this, event, ...rest);
+        return prevOnevent?.call(this, event, ...rest);
       };
+
+      // 再挂原生 onchange / onselection（官方事件签名：ws, cell, x, y, newValue, oldValue）
+      const prevChange = parent.config.onchange;
+      parent.config.onchange = function (
+        worksheet: any,
+        _cell: any,
+        x: any,
+        y: any,
+        newValue: any,
+        oldValue: any,
+      ) {
+        historyBridge.onChange(worksheet, x, y, oldValue, newValue);
+        return prevChange?.call(this, worksheet, _cell, x, y, newValue, oldValue);
+      };
+
+      const prevSelect = parent.config.onselection;
+      parent.config.onselection = function (
+        worksheet: any,
+        px: any,
+        py: any,
+        ux: any,
+        uy: any,
+        ...rest: any[]
+      ) {
+        historyBridge.onSelect(worksheet, px, py, ux, uy);
+        return prevSelect?.call(this, worksheet, px, py, ux, uy, ...rest);
+      };
+
       (parent.config as any).__historyBound = true;
       return true;
     };
@@ -748,6 +775,19 @@ export default function JspreadsheetPage() {
             tableHeight="560px"
             onevent={(event: string, ...rest: any[]) => {
               cellHistoryPlugin.onevent(event, ...rest);
+            }}
+            onchange={(
+              worksheet: any,
+              _cell: any,
+              x: any,
+              y: any,
+              newValue: any,
+              oldValue: any,
+            ) => {
+              historyBridge.onChange(worksheet, x, y, oldValue, newValue);
+            }}
+            onselection={(worksheet: any, px: any, py: any, ux: any, uy: any) => {
+              historyBridge.onSelect(worksheet, px, py, ux, uy);
             }}
             onbeforecomments={onbeforecomments}
             contextMenu={contextMenu}
