@@ -20,3 +20,7 @@
 /src/.umi-production
 /src/.umi-test
 /.env.local
+
+# build / cache
+/.turbopack
+/tablesResearch/
