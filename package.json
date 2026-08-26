@@ -2,8 +2,8 @@
   "private": true,
   "author": "",
   "scripts": {
-    "dev": "NODE_OPTIONS='--localstorage-file=./node_modules/.cache/node-localstorage' max dev",
-    "build": "NODE_OPTIONS='--localstorage-file=./node_modules/.cache/node-localstorage' max build",
+    "dev": "max dev",
+    "build": "max build",
     "format": "prettier --cache --write .",
     "prepare": "husky",
     "postinstall": "max setup",
