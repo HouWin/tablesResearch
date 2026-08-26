@@ -10,6 +10,7 @@
 # production
 /dist
 
+
 # misc
 .DS_Store
 
@@ -18,5 +19,3 @@
 /src/.umi-production
 /src/.umi-test
 /.env.local
-.turbopack/
-.turbopack/

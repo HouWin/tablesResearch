@@ -34,13 +34,27 @@ export default defineConfig({
       path: '/univerTable',
       component: './UniverTable',
     },
-        {
+    {
       name: 'Vtable',
       path: '/vtable',
       component: './Vtable',
     },
+    {
+      name: 'Handsontable',
+      path: '/handsontable',
+      routes: [
+        {
+          path: '/handsontable',
+          redirect: '/handsontable/big-data',
+        },
+        {
+          name: '大数据示例',
+          path: '/handsontable/big-data',
+          component: './Handsontable/BigDataExample',
+        }
+      ],
+    }
   ],
   npmClient: 'yarn',
   utoopack: {},
 });
-
