@@ -1,11 +1,3 @@
-/*
- * @Author: 知恩gg lichao.zhao@dxdstech.com
- * @Date: 2026-08-25 10:33:39
- * @LastEditors: 知恩gg lichao.zhao@dxdstech.com
- * @LastEditTime: 2026-08-25 17:55:00
- * @FilePath: /table/tablesResearch/src/components/UniverTable/icons.tsx
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
- */
 import { ComponentManager } from '@univerjs/ui';
 
 // 新增批注icon
