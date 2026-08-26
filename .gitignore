@@ -13,6 +13,7 @@
 
 # misc
 .DS_Store
+.turbopack
 
 # umi
 /src/.umi

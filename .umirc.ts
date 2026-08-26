@@ -40,6 +40,11 @@ export default defineConfig({
       component: './Vtable',
     },
     {
+      name: 'AG Grid',
+      path: '/ag-grid',
+      component: './AGGrid',
+    },
+    {
       name: 'Handsontable',
       path: '/handsontable',
       routes: [
