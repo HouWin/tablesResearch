@@ -300,26 +300,18 @@ export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, c
  *
  * 与 renderHeader() 的表头自动合并完全独立。
  *
- * 例如：
- *
- * {
- *   row: 7,
- *   column: 0,
- *   rowSpan: 2,
- *   columnSpan: 2,
- *   value: '费用合计'
- * }
- *
- * 会生成：
- *
- * ┌───────────────┐
- * │    费用合计    │
- * └───────────────┘
+ * merges.row 相对于数据区域（与 rowGroups.startRow 一致），
+ * 实际写入时会加上 dataStartRow（通常等于表头 maxDepth）。
  *
  * @param worksheet Univer 工作表
  * @param merges 自定义合并
+ * @param dataStartRow 数据区域起始行
  */
-export const renderMerges = (worksheet: UniverWorksheet, merges: ETableMerge[] = []) => {
+export const renderMerges = (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[] = [],
+  dataStartRow = 0,
+) => {
   if (!worksheet || !merges.length) {
     return;
   }
@@ -329,8 +321,9 @@ export const renderMerges = (worksheet: UniverWorksheet, merges: ETableMerge[] =
     if (merge.row < 0 || merge.column < 0 || merge.rowSpan <= 0 || merge.columnSpan <= 0) {
       return;
     }
+    const startRow = dataStartRow + merge.row;
     // 获取区域。
-    const range = worksheet.getRange(merge.row, merge.column, merge.rowSpan, merge.columnSpan);
+    const range = worksheet.getRange(startRow, merge.column, merge.rowSpan, merge.columnSpan);
     // 如果配置了 value，先写入左上角。
     if (merge.value !== undefined) {
       range.setValue(merge.value);

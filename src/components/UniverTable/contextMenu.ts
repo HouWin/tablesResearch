@@ -1,4 +1,11 @@
 import { registerAllIcons } from './icons'; // 引入注册函数
+import {
+  clearCellAttachments,
+  getCellAttachments,
+  showAttachmentsModal,
+  uploadAndAttachToCell,
+} from './attachment';
+import { message } from 'antd';
 
 /**
  * ETable 自定义右键菜单
@@ -32,6 +39,13 @@ export interface ETableContextMenuContext {
   column: number;
   // 当前单元格 A1 地址
   cell: string;
+  // 附件上传回调（由 ETable 注入）
+  onUploadAttachment?: (
+    file: File,
+    cell: string,
+  ) => Promise<any>;
+  // 附件变化回调
+  onAttachmentsChange?: (cell: string, files: any[]) => void;
 }
 
 export interface ETableContextMenuItem {
@@ -104,6 +118,59 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
         return true;
       }
       return !range.getComment();
+    },
+  },
+  { type: 'separator' },
+  {
+    id: 'etable-add-attachment',
+    title: '添加附件',
+    icon: 'AttachmentIcon',
+    action: async ({ range, cell, onUploadAttachment, onAttachmentsChange }) => {
+      if (!range) {
+        return;
+      }
+      const files = await uploadAndAttachToCell({
+        range,
+        cell,
+        onUpload: onUploadAttachment,
+      });
+      onAttachmentsChange?.(cell, files);
+    },
+  },
+  {
+    id: 'etable-view-attachment',
+    title: '查看附件',
+    icon: 'AttachmentIcon',
+    action: ({ range, cell }) => {
+      if (!range) {
+        return;
+      }
+      showAttachmentsModal(cell, getCellAttachments(range));
+    },
+    hidden: ({ range }) => {
+      if (!range) {
+        return true;
+      }
+      return getCellAttachments(range).length === 0;
+    },
+  },
+  {
+    id: 'etable-clear-attachment',
+    title: '清空附件',
+    icon: 'AttachmentIcon',
+    action: ({ range, cell, onAttachmentsChange }) => {
+      if (!range) {
+        return;
+      }
+      clearCellAttachments(range);
+      onAttachmentsChange?.(cell, []);
+      message.success(`已清空 ${cell} 的附件`);
+    },
+    hidden: ({ range }) => {
+      if (!range) {
+        return true;
+      }
+      return getCellAttachments(range).length === 0;
     },
   },
   { type: 'separator' },
@@ -209,10 +276,27 @@ const numberToColumnName = (column: number): string => {
 /**
  * 创建菜单上下文
  */
-const createMenuContext = (univerAPI: any, worksheet: any,): ETableContextMenuContext => {
+const createMenuContext = (
+  univerAPI: any,
+  worksheet: any,
+  extras?: {
+    onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
+    onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+  },
+): ETableContextMenuContext => {
   const current = getCurrentSelection(univerAPI, worksheet);
-  return { univerAPI, worksheet, selection: current.selection, range: current.range, row: current.row, column: current.column, cell: current.cell };
-}
+  return {
+    univerAPI,
+    worksheet,
+    selection: current.selection,
+    range: current.range,
+    row: current.row,
+    column: current.column,
+    cell: current.cell,
+    onUploadAttachment: extras?.onUploadAttachment,
+    onAttachmentsChange: extras?.onAttachmentsChange,
+  };
+};
 
 /**
  * 判断菜单是否隐藏
@@ -237,7 +321,15 @@ const isMenuDisabled = (item: ETableContextMenuItem, context: ETableContextMenuC
 /**
  * 注册普通菜单
  */
-const registerMenu = (univerAPI: any, worksheet: any, item: ETableContextMenuItem) => {
+const registerMenu = (
+  univerAPI: any,
+  worksheet: any,
+  item: ETableContextMenuItem,
+  extras?: {
+    onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
+    onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+  },
+) => {
   const menu = univerAPI.createMenu({
     id: item.id,
     title: item.title,
@@ -246,6 +338,7 @@ const registerMenu = (univerAPI: any, worksheet: any, item: ETableContextMenuIte
       const context = createMenuContext(
         univerAPI,
         worksheet,
+        extras,
       );
       // 动态判断
       if (isMenuHidden(item, context)) {
@@ -273,7 +366,15 @@ const registerMenu = (univerAPI: any, worksheet: any, item: ETableContextMenuIte
 /**
  * 注册子菜单
  */
-const registerSubmenu = (univerAPI: any, worksheet: any, submenu: ETableContextMenuSubmenu) => {
+const registerSubmenu = (
+  univerAPI: any,
+  worksheet: any,
+  submenu: ETableContextMenuSubmenu,
+  extras?: {
+    onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
+    onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+  },
+) => {
   const root = univerAPI.createSubmenu({ id: submenu.id, title: submenu.title });
   submenu.items.forEach((item) => {
     // 1. 判断分隔线
@@ -283,7 +384,7 @@ const registerSubmenu = (univerAPI: any, worksheet: any, submenu: ETableContextM
     }
     // 2. 判断子菜单
     if ('type' in item && item.type === 'submenu') {
-      const child = registerSubmenu(univerAPI, worksheet, item);
+      const child = registerSubmenu(univerAPI, worksheet, item, extras);
       root.addSubmenu(child);
       return;
     }
@@ -294,7 +395,7 @@ const registerSubmenu = (univerAPI: any, worksheet: any, submenu: ETableContextM
       title: menuItem.title,
       icon: menuItem.icon,
       action: async () => {
-        const context = createMenuContext(univerAPI, worksheet);
+        const context = createMenuContext(univerAPI, worksheet, extras);
         if (isMenuHidden(menuItem, context)) return;
         if (isMenuDisabled(menuItem, context)) return;
         try {
@@ -330,14 +431,18 @@ const registerSubmenu = (univerAPI: any, worksheet: any, submenu: ETableContextM
  *   ],
  * );
  */
-/**
- * 注册 ETable 自定义右键菜单
- */
-export const customizeContextMenu = (univerAPI: any, worksheet: any, items: ETableContextMenuConfig[] = defaultContextMenuItems) => {
+export const customizeContextMenu = (
+  univerAPI: any,
+  worksheet: any,
+  items: ETableContextMenuConfig[] = defaultContextMenuItems,
+  extras?: {
+    onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
+    onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+  },
+) => {
   if (!univerAPI || !worksheet || !Array.isArray(items) || !items.length) {
     return;
   }
-  console.log(registerAllIcons, '...registerAllIcons')
   registerAllIcons(univerAPI);
   items.forEach((item) => {
     // 分隔线
@@ -346,11 +451,11 @@ export const customizeContextMenu = (univerAPI: any, worksheet: any, items: ETab
     }
     // 子菜单
     if ('type' in item && item.type === 'submenu') {
-      registerSubmenu(univerAPI, worksheet, item);
+      registerSubmenu(univerAPI, worksheet, item, extras);
       return;
     }
     // 普通菜单
-    registerMenu(univerAPI, worksheet, item as ETableContextMenuItem);
+    registerMenu(univerAPI, worksheet, item as ETableContextMenuItem, extras);
   });
 };
 

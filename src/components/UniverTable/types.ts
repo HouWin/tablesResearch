@@ -86,11 +86,12 @@ export interface ETableRow {
  * ETable 自定义单元格合并配置。
  *
  * 用于处理业务数据区域中的横向、纵向或者多行多列合并。
+ * row / column 均相对于数据区域（不含表头），从 0 开始。
  */
 export interface ETableMerge {
   /** 合并配置唯一标识 */
   id: string;
-  /** 合并区域开始行，从 0 开始 */
+  /** 合并区域开始行，相对于数据区域，从 0 开始 */
   row: number;
   /** 合并区域开始列，从 0 开始 */
   column: number;
@@ -184,9 +185,151 @@ export interface ETableComment {
 }
 
 /**
+ * 单个附件文件。
+ */
+export interface ETableAttachmentFile {
+  /** 附件唯一 ID */
+  id: string;
+  /** 文件名 */
+  name: string;
+  /** 可访问地址（上传后的 URL 或本地 blob URL） */
+  url: string;
+  /** 文件大小（字节） */
+  size?: number;
+  /** MIME 类型 */
+  mimeType?: string;
+  /** 上传时间 */
+  uploadedAt?: string;
+}
+
+/**
+ * 单元格附件配置。
+ *
+ * 附件元数据会写入单元格 customMetaData，
+ * 并在启用 Note 预设时同步备注角标。
+ */
+export interface ETableAttachment {
+  /** 单元格地址，例如 A1、B2 */
+  cell: string;
+  /** 附件列表 */
+  files: ETableAttachmentFile[];
+}
+
+/**
+ * 树形节点上的属性（最底层可折叠项，例如 East / Central / West / South）。
+ */
+export interface ETableTreeAttribute {
+  /** 属性唯一标识 */
+  id: string;
+  /** 属性显示名 */
+  label: string;
+  /** 指标值，key 对应 measure field */
+  values?: Record<string, ETablePrimitive | ETableCell>;
+  /**
+   * 属性下的明细行（可选）。
+   * 有 children 时可通过大纲折叠/展开这些明细。
+   */
+  children?: ETableTreeAttributeDetail[];
+  /** 明细行是否默认折叠 */
+  collapsed?: boolean;
+}
+
+/**
+ * 属性下的明细行。
+ */
+export interface ETableTreeAttributeDetail {
+  id: string;
+  label: string;
+  values?: Record<string, ETablePrimitive | ETableCell>;
+}
+
+/**
+ * 树形行节点。
+ *
+ * 非叶子节点通过 children 继续下钻；
+ * 叶子节点通过 attributes 挂载属性层。
+ */
+export interface ETableTreeNode {
+  /** 节点唯一标识 */
+  id: string;
+  /** 当前维度列上的显示值 */
+  label: string;
+  /** 是否默认折叠当前节点下的子行 */
+  collapsed?: boolean;
+  /**
+   * 叶子节点上附带的固定维度值。
+   * 例如 { region: 'East' }，会写入对应维度列并参与纵向合并。
+   */
+  data?: Record<string, ETablePrimitive>;
+  /** 子节点 */
+  children?: ETableTreeNode[];
+  /** 属性列表（仅叶子节点使用） */
+  attributes?: ETableTreeAttribute[];
+}
+
+/**
+ * 树形配置中的列分组（用 field 声明，展平时转成列索引）。
+ *
+ * 同一组内的列必须在表头中连续；
+ * 会按 fields 对应列的最小～最大索引生成 startColumn / count。
+ */
+export interface ETableTreeColumnGroup {
+  id: string;
+  /** 分到同一组的列 field */
+  fields: string[];
+  /** 是否默认折叠 */
+  collapsed?: boolean;
+  /** 子列分组 */
+  children?: ETableTreeColumnGroup[];
+}
+
+/**
+ * 树形数据展平配置。
+ *
+ * dimensions 从左到右对应层级；
+ * attribute 是属性列；
+ * measures 是指标列。
+ */
+export interface ETableTreeConfig {
+  /** 维度列（不含属性列） */
+  dimensions: Array<{ field: string; title: string; width?: number }>;
+  /** 属性列 */
+  attribute: { field: string; title: string; width?: number };
+  /** 指标列 */
+  measures: Array<{ field: string; title: string; width?: number }>;
+  /**
+   * 树节点 label 写入方式：
+   * - 'single'：所有层级写入 dimensions[0]（同列树，如 Category 下的 Furniture / Bookcases）
+   * - 'depth'：第 n 层写入 dimensions[n]（多列维度）
+   * @default 'single'
+   */
+  labelMode?: 'single' | 'depth';
+  /** 属性明细是否默认折叠（仅当属性带 children 时生效） */
+  collapseAttributes?: boolean;
+  /**
+   * 列分组（列折叠）。
+   * 用 field 声明，例如把两个 Region 列、Sales+Profit 分成可折叠列组。
+   */
+  columnGroups?: ETableTreeColumnGroup[];
+}
+
+/**
+ * 树形数据展平结果。
+ */
+export interface ETableFlattenResult {
+  columns: ETableColumn[];
+  rows: ETableRow[];
+  rowGroups: ETableRowGroup[];
+  columnGroups: ETableColumnGroup[];
+  merges: ETableMerge[];
+}
+
+/**
  * ETable 组件参数。
  *
  * 用于配置多级表头、数据、合并、行列分组、批注以及工作表基础配置。
+ *
+ * 也可直接传 treeData + treeConfig，组件内部会自动展平为 rows / rowGroups / merges。
  */
 export interface ETableProps {
   /** 多级表头 */
@@ -199,8 +342,24 @@ export interface ETableProps {
   rowGroups?: ETableRowGroup[];
   /** 列分组 */
   columnGroups?: ETableColumnGroup[];
+  /** 树形数据（与 rows 二选一，优先 treeData） */
+  treeData?: ETableTreeNode[];
+  /** 树形展平配置（配合 treeData 使用） */
+  treeConfig?: ETableTreeConfig;
   /** 初始化批注 */
   comments?: ETableComment[];
+  /** 初始化单元格附件 */
+  attachments?: ETableAttachment[];
+  /**
+   * 附件上传回调。
+   * 不传时默认使用本地 blob URL（仅适合演示）。
+   */
+  onUploadAttachment?: (
+    file: File,
+    cell: string,
+  ) => Promise<ETableAttachmentFile | ETableAttachmentFile[]>;
+  /** 附件变化回调 */
+  onAttachmentsChange?: (cell: string, files: ETableAttachmentFile[]) => void;
   /** 表格配置 */
   options?: ETableOptions;
   /** Univer 初始化完成 */
@@ -256,4 +415,16 @@ export interface ETableRef {
   deleteComment(cell: string): Promise<boolean>;
   /** 删除当前工作表中的全部批注 */
   clearComments(): Promise<void>;
+  /** 向指定单元格添加附件（弹出文件选择） */
+  addAttachment(cell: string): Promise<ETableAttachmentFile[]>;
+  /** 设置指定单元格的附件列表 */
+  setAttachments(cell: string, files: ETableAttachmentFile[]): void;
+  /** 获取指定单元格的附件列表 */
+  getAttachments(cell: string): ETableAttachmentFile[];
+  /** 删除指定单元格的某个附件 */
+  removeAttachment(cell: string, attachmentId: string): ETableAttachmentFile[];
+  /** 清空指定单元格的全部附件 */
+  clearAttachments(cell: string): void;
+  /** 查看指定单元格附件（弹窗） */
+  viewAttachments(cell: string): void;
 }

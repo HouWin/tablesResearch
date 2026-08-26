@@ -3,18 +3,32 @@ import { createUniver, LocaleType, mergeLocales, } from '@univerjs/presets';
 import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
+import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
 import { renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
+import { flattenTreeData } from './tree';
 import { customizeContextMenu, defaultContextMenuItems } from './contextMenu';
+import {
+  applyInitialAttachments,
+  clearCellAttachments,
+  defaultUploadAttachment,
+  getCellAttachments,
+  removeCellAttachment,
+  setCellAttachments,
+  showAttachmentsModal,
+  uploadAndAttachToCell,
+} from './attachment';
 import { registerAllIcons } from './icons';
 import { customizeColumnHeaders } from './header';
-import type { ETableProps, ETableRef } from './types';
+import type { ETableAttachmentFile, ETableProps, ETableRef } from './types';
 import UniverPresetSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
 import UniverPresetSheetsAdvancedZhCN from '@univerjs/preset-sheets-advanced/locales/zh-CN';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
+import UniverPresetSheetsNoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN';
 import '@univerjs/preset-sheets-advanced/lib/index.css';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import '@univerjs/preset-sheets-thread-comment/lib/index.css';
+import '@univerjs/preset-sheets-note/lib/index.css';
 
 
 /**
@@ -39,10 +53,45 @@ import '@univerjs/preset-sheets-thread-comment/lib/index.css';
 * 11. 网格线控制
 * 12. 单元格批注
 * 13. Univer API 暴露
+* 14. 树形数据 + 属性层折叠（treeData）
+* 15. 列分组折叠（columnGroups / treeConfig.columnGroups）
+* 16. 单元格附件
 */
 const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   // 取组件参数
-  const { columns = [], rows = [], merges = [], rowGroups = [], columnGroups = [], options = {}, comments = [], onReady } = props;
+  const {
+    columns: propsColumns = [],
+    rows: propsRows = [],
+    merges: propsMerges = [],
+    rowGroups: propsRowGroups = [],
+    columnGroups: propsColumnGroups = [],
+    treeData,
+    treeConfig,
+    options = {},
+    comments = [],
+    attachments = [],
+    onUploadAttachment,
+    onAttachmentsChange,
+    onReady,
+  } = props;
+
+  const onUploadAttachmentRef = useRef(onUploadAttachment);
+  const onAttachmentsChangeRef = useRef(onAttachmentsChange);
+  onUploadAttachmentRef.current = onUploadAttachment;
+  onAttachmentsChangeRef.current = onAttachmentsChange;
+
+  /**
+   * 优先使用 treeData 自动展平；
+   * 否则回退到外部传入的 columns / rows / merges / rowGroups / columnGroups。
+   */
+  const flattened = treeData && treeConfig ? flattenTreeData(treeData, treeConfig) : null;
+  const columns = flattened?.columns ?? propsColumns;
+  const rows = flattened?.rows ?? propsRows;
+  const merges = flattened?.merges ?? propsMerges;
+  const rowGroups = flattened?.rowGroups ?? propsRowGroups;
+  const columnGroups = flattened?.columnGroups?.length
+    ? flattened.columnGroups
+    : propsColumnGroups;
   // 表格基础配置
   const {
     name = 'Table',
@@ -240,6 +289,66 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       await Promise.all(comments.map((comment: any) => comment.deleteAsync()),
       );
     },
+    // 添加附件（弹文件选择）
+    async addAttachment(cell: string) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return [];
+      }
+      const range = worksheet.getRange(cell);
+      const files = await uploadAndAttachToCell({
+        range,
+        cell,
+        onUpload: onUploadAttachmentRef.current,
+      });
+      onAttachmentsChangeRef.current?.(cell, files);
+      return files;
+    },
+    // 设置附件列表
+    setAttachments(cell: string, files: ETableAttachmentFile[]) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return;
+      }
+      const range = worksheet.getRange(cell);
+      setCellAttachments(range, files || []);
+      onAttachmentsChangeRef.current?.(cell, files || []);
+    },
+    // 获取附件
+    getAttachments(cell: string) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return [];
+      }
+      return getCellAttachments(worksheet.getRange(cell));
+    },
+    // 删除单个附件
+    removeAttachment(cell: string, attachmentId: string) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return [];
+      }
+      const next = removeCellAttachment(worksheet.getRange(cell), attachmentId);
+      onAttachmentsChangeRef.current?.(cell, next);
+      return next;
+    },
+    // 清空附件
+    clearAttachments(cell: string) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return;
+      }
+      clearCellAttachments(worksheet.getRange(cell));
+      onAttachmentsChangeRef.current?.(cell, []);
+    },
+    // 查看附件弹窗
+    viewAttachments(cell: string) {
+      const worksheet = worksheetRef.current;
+      if (!worksheet || !cell) {
+        return;
+      }
+      showAttachmentsModal(cell, getCellAttachments(worksheet.getRange(cell)));
+    },
   }), []);
 
   // 初始化 Univer
@@ -257,7 +366,14 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       // 中文
       locale: LocaleType.ZH_CN,
       // 中文语言包
-      locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN, UniverPresetSheetsAdvancedZhCN, UniverPresetSheetsThreadCommentZhCN) },
+      locales: {
+        [LocaleType.ZH_CN]: mergeLocales(
+          UniverPresetSheetsCoreZhCN,
+          UniverPresetSheetsAdvancedZhCN,
+          UniverPresetSheetsThreadCommentZhCN,
+          UniverPresetSheetsNoteZhCN,
+        ),
+      },
       // Preset
       presets: [
         // Core
@@ -266,6 +382,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         UniverSheetsAdvancedPreset(),
         // Thread Comment
         UniverSheetsThreadCommentPreset(),
+        // Note（附件角标）
+        UniverSheetsNotePreset(),
       ],
     });
     // 保存 Univer API
@@ -316,8 +434,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     if (rows.length) {
       renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
     }
-    // 8. 自定义合并
-    renderMerges(worksheet, merges);
+    // 8. 自定义合并（row 相对于数据区，需加上表头深度）
+    renderMerges(worksheet, merges, maxDepth);
     // 9. 行分组
     createRowOutlines(worksheet, rowGroups, maxDepth);
     // 10. 列分组
@@ -364,10 +482,26 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
       }));
     }
+    // 13.4 初始化附件
+    try {
+      applyInitialAttachments(worksheet, attachments);
+    } catch (error) {
+      console.warn('[Table] apply attachments failed', error);
+    }
     // 13.5 注册自定义右键菜单
     if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
       try {
-        customizeContextMenu(univerAPI, worksheet, contextMenuItems);
+        customizeContextMenu(univerAPI, worksheet, contextMenuItems, {
+          onUploadAttachment: async (file, cell) => {
+            if (onUploadAttachmentRef.current) {
+              return onUploadAttachmentRef.current(file, cell);
+            }
+            return defaultUploadAttachment(file);
+          },
+          onAttachmentsChange: (cell, files) => {
+            onAttachmentsChangeRef.current?.(cell, files);
+          },
+        });
       } catch (error) {
         console.warn('[Table] register context menu failed', error);
       }
@@ -390,13 +524,21 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 
   // 注册icon图标
   useEffect(() => {
-     const univerAPI = univerAPIRef.current;
-     const worksheet = worksheetRef.current;
-    if (univerAPI) {
-      // 初始化时注册一次图标
+    const univerAPI = univerAPIRef.current;
+    const worksheet = worksheetRef.current;
+    if (univerAPI && worksheet) {
       registerAllIcons(univerAPI);
-      // 挂载自定义右键菜单
-      customizeContextMenu(univerAPI, worksheet);
+      customizeContextMenu(univerAPI, worksheet, defaultContextMenuItems, {
+        onUploadAttachment: async (file, cell) => {
+          if (onUploadAttachmentRef.current) {
+            return onUploadAttachmentRef.current(file, cell);
+          }
+          return defaultUploadAttachment(file);
+        },
+        onAttachmentsChange: (cell, files) => {
+          onAttachmentsChangeRef.current?.(cell, files);
+        },
+      });
     }
   }, [univerAPIRef.current, worksheetRef.current]);
 
@@ -408,4 +550,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 });
 
 Table.displayName = 'Table';
+
+export { flattenTreeData, buildTreeColumns, buildTreeColumnGroups } from './tree';
+export type {
+  ETableProps,
+  ETableRef,
+  ETableTreeNode,
+  ETableTreeConfig,
+  ETableTreeAttribute,
+  ETableTreeColumnGroup,
+  ETableFlattenResult,
+  ETableColumnGroup,
+  ETableAttachment,
+  ETableAttachmentFile,
+  ETableComment,
+} from './types';
+
 export default Table;

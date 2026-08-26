@@ -1,3 +1,11 @@
+/*
+ * @Author: 知恩gg lichao.zhao@dxdstech.com
+ * @Date: 2026-08-25 10:33:39
+ * @LastEditors: 知恩gg lichao.zhao@dxdstech.com
+ * @LastEditTime: 2026-08-25 17:55:00
+ * @FilePath: /table/tablesResearch/src/components/UniverTable/icons.tsx
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 import { ComponentManager } from '@univerjs/ui';
 
 // 新增批注icon
@@ -19,7 +27,7 @@ export const AddCommentIcon = () => (
 );
 
 // 删除批注icon
-export const DeleteCommentIcon = () => (
+export const DeleteCommentIcon = (props: React.SVGProps<SVGSVGElement>) => (
   <svg
     className="icon"
     viewBox="0 0 1024 1024"
@@ -30,11 +38,26 @@ export const DeleteCommentIcon = () => (
     fill="currentColor"
     style={{ verticalAlign: 'middle' }}
   >
-      <path
-        d="M299.885714 936.228571l-117.028571-117.028571H102.4c-43.885714 0-73.142857-29.257143-73.142857-73.142857V190.171429c0-43.885714 29.257143-73.142857 73.142857-73.142858h460.8c21.942857 0 36.571429 14.628571 36.571429 36.571429s-21.942857 36.571429-43.885715 36.571429H102.4v555.885714h109.714286l87.771428 87.771428 87.771429-87.771428h475.428571v-292.571429c0-21.942857 14.628571-36.571429 36.571429-36.571428s36.571429 14.628571 36.571428 36.571428v292.571429c0 43.885714-29.257143 73.142857-73.142857 73.142857H416.914286l-117.028572 117.028571z" fill="#333333" p-id="52495"></path><path d="M446.171429 614.4H292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571429s14.628571-36.571429 36.571429-36.571428h153.6c21.942857 0 36.571429 14.628571 36.571428 36.571428s-14.628571 36.571429-36.571428 36.571429zM607.085714 409.6H292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571429s14.628571-36.571429 36.571429-36.571428h314.514285c21.942857 0 36.571429 14.628571 36.571429 36.571428s-14.628571 36.571429-36.571429 36.571429zM958.171429 270.628571h-292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571428s14.628571-36.571429 36.571429-36.571429h292.571429c21.942857 0 36.571429 14.628571 36.571428 36.571429s-14.628571 36.571429-36.571428 36.571428z" fill="#333333" p-id="52496" />
-    </svg>
+    <path d="M299.885714 936.228571l-117.028571-117.028571H102.4c-43.885714 0-73.142857-29.257143-73.142857-73.142857V190.171429c0-43.885714 29.257143-73.142857 73.142857-73.142858h460.8c21.942857 0 36.571429 14.628571 36.571429 36.571429s-21.942857 36.571429-43.885715 36.571429H102.4v555.885714h109.714286l87.771428 87.771428 87.771429-87.771428h475.428571v-292.571429c0-21.942857 14.628571-36.571429 36.571429-36.571428s36.571429 14.628571 36.571428 36.571428v292.571429c0 43.885714-29.257143 73.142857-73.142857 73.142857H416.914286l-117.028572 117.028571z" />
+    <path d="M446.171429 614.4H292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571429s14.628571-36.571429 36.571429-36.571428h153.6c21.942857 0 36.571429 14.628571 36.571428 36.571428s-14.628571 36.571429-36.571428 36.571429zM607.085714 409.6H292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571429s14.628571-36.571429 36.571429-36.571428h314.514285c21.942857 0 36.571429 14.628571 36.571429 36.571428s-14.628571 36.571429-36.571429 36.571429zM958.171429 270.628571h-292.571429c-21.942857 0-36.571429-14.628571-36.571429-36.571428s14.628571-36.571429 36.571429-36.571429h292.571429c21.942857 0 36.571429 14.628571 36.571428 36.571429s-14.628571 36.571429-36.571428 36.571428z" />
+  </svg>
 );
 
+// 附件 icon
+export const AttachmentIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M704 128c-70.4 0-128 57.6-128 128v448c0 88-72 160-160 160s-160-72-160-160V256h64v448c0 52.8 43.2 96 96 96s96-43.2 96-96V256c0-88 72-160 160-160s160 72 160 160v480c0 123.2-100.8 224-224 224s-224-100.8-224-224V320h64v416c0 88 72 160 160 160s160-72 160-160V256c0-70.4-57.6-128-128-128z" />
+  </svg>
+);
 
 // 2. 增强版的图标注册函数
 export const registerAllIcons = (univerAPI: any) => {
@@ -44,7 +67,7 @@ export const registerAllIcons = (univerAPI: any) => {
     if (typeof univerAPI.registerIcon === 'function') {
       univerAPI.registerIcon('AddCommentIcon', AddCommentIcon);
       univerAPI.registerIcon('DeleteCommentIcon', DeleteCommentIcon);
-      console.log('[ETable] Icon registered via univerAPI.registerIcon');
+      univerAPI.registerIcon('AttachmentIcon', AttachmentIcon);
       return;
     }
     // 途径 2: 深度获取 UI 层的 ComponentManager
@@ -54,6 +77,7 @@ export const registerAllIcons = (univerAPI: any) => {
       if (componentManager) {
         componentManager.register('AddCommentIcon', AddCommentIcon);
         componentManager.register('DeleteCommentIcon', DeleteCommentIcon);
+        componentManager.register('AttachmentIcon', AttachmentIcon);
         console.log('[ETable] Icon registered via ComponentManager');
       } else {
         console.warn('[ETable] ComponentManager not found in injector');
