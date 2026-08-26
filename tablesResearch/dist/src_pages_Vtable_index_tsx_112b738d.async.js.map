@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["file:///Users/shenhonghua/Desktop/demo/tablesResearch/src/pages/Vtable/index.tsx"],"sourcesContent":["import React from 'react';\nimport { ListTable } from '@visactor/react-vtable';\nconst option = {\n  columns: [\n    {\n      field: '0',\n      title: 'name'\n    },\n    {\n      field: '1',\n      title: 'age'\n    },\n    {\n      field: '2',\n      title: 'gender'\n    },\n    {\n      field: '3',\n      title: 'hobby'\n    }\n  ],\n  records: new Array(1000).fill(['John', 18, 'male', '🏀'])\n};\n\n\nconst VtablePage: React.FC = () => {\n  return (\n    <div id=\"root\" >\n        <ListTable option={option} height={'500px'} />\n    </div>\n  );\n}\n\nexport default VtablePage;\n"],"names":["option","columns","field","title","records","Array","fill","VtablePage","id","height"],"mappings":";;;;;AAAA;AACA;;;;AACA,MAAMA,SAAS;IACbC,SAAS;QACP;YACEC,OAAO;YACPC,OAAO;QACT;QACA;YACED,OAAO;YACPC,OAAO;QACT;QACA;YACED,OAAO;YACPC,OAAO;QACT;QACA;YACED,OAAO;YACPC,OAAO;QACT;KACD;IACDC,SAAS,IAAIC,MAAM,MAAMC,IAAI,CAAC;QAAC;QAAQ;QAAI;QAAQ;KAAK;AAC1D;AAGA,MAAMC,aAAuB;IAC3B,qBACE,0JAAC;QAAIC,IAAG;kBACJ,cAAA,0JAAC,uLAAS;YAACR,QAAQA;YAAQS,QAAQ;;;;;;;;;;;AAG3C;KANMF;qCAQSA"}}]
+}

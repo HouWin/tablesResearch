@@ -98,6 +98,111 @@ const PIVOT_CATEGORIES = [
 ];
 const PIVOT_REGIONS = ['East', 'Central', 'West', 'South'];
 
+/** 透视源数据（对齐参考图）：Selling Package → Year Quarter 二级行折叠 + 列折叠 */
+const OUTLINE_STOCK = [
+  {
+    name: 'Each',
+    expanded: true,
+    quarters: [
+      {
+        name: '2013Q1',
+        expanded: false,
+        items: [
+          [68, 'Pack of 12 action figures (female)'],
+          [212, 'USB food flash drive - dim sum 10 drive variety pack'],
+          [45, 'Developer joke mug - understanding'],
+        ],
+      },
+      {
+        name: '2016Q2',
+        expanded: false,
+        items: [
+          [91, 'USB missile launcher (Green)'],
+          [103, 'Dinosaur battery-powered walking'],
+        ],
+      },
+    ],
+  },
+  {
+    name: 'Packet',
+    expanded: true,
+    quarters: [
+      {
+        name: '2013Q1',
+        expanded: true,
+        items: [
+          [68, 'Pack of 12 action figures (female)'],
+          [212, 'USB food flash drive - dim sum 10 drive variety pack'],
+          [19, 'Pack of 12 balloons - Assorted'],
+          [77, 'Chocolate eclairs - 250g'],
+          [140, 'RC foxy blues from Foggy Mountain'],
+        ],
+      },
+    ],
+  },
+] as const;
+
+type OutlineSheet = {
+  data: any[][];
+  rows: Record<number, { group: number; state: boolean }>;
+  mergeCells: Record<string, [number, number]>;
+  style: Record<string, string>;
+};
+
+function buildOutlineSourceSheet(): OutlineSheet {
+  const data: any[][] = [];
+  const rows: Record<number, { group: number; state: boolean }> = {};
+  const mergeCells: Record<string, [number, number]> = {};
+  const style: Record<string, string> = {};
+  const groupBg = 'background-color: #ffe4c4';
+  const zebraBg = 'background-color: #e8f4ff';
+
+  let r = 0;
+  OUTLINE_STOCK.forEach((pkg) => {
+    const pkgStart = r;
+    let childSpan = 0;
+    pkg.quarters.forEach((q) => {
+      childSpan += 1 + q.items.length;
+    });
+    // group = 标题行之后的子行数（不含标题本身）
+    rows[pkgStart] = { group: childSpan, state: pkg.expanded };
+
+    data.push([pkg.name, '', '', '']);
+    style[`A${pkgStart + 1}`] = groupBg;
+    style[`B${pkgStart + 1}`] = groupBg;
+    r += 1;
+
+    pkg.quarters.forEach((q) => {
+      const qStart = r;
+      const itemCount = q.items.length;
+      rows[qStart] = { group: itemCount, state: q.expanded };
+
+      data.push(['', q.name, '', '']);
+      style[`A${qStart + 1}`] = groupBg;
+      style[`B${qStart + 1}`] = groupBg;
+      r += 1;
+
+      q.items.forEach(([key, name], idx) => {
+        data.push(['', '', key, name]);
+        style[`A${r + 1}`] = groupBg;
+        style[`B${r + 1}`] = groupBg;
+        if (idx % 2 === 1) {
+          style[`C${r + 1}`] = zebraBg;
+          style[`D${r + 1}`] = zebraBg;
+        }
+        r += 1;
+      });
+    });
+
+    const mergeSpan = 1 + childSpan;
+    if (mergeSpan > 1) {
+      mergeCells[`A${pkgStart + 1}`] = [1, mergeSpan];
+    }
+  });
+
+  return { data, rows, mergeCells, style };
+}
+
 function cellName(x: number, y: number) {
   const col = Number(x);
   const row = Number(y);
@@ -199,6 +304,7 @@ export default function JspreadsheetPage() {
   const attachTarget = useRef<{ x: number; y: number } | null>(null);
 
   const orderData = useMemo(() => buildSeedRows(2000), []);
+  const outlineSheet = useMemo(() => buildOutlineSourceSheet(), []);
   const pivotSourceData = useMemo(() => buildPivotSourceData(), []);
   const pivotSourceRowCount = pivotSourceData.length;
 
@@ -329,7 +435,7 @@ export default function JspreadsheetPage() {
     () => [
       {
         anchor: 'A1',
-        source: `透视源数据!A1:E${pivotSourceRowCount}`,
+        source: `透视底表!A1:E${pivotSourceRowCount}`,
         rows: [
           {
             columnIndex: 0,
@@ -391,6 +497,28 @@ export default function JspreadsheetPage() {
     [],
   );
 
+  const outlineColumns = useMemo(
+    () => [
+      {
+        type: 'text',
+        title: 'Selling Package',
+        width: 170,
+        group: 2,
+        state: true,
+      },
+      { type: 'text', title: 'Year Quarter', width: 140 },
+      {
+        type: 'numeric',
+        title: 'Stock Item Key',
+        width: 130,
+        group: 2,
+        state: true,
+      },
+      { type: 'text', title: 'Stock Item', width: 380 },
+    ],
+    [],
+  );
+
   // Spreadsheet React 只初始化一次；插件 onevent + config 回调三路绑定
   useEffect(() => {
     const bind = () => {
@@ -433,6 +561,23 @@ export default function JspreadsheetPage() {
       };
 
       (parent.config as any).__historyBound = true;
+      return true;
+    };
+    if (bind()) return undefined;
+    const timer = window.setInterval(() => {
+      if (bind()) window.clearInterval(timer);
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // 透视源数据：禁用行号上的 +/- 折叠图标（仍可用工具栏展开/折叠行组）
+  useEffect(() => {
+    const bind = () => {
+      const ws = getWorksheetByName(spreadsheet, '透视源数据');
+      if (!ws) return false;
+      const table = ws.table || ws.element;
+      if (!table) return false;
+      table.classList.add('jss-outline-table');
       return true;
     };
     if (bind()) return undefined;
@@ -748,9 +893,10 @@ export default function JspreadsheetPage() {
   return (
     <div className="jss-page">
       <p className="jss-page__hint">
-        「订单明细」已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
+        「订单明细已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
         下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 / 大数据虚拟滚动 /
-        列宽拖动 / 自适应列宽。右键单元格可访问更多操作；「透视分析」页可看层级折叠示例。
+        列宽拖动 / 自适应列宽。「透视源数据」按参考图做了 Selling Package → Year Quarter
+        二级行折叠与列折叠；「透视分析」读「透视底表」。
       </p>
 
       <input
@@ -821,6 +967,19 @@ export default function JspreadsheetPage() {
             />
             <Worksheet
               worksheetName="透视源数据"
+              data={outlineSheet.data}
+              columns={outlineColumns}
+              rows={outlineSheet.rows}
+              mergeCells={outlineSheet.mergeCells}
+              style={outlineSheet.style}
+              filters={true}
+              columnResize={true}
+              tableOverflow={true}
+              tableWidth="100%"
+              tableHeight="560px"
+            />
+            <Worksheet
+              worksheetName="透视底表"
               data={pivotSourceData}
               columns={pivotSourceColumns}
               columnResize={true}

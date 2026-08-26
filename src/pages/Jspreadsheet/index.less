@@ -101,6 +101,13 @@
   font-size: 13px;
 }
 
+
+/* 透视源数据：禁用行折叠 +/- 图标 */
+.jss-page__sheet :global(table.jss-outline-table .jss_row > i.material-icons) {
+  display: none !important;
+  pointer-events: none !important;
+}
+
 .jss-page__sheet :global(.jss td.jss_rowgroup),
 .jss-page__sheet :global(.jss .jss_row_group) {
   background: #eef2f7;
