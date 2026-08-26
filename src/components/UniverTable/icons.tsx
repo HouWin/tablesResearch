@@ -59,15 +59,57 @@ export const AttachmentIcon = () => (
   </svg>
 );
 
+// 复制 icon
+export const CopyIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M768 128H320c-70.4 0-128 57.6-128 128v448c0 17.6 14.4 32 32 32s32-14.4 32-32V256c0-35.2 28.8-64 64-64h448c17.6 0 32-14.4 32-32s-14.4-32-32-32z" />
+    <path d="M832 256H448c-70.4 0-128 57.6-128 128v512c0 70.4 57.6 128 128 128h384c70.4 0 128-57.6 128-128V384c0-70.4-57.6-128-128-128z m64 640c0 35.2-28.8 64-64 64H448c-35.2 0-64-28.8-64-64V384c0-35.2 28.8-64 64-64h384c35.2 0 64 28.8 64 64v512z" />
+  </svg>
+);
+
+// 粘贴 icon
+export const PasteIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M704 128h-64V96c0-17.6-14.4-32-32-32H416c-17.6 0-32 14.4-32 32v32h-64c-70.4 0-128 57.6-128 128v640c0 70.4 57.6 128 128 128h512c70.4 0 128-57.6 128-128V256c0-70.4-57.6-128-128-128zM416 128h192v64H416V128z m320 768H288c-35.2 0-64-28.8-64-64V256c0-35.2 28.8-64 64-64h64v32c0 17.6 14.4 32 32 32h192c17.6 0 32-14.4 32-32v-32h64c35.2 0 64 28.8 64 64v576c0 35.2-28.8 64-64 64z" />
+    <path d="M384 448h256c17.6 0 32-14.4 32-32s-14.4-32-32-32H384c-17.6 0-32 14.4-32 32s14.4 32 32 32zM384 608h256c17.6 0 32-14.4 32-32s-14.4-32-32-32H384c-17.6 0-32 14.4-32 32s14.4 32 32 32zM384 768h160c17.6 0 32-14.4 32-32s-14.4-32-32-32H384c-17.6 0-32 14.4-32 32s14.4 32 32 32z" />
+  </svg>
+);
+
+const ICON_MAP = {
+  AddCommentIcon,
+  DeleteCommentIcon,
+  AttachmentIcon,
+  CopyIcon,
+  PasteIcon,
+} as const;
+
 // 2. 增强版的图标注册函数
 export const registerAllIcons = (univerAPI: any) => {
   if (!univerAPI) return;
   try {
     // 途径 1: Facade API 自带注册 (部分 0.2.x+ 支持)
     if (typeof univerAPI.registerIcon === 'function') {
-      univerAPI.registerIcon('AddCommentIcon', AddCommentIcon);
-      univerAPI.registerIcon('DeleteCommentIcon', DeleteCommentIcon);
-      univerAPI.registerIcon('AttachmentIcon', AttachmentIcon);
+      Object.entries(ICON_MAP).forEach(([name, Icon]) => {
+        univerAPI.registerIcon(name, Icon);
+      });
       return;
     }
     // 途径 2: 深度获取 UI 层的 ComponentManager
@@ -75,9 +117,9 @@ export const registerAllIcons = (univerAPI: any) => {
     if (injector) {
       const componentManager = injector.get(ComponentManager);
       if (componentManager) {
-        componentManager.register('AddCommentIcon', AddCommentIcon);
-        componentManager.register('DeleteCommentIcon', DeleteCommentIcon);
-        componentManager.register('AttachmentIcon', AttachmentIcon);
+        Object.entries(ICON_MAP).forEach(([name, Icon]) => {
+          componentManager.register(name, Icon);
+        });
         console.log('[ETable] Icon registered via ComponentManager');
       } else {
         console.warn('[ETable] ComponentManager not found in injector');

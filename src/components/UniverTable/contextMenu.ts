@@ -86,6 +86,155 @@ export interface ETableContextMenuSubmenu {
 export type ETableContextMenuConfig = | ETableContextMenuItem | ETableContextMenuSeparator | ETableContextMenuSubmenu;
 
 /**
+ * 表格内部剪贴板。
+ *
+ * 右键菜单点击时，浏览器系统剪贴板（Clipboard API）经常因焦点丢失 /
+ * 非安全上下文失败，导致 univerAPI.copy/paste 无效。
+ * 这里额外缓存选区值，保证表内复制粘贴可用。
+ */
+let internalClipboard: {
+  values: any[][];
+  rowCount: number;
+  columnCount: number;
+} | null = null;
+
+/**
+ * 深拷贝二维数组，避免引用被后续编辑污染。
+ */
+const cloneMatrix = (matrix: any[][]): any[][] => {
+  return matrix.map((row) => row.map((cell) => {
+    if (cell !== null && typeof cell === 'object') {
+      try {
+        return JSON.parse(JSON.stringify(cell));
+      } catch {
+        return cell;
+      }
+    }
+    return cell;
+  }));
+};
+
+/**
+ * 读取选区值矩阵。
+ */
+const readRangeValues = (range: any): any[][] | null => {
+  if (!range) {
+    return null;
+  }
+  try {
+    const values = range.getValues?.();
+    if (Array.isArray(values) && values.length) {
+      return values;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const value = range.getValue?.();
+    return [[value ?? null]];
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 右键复制：先缓存选区，再尝试系统剪贴板。
+ */
+const copySelection = async (context: ETableContextMenuContext) => {
+  const { univerAPI, range } = context;
+  if (!range) {
+    message.warning('请先选中要复制的单元格');
+    return;
+  }
+
+  try {
+    range.activate?.();
+  } catch {
+    // ignore
+  }
+
+  const values = readRangeValues(range);
+  if (!values?.length) {
+    message.warning('当前选区没有可复制的内容');
+    return;
+  }
+
+  internalClipboard = {
+    values: cloneMatrix(values),
+    rowCount: values.length,
+    columnCount: values[0]?.length || 1,
+  };
+
+  let systemOk = false;
+  try {
+    if (typeof univerAPI?.copy === 'function') {
+      systemOk = Boolean(await univerAPI.copy());
+    }
+  } catch (error) {
+    console.warn('[ETable] system clipboard copy failed', error);
+  }
+
+  // 系统剪贴板失败时，仍可用内部缓存做表内粘贴
+  if (systemOk) {
+    message.success('已复制');
+  } else {
+    message.success('已复制（表内粘贴可用）');
+  }
+};
+
+/**
+ * 右键粘贴：优先系统剪贴板，失败则用内部缓存写入当前选区。
+ */
+const pasteSelection = async (context: ETableContextMenuContext) => {
+  const { univerAPI, range, worksheet } = context;
+  if (!range) {
+    message.warning('请先选中要粘贴的目标单元格');
+    return;
+  }
+
+  try {
+    range.activate?.();
+  } catch {
+    // ignore
+  }
+
+  let systemOk = false;
+  try {
+    if (typeof univerAPI?.paste === 'function') {
+      systemOk = Boolean(await univerAPI.paste());
+    }
+  } catch (error) {
+    console.warn('[ETable] system clipboard paste failed', error);
+  }
+
+  if (systemOk) {
+    message.success('已粘贴');
+    return;
+  }
+
+  if (!internalClipboard?.values?.length) {
+    message.warning('剪贴板为空，请先复制内容');
+    return;
+  }
+
+  try {
+    const startRow = range.getRow?.() ?? 0;
+    const startColumn = range.getColumn?.() ?? 0;
+    const target = worksheet?.getRange?.(
+      startRow,
+      startColumn,
+      internalClipboard.rowCount,
+      internalClipboard.columnCount,
+    ) ?? range;
+    target.setValues?.(internalClipboard.values);
+    message.success('已粘贴');
+  } catch (error) {
+    console.error('[ETable] internal paste failed', error);
+    message.error('粘贴失败');
+  }
+};
+
+/**
  * 默认右键菜单配置
  *
  * 注意：
@@ -93,8 +242,8 @@ export type ETableContextMenuConfig = | ETableContextMenuItem | ETableContextMen
  * 不会删除 Univer 原有菜单。
  */
 export const defaultContextMenuItems: ETableContextMenuConfig[] = [
-  { id: 'etable-copy', title: '复制内容', action: async ({ univerAPI }) => { await univerAPI.copy(); } },
-  { id: 'etable-paste', title: '粘贴数据', action: async ({ univerAPI }) => { await univerAPI.paste(); } },
+  { id: 'etable-copy', title: '复制内容', icon: 'CopyIcon', action: copySelection },
+  { id: 'etable-paste', title: '粘贴数据', icon: 'PasteIcon', action: pasteSelection },
   { type: 'separator', },
   {
     id: 'etable-add-comment', title: '新增批注', icon: 'AddCommentIcon', action: async ({ univerAPI, range }) => {
