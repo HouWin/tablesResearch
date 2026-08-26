@@ -53,7 +53,12 @@ export default defineConfig({
           component: './Handsontable/BigDataExample',
         }
       ],
-    }
+    },
+    {
+      name: 'Jspreadsheet',
+      path: '/jspreadsheet',
+      component: './Jspreadsheet',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},
