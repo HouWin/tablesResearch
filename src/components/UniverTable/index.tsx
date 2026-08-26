@@ -7,7 +7,7 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
 import { renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
 import { flattenTreeData } from './tree';
-import { customizeContextMenu, defaultContextMenuItems } from './contextMenu';
+import { customizeContextMenu, defaultContextMenuItems, NATIVE_CONTEXT_MENU_HIDE_CONFIG } from './contextMenu';
 import {
   applyInitialAttachments,
   clearCellAttachments,
@@ -376,8 +376,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       },
       // Preset
       presets: [
-        // Core
-        UniverSheetsCorePreset({ container: containerRef.current }),
+        // Core：顺带预隐藏一批常见原生右键命令（自定义菜单注册后还会再扫一遍）
+        UniverSheetsCorePreset({
+          container: containerRef.current,
+          menu: NATIVE_CONTEXT_MENU_HIDE_CONFIG,
+        }),
         // Advanced
         UniverSheetsAdvancedPreset(),
         // Thread Comment

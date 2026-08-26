@@ -6,6 +6,9 @@ import {
   uploadAndAttachToCell,
 } from './attachment';
 import { message } from 'antd';
+import { of } from 'rxjs';
+import { IMenuManagerService } from '@univerjs/ui';
+import { SheetsThreadCommentPopupService } from '@univerjs/sheets-thread-comment-ui';
 
 /**
  * ETable 自定义右键菜单
@@ -84,6 +87,56 @@ export interface ETableContextMenuSubmenu {
 }
 
 export type ETableContextMenuConfig = | ETableContextMenuItem | ETableContextMenuSeparator | ETableContextMenuSubmenu;
+
+/**
+ * 预置需要隐藏的 Univer 原生右键/相关菜单命令。
+ * 传给 UniverSheetsCorePreset({ menu })，从源头隐藏。
+ */
+export const NATIVE_CONTEXT_MENU_HIDE_CONFIG: Record<string, { hidden: true }> = {
+  'sheet.command.copy': { hidden: true },
+  'sheet.command.cut': { hidden: true },
+  'sheet.command.paste': { hidden: true },
+  'sheet.command.paste-value': { hidden: true },
+  'sheet.command.paste-format': { hidden: true },
+  'sheet.command.paste-col-width': { hidden: true },
+  'sheet.command.paste-besides-border': { hidden: true },
+  'sheet.command.optional-paste': { hidden: true },
+  'sheet.command.clear-selection-content': { hidden: true },
+  'sheet.command.clear-selection-format': { hidden: true },
+  'sheet.command.clear-selection-all': { hidden: true },
+  'sheet.command.insert-row-before': { hidden: true },
+  'sheet.command.insert-row-after': { hidden: true },
+  'sheet.command.insert-col-before': { hidden: true },
+  'sheet.command.insert-col-after': { hidden: true },
+  'sheet.command.remove-row-confirm': { hidden: true },
+  'sheet.command.remove-col-confirm': { hidden: true },
+  'sheet.command.delete-range-move-left-confirm': { hidden: true },
+  'sheet.command.delete-range-move-up-confirm': { hidden: true },
+  'sheet.command.insert-range-move-right-confirm': { hidden: true },
+  'sheet.command.insert-range-move-down-confirm': { hidden: true },
+  'sheet.command.hide-row-confirm': { hidden: true },
+  'sheet.command.hide-col-confirm': { hidden: true },
+  'sheet.command.set-row-height': { hidden: true },
+  'sheet.command.set-col-width': { hidden: true },
+  'sheet.command.set-col-auto-width': { hidden: true },
+  'sheet.command.set-row-is-auto-height': { hidden: true },
+  'sheet.command.set-selection-frozen': { hidden: true },
+  'sheet.command.set-row-frozen': { hidden: true },
+  'sheet.command.set-col-frozen': { hidden: true },
+  'sheet.menu.clear-selection': { hidden: true },
+  'sheet.menu.paste-special': { hidden: true },
+  'sheet.contextMenu.permission': { hidden: true },
+  'sheet.contextMenu.text-to-number': { hidden: true },
+  'sheet.command.add-range-protection-from-context-menu': { hidden: true },
+  'sheet.command.delete-range-protection-from-context-menu': { hidden: true },
+  'sheet.command.set-range-protection-from-context-menu': { hidden: true },
+  'sheet.command.view-sheet-permission-from-context-menu': { hidden: true },
+  'thread-comment.command.add-comment': { hidden: true },
+  'thread-comment.command.delete-comment': { hidden: true },
+  'sheets.command.insert-note': { hidden: true },
+  'sheets.command.delete-note': { hidden: true },
+  'sheets.command.toggle-note': { hidden: true },
+};
 
 /**
  * 表格内部剪贴板。
@@ -235,6 +288,71 @@ const pasteSelection = async (context: ETableContextMenuContext) => {
 };
 
 /**
+ * 打开单元格批注弹层（立即显示，无需再 hover）。
+ *
+ * 注意：
+ * 1. 不要传 temp: true，否则 SheetsThreadCommentHoverController
+ *    在鼠标移到无批注单元格时会直接 hidePopup。
+ * 2. 延迟打开，避免右键菜单关闭时的 clickOutside 立刻把弹层关掉。
+ * 3. trigger: 'context-menu' 用于自动聚焦输入框。
+ */
+const openCommentPopup = (context: ETableContextMenuContext) => {
+  const { univerAPI, range, worksheet } = context;
+  if (!range) {
+    message.warning('请先选中要批注的单元格');
+    return false;
+  }
+
+  try {
+    range.activate?.();
+  } catch {
+    // ignore
+  }
+
+  const row = range.getRow?.() ?? 0;
+  const col = range.getColumn?.() ?? 0;
+
+  const show = () => {
+    try {
+      const injector =
+        univerAPI?.__getInjector?.() ||
+        univerAPI?.getGlobalContext?.()?.injector ||
+        univerAPI?._injector;
+      const workbook = univerAPI?.getActiveWorkbook?.();
+      const sheet = workbook?.getActiveSheet?.() || worksheet;
+      const unitId = workbook?.getId?.();
+      const subUnitId = sheet?.getSheetId?.();
+
+      if (injector && unitId && subUnitId) {
+        const popupService = injector.get(SheetsThreadCommentPopupService);
+        popupService.showPopup({
+          unitId,
+          subUnitId,
+          row,
+          col,
+          trigger: 'context-menu',
+        });
+        return true;
+      }
+    } catch (error) {
+      console.warn('[ETable] show comment popup via service failed', error);
+    }
+
+    try {
+      return Boolean(univerAPI?.executeCommand?.('sheet.operation.show-comment-modal'));
+    } catch (error) {
+      console.warn('[ETable] show comment modal command failed', error);
+      message.error('打开批注失败');
+      return false;
+    }
+  };
+
+  // 等右键菜单卸载后再弹，防止 clickOutside 误关
+  window.setTimeout(show, 50);
+  return true;
+};
+
+/**
  * 默认右键菜单配置
  *
  * 注意：
@@ -246,11 +364,11 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
   { id: 'etable-paste', title: '粘贴数据', icon: 'PasteIcon', action: pasteSelection },
   { type: 'separator', },
   {
-    id: 'etable-add-comment', title: '新增批注', icon: 'AddCommentIcon', action: async ({ univerAPI, range }) => {
-      if (!range) { return; }
-      const richText = univerAPI.newRichText().insertText('请输入批注内容');
-      const comment = univerAPI.newTheadComment().setContent(richText).setPersonId('current-user').setDateTime(new Date());
-      await range.addCommentAsync(comment);
+    id: 'etable-add-comment',
+    title: '新增批注',
+    icon: 'AddCommentIcon',
+    action: async (context) => {
+      openCommentPopup(context);
     },
   },
   {
@@ -508,7 +626,7 @@ const registerMenu = (
    * Univer Facade API 会在 appendTo 后
    * 将菜单真正添加到 UI。
    */
-  menu.appendTo(item.position ?? 'contextMenu.others');
+  menu.appendTo(item.position ?? ['contextMenu.mainArea', 'contextMenu.others']);
   return menu;
 }
 
@@ -557,7 +675,7 @@ const registerSubmenu = (
     root.addSubmenu(menu);
   });
 
-  root.appendTo('contextMenu.others');
+  root.appendTo(['contextMenu.mainArea', 'contextMenu.others']);
   return root;
 };
 
@@ -606,6 +724,110 @@ export const customizeContextMenu = (
     // 普通菜单
     registerMenu(univerAPI, worksheet, item as ETableContextMenuItem, extras);
   });
+
+  // 隐藏 Univer 原生右键菜单，只保留自定义项
+  const keepIds = collectCustomMenuIds(items);
+  // 等菜单 schema 注册完成后再隐藏（部分插件会延迟注册）
+  const hide = () => hideNativeContextMenus(univerAPI, keepIds);
+  requestAnimationFrame(hide);
+  setTimeout(hide, 300);
+  setTimeout(hide, 1000);
+};
+
+/**
+ * 收集自定义菜单 id，用于白名单保留。
+ */
+const collectCustomMenuIds = (items: ETableContextMenuConfig[]): string[] => {
+  const ids: string[] = [];
+  const walk = (list: ETableContextMenuConfig[]) => {
+    list.forEach((item) => {
+      if ('type' in item && item.type === 'separator') {
+        return;
+      }
+      if ('type' in item && item.type === 'submenu') {
+        ids.push(item.id);
+        walk(item.items);
+        return;
+      }
+      ids.push((item as ETableContextMenuItem).id);
+    });
+  };
+  walk(items);
+  return ids;
+};
+
+/**
+ * 隐藏 Univer 自带右键菜单项，只保留白名单中的自定义菜单。
+ */
+export const hideNativeContextMenus = (
+  univerAPI: any,
+  keepIds: string[] = [],
+) => {
+  if (!univerAPI) {
+    return;
+  }
+
+  try {
+    const injector =
+      univerAPI.__getInjector?.() ||
+      univerAPI.getGlobalContext?.()?.injector ||
+      univerAPI._injector;
+    if (!injector) {
+      console.warn('[ETable] injector not found, skip hide native context menu');
+      return;
+    }
+
+    const menuManager = injector.get(IMenuManagerService);
+    if (!menuManager) {
+      return;
+    }
+
+    const keepSet = new Set(keepIds);
+    const positions = [
+      'contextMenu.mainArea',
+      'contextMenu.colHeader',
+      'contextMenu.rowHeader',
+      'contextMenu.footerTabs',
+      'contextMenu.footerMenu',
+    ];
+
+    const hideSchema = (schemas: any[] = []) => {
+      schemas.forEach((schema) => {
+        if (!schema) {
+          return;
+        }
+        const key = schema.key as string;
+        const keep = keepSet.has(key) || key?.startsWith?.('etable-');
+
+        if (schema.item && !keep) {
+          // 强制隐藏原生菜单项
+          schema.item.hidden$ = of(true);
+        }
+
+        if (Array.isArray(schema.children) && schema.children.length) {
+          hideSchema(schema.children);
+        }
+      });
+    };
+
+    positions.forEach((position) => {
+      try {
+        const schemas = menuManager.getMenuByPositionKey?.(position) || [];
+        hideSchema(schemas);
+      } catch (error) {
+        console.warn('[ETable] hide context menu failed', position, error);
+      }
+    });
+
+    // 通知菜单刷新
+    try {
+      menuManager.menuChanged$?.next?.();
+    } catch {
+      // ignore
+    }
+  } catch (error) {
+    console.warn('[ETable] hideNativeContextMenus failed', error);
+  }
 };
 
 /**
