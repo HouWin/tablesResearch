@@ -1,0 +1,36 @@
+[
+    {
+        "Category": "Furniture",
+        "Region": "East",
+        "Sales": 208291.20,
+        "Profit": 3046.17,
+        "children": [
+            {
+                "Category": "Bookcases",
+                "Region": "East",
+                "Sales": 43819.33,
+                "Profit": -1167.63,
+                "children": [
+                    {
+                        "Category": "Chairs",
+                        "Region": "East",
+                        "Sales": 96260.68,
+                        "Profit": 9357.77
+                    },
+                    {
+                        "Category": "Tables",
+                        "Region": "East",
+                        "Sales": 29071.38,
+                        "Profit": 5881.41
+                    }
+                ]
+            },
+            {
+                "Category": "Chairs",
+                "Region": "East",
+                "Sales": 96260.68,
+                "Profit": 9357.77
+            }
+        ]
+    }
+]
