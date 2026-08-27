@@ -12,6 +12,10 @@ import type {
   ETableTreeNode,
   ETableTreeToggleBinding,
 } from './types';
+import {
+  applyGroupStatistics,
+  computeGrandTotalValues,
+} from './groupStatistics';
 
 export const TREE_EXPAND_ICON = '▼';
 export const TREE_COLLAPSE_ICON = '▶';
@@ -213,6 +217,12 @@ export const flattenTreeData = (
   treeData: ETableTreeNode[] = [],
   config: ETableTreeConfig,
 ): ETableFlattenResult => {
+  const stats = config.groupStatistics;
+  const preparedTree =
+    stats && stats.enabled !== false && stats.fields?.length
+      ? applyGroupStatistics(treeData, stats, config)
+      : treeData;
+
   const columns = buildTreeColumns(config);
   const rows: ETableRow[] = [];
   const rowGroups: ETableRowGroup[] = [];
@@ -743,7 +753,34 @@ export const flattenTreeData = (
     return groups;
   };
 
-  rowGroups.push(...walk(treeData, 0, {}));
+  rowGroups.push(...walk(preparedTree, 0, {}));
+
+  // 总计行
+  if (
+    stats &&
+    stats.enabled !== false &&
+    stats.showGrandTotal &&
+    stats.fields?.length &&
+    preparedTree.length
+  ) {
+    const dim0 = dimensionFields[0];
+    const totals = computeGrandTotalValues(preparedTree, stats);
+    const totalLabel = stats.grandTotalLabel || '总计';
+    const data: ETableRow['data'] = { ...totals };
+    if (dim0) {
+      data[dim0] = totalLabel;
+    }
+    if (attributeField) {
+      data[attributeField] = '';
+    }
+    rows.push({
+      id: '__group_grand_total__',
+      data,
+      style: {
+        bg: stats.grandTotalBackground || '#FFF7E6',
+      },
+    });
+  }
 
   return { columns, rows, rowGroups, columnGroups, merges, treeToggles };
 };
