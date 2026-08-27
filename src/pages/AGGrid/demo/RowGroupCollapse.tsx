@@ -9,6 +9,7 @@ import type {
 import { Tooltip } from 'antd'
 import AgGridWrap from '@/components/AgGridWrap'
 import { generateMockData } from '@/utils/mockData'
+import { formatNumberFixed } from '@/utils/format'
 import type { FinanceRow } from '@/types/grid'
 
 // 自定义聚合值格式化器 - 显示中文汇总提示
@@ -24,7 +25,7 @@ const customAggFunc = (params: any) => {
 
     // 单价汇总
     if (colId === 'price') {
-      return `均值: ${params.value?.toFixed(2) || '-'}`
+      return `均值: ${formatNumberFixed(params.value, 2)}`
     }
 
     // ID或状态汇总

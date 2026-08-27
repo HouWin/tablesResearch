@@ -3,6 +3,7 @@ import { AgGridReact } from 'ag-grid-react';
 import type { ColDef, ColGroupDef, GridOptions, FirstDataRenderedEvent } from 'ag-grid-community';
 import { Tooltip } from 'antd';
 import AgGridWrap from '@/components/AgGridWrap';
+import { formatNumber, formatCurrency } from '@/utils/format';
 
 // --- 1. 真实且庞大的业务数据生成器 ---
 export interface FinanceRow {
@@ -99,14 +100,17 @@ const CleanGroupInnerRenderer = (props: any) => {
   return <span style={{ fontWeight: props.node.group ? 'bold' : 'normal' }}>{props.value}</span>;
 };
 
-const CustomAggRenderer = (props: any) => (
-  <span style={{
-    fontWeight: props.node.footer ? 'bold' : 'normal',
-    color: props.node.footer ? '#1890ff' : 'inherit'
-  }}>
-    {props.value?.toLocaleString() || '-'}
-  </span>
-);
+const CustomAggRenderer = (props: any) => {
+  const num = typeof props.value === 'number' ? props.value : Number(props.value)
+  return (
+    <span style={{
+      fontWeight: props.node.footer ? 'bold' : 'normal',
+      color: props.node.footer ? '#1890ff' : 'inherit'
+    }}>
+      {num != null && !isNaN(num) ? num.toLocaleString() : '-'}
+    </span>
+  );
+};
 
 // 获取向下填充值的通用函数
 const getFillValue = (params: any, field: string) => {
@@ -180,15 +184,15 @@ const BudgetGrid: React.FC = () => {
       children: ['Q1', 'Q2', 'Q3', 'Q4'].map(q => ({
         headerName: q,
         children: [
-          { 
+          {
             field: `amt${year}${q}`, headerName: '金额', aggFunc: 'sum', editable: year > 2026,
-            valueFormatter: (p: any) => p.value ? `¥${p.value.toLocaleString()}` : '',
-            cellRenderer: CustomAggRenderer 
+            valueFormatter: (p: any) => formatCurrency(p.value),
+            cellRenderer: CustomAggRenderer
           },
-          { 
+          {
             field: `qty${year}${q}`, headerName: '销量', aggFunc: 'sum', editable: year > 2026,
-            valueFormatter: (p: any) => p.value?.toLocaleString() || '',
-            cellRenderer: CustomAggRenderer 
+            valueFormatter: (p: any) => formatNumber(p.value),
+            cellRenderer: CustomAggRenderer
           },
         ]
       }))

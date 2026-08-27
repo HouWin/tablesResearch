@@ -1,0 +1,133 @@
+// AGGrid 菜单优化样式
+
+// 菜单容器
+.ag-grid-menu-container {
+  display: flex;
+  flex-wrap: wrap;  // 允许菜单项换行
+  gap: 4px 0;
+  width: 100%;
+  line-height: normal;
+}
+
+// 菜单项
+.ag-grid-menu-item {
+  padding: 8px 16px;
+  margin: 2px 4px 2px 0;
+  font-size: 14px;
+  line-height: 1.4;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 60px;
+  text-align: center;
+  user-select: none;
+  color: rgba(0, 0, 0, 0.85);
+  background-color: transparent;
+
+  &:hover {
+    background-color: #f5f5f5;
+    color: #1890ff;
+  }
+
+  // 选中的菜单项
+  &.selected {
+    background-color: #e6f7ff;
+    color: #1890ff;
+    font-weight: 500;
+    position: relative;
+
+    &::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 8px;
+      right: 8px;
+      height: 2px;
+      background-color: #1890ff;
+    }
+  }
+}
+
+// 响应式优化：大屏幕（1920px以上）
+@media (min-width: 1920px) {
+  .ag-grid-menu-item {
+    padding: 8px 20px;
+    margin: 2px 5px 2px 0;
+    font-size: 14px;
+  }
+}
+
+// 响应式优化：中等屏幕（1200px - 1920px）
+@media (min-width: 1200px) and (max-width: 1919px) {
+  .ag-grid-menu-item {
+    padding: 8px 15px;
+    margin: 2px 4px 2px 0;
+    font-size: 13.5px;
+  }
+}
+
+// 响应式优化：小屏幕（1200px以下）
+@media (max-width: 1200px) {
+  .ag-grid-menu-item {
+    padding: 7px 14px;
+    margin: 2px 3px 2px 0;
+    font-size: 13px;
+  }
+}
+
+// 响应式优化：平板（768px以下）
+@media (max-width: 768px) {
+  .ag-grid-menu-item {
+    padding: 6px 12px;
+    margin: 2px 2px 2px 0;
+    font-size: 12px;
+  }
+}
+
+// 响应式优化：手机（576px以下）
+@media (max-width: 576px) {
+  .ag-grid-menu-item {
+    padding: 5px 10px;
+    margin: 1px 1px 1px 0;
+    font-size: 11px;
+    min-width: 50px;
+  }
+}
+
+// 菜单容器动画
+.ag-grid-menu-container {
+  animation: menuFadeIn 0.3s ease;
+
+  @keyframes menuFadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+// 菜单滚动提示（当内容过多时显示）
+.ag-grid-menu-scroll-hint {
+  position: relative;
+
+  &::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 40px;
+    background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.9));
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  &:hover::after {
+    opacity: 1;
+  }
+}

@@ -2,6 +2,7 @@ import { useRef, useCallback, useMemo } from 'react'
 import { AgGridReact } from 'ag-grid-react'
 import AgGridWrap from '@/components/AgGridWrap'
 import { generateMockData } from '@/utils/mockData'
+import { formatNumber, formatCurrency } from '@/utils/format'
 import type { GridColDef } from '@/types/grid'
 
 const CustomAgg = () => {
@@ -12,8 +13,20 @@ const CustomAgg = () => {
     { field: 'id', headerName: 'ID', width: 80, hide: true },
     { field: 'product', headerName: '产品名称', width: 120, enableRowGroup: true, rowGroup: true },
     { field: 'category', headerName: '产品大类', width: 120, enableRowGroup: true },
-    { field: 'qty', headerName: '数量', width: 100, aggFunc: 'sum', valueFormatter: (p) => `总计: ${p.value?.toLocaleString()}` },
-    { field: 'price', headerName: '单价', width: 100, aggFunc: 'avg', valueFormatter: (p) => `平均: ¥${p.value?.toFixed(2)}` },
+    {
+      field: 'qty',
+      headerName: '数量',
+      width: 100,
+      aggFunc: 'sum',
+      valueFormatter: (p) => `总计: ${formatNumber(p.value)}`
+    },
+    {
+      field: 'price',
+      headerName: '单价',
+      width: 100,
+      aggFunc: 'avg',
+      valueFormatter: (p) => `平均: ${formatCurrency(p.value)}`
+    },
     { field: 'dt', headerName: '业务日期', width: 120 },
     { field: 'remark', headerName: '状态', width: 100 },
   ]
