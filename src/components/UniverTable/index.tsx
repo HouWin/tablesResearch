@@ -6,8 +6,15 @@ import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-
 import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
 import { renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
+import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
-import { customizeContextMenu, defaultContextMenuItems } from './contextMenu';
+import { setupTreeCellCollapse } from './treeCollapse';
+import {
+  customizeContextMenu,
+  defaultContextMenuItems,
+  NATIVE_CONTEXT_MENU_HIDE_CONFIG,
+  setupCommentContextMenuGuard,
+} from './contextMenu';
 import {
   applyInitialAttachments,
   clearCellAttachments,
@@ -67,6 +74,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     columnGroups: propsColumnGroups = [],
     treeData,
     treeConfig,
+    groupData,
+    groupConfig,
     options = {},
     comments = [],
     attachments = [],
@@ -81,10 +90,13 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   onAttachmentsChangeRef.current = onAttachmentsChange;
 
   /**
-   * 优先使用 treeData 自动展平；
-   * 否则回退到外部传入的 columns / rows / merges / rowGroups / columnGroups。
+   * 优先 treeData，其次 groupData，否则使用外部 flat props。
    */
-  const flattened = treeData && treeConfig ? flattenTreeData(treeData, treeConfig) : null;
+  const flattened = treeData && treeConfig
+    ? flattenTreeData(treeData, treeConfig)
+    : groupData && groupConfig
+      ? flattenGroupedData(groupData, groupConfig)
+      : null;
   const columns = flattened?.columns ?? propsColumns;
   const rows = flattened?.rows ?? propsRows;
   const merges = flattened?.merges ?? propsMerges;
@@ -92,6 +104,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const columnGroups = flattened?.columnGroups?.length
     ? flattened.columnGroups
     : propsColumnGroups;
+  const treeToggles = flattened?.treeToggles ?? [];
+  const treeUI = Boolean(treeConfig?.treeUI);
   // 表格基础配置
   const {
     name = 'Table',
@@ -376,8 +390,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       },
       // Preset
       presets: [
-        // Core
-        UniverSheetsCorePreset({ container: containerRef.current }),
+        // Core：顺带预隐藏一批常见原生右键命令（自定义菜单注册后还会再扫一遍）
+        UniverSheetsCorePreset({
+          container: containerRef.current,
+          menu: NATIVE_CONTEXT_MENU_HIDE_CONFIG,
+        }),
         // Advanced
         UniverSheetsAdvancedPreset(),
         // Thread Comment
@@ -436,8 +453,19 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     }
     // 8. 自定义合并（row 相对于数据区，需加上表头深度）
     renderMerges(worksheet, merges, maxDepth);
-    // 9. 行分组
-    createRowOutlines(worksheet, rowGroups, maxDepth);
+    // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
+    let disposeTreeCollapse: (() => void) | undefined;
+    if (treeUI && treeToggles.length) {
+      disposeTreeCollapse = setupTreeCellCollapse(
+        univerAPI,
+        worksheet,
+        rowGroups,
+        treeToggles,
+        maxDepth,
+      );
+    } else {
+      createRowOutlines(worksheet, rowGroups, maxDepth);
+    }
     // 10. 列分组
     createColumnOutlines(worksheet, columnGroups);
     // 11. 冻结行
@@ -489,6 +517,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       console.warn('[Table] apply attachments failed', error);
     }
     // 13.5 注册自定义右键菜单
+    let disposeCommentContextMenuGuard: (() => void) | undefined;
     if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
       try {
         customizeContextMenu(univerAPI, worksheet, contextMenuItems, {
@@ -502,6 +531,12 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
             onAttachmentsChangeRef.current?.(cell, files);
           },
         });
+        if (containerRef.current) {
+          disposeCommentContextMenuGuard = setupCommentContextMenuGuard(
+            univerAPI,
+            containerRef.current,
+          );
+        }
       } catch (error) {
         console.warn('[Table] register context menu failed', error);
       }
@@ -511,6 +546,16 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 
     // 15. 销毁
     return () => {
+      try {
+        disposeTreeCollapse?.();
+      } catch (error) {
+        console.warn('[Table] dispose tree collapse failed', error);
+      }
+      try {
+        disposeCommentContextMenuGuard?.();
+      } catch (error) {
+        console.warn('[Table] dispose comment context menu guard failed', error);
+      }
       try {
         univerAPI.dispose();
       } catch (error) {
