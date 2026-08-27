@@ -65,7 +65,7 @@
 .jss-page__sheet :global(.jtoolbar .material-icons),
 .jss-page__sheet :global(.jss_toolbar .material-icons),
 .jss-page__sheet :global(.jss_bar .material-icons),
-.jss-page__sheet :global(.material-icons) {
+.jss-page__sheet :global(.material-icons:not([data-fold])) {
   font-family: 'Material Icons' !important;
   font-weight: normal !important;
   font-style: normal !important;
@@ -87,6 +87,54 @@
   -webkit-font-feature-settings: 'liga';
 }
 
+/* 表头列组折叠：不用 material +/-，用 ▼/▶（data-fold 由 JS 写入） */
+.jss-page__sheet :global(.jss_header > i[data-fold]),
+.jss-page__sheet :global(td.jss_header > i[data-fold]) {
+  position: absolute !important;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 14px !important;
+  height: 14px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  font-family: inherit !important;
+  font-feature-settings: normal !important;
+  -webkit-font-feature-settings: normal !important;
+  color: transparent !important;
+  cursor: pointer;
+  pointer-events: auto !important;
+  visibility: visible !important;
+  background: transparent !important;
+}
+
+.jss-page__sheet :global(.jss_header > i[data-fold]::before),
+.jss-page__sheet :global(td.jss_header > i[data-fold]::before) {
+  content: '▼';
+  font-size: 12px !important;
+  font-weight: 700;
+  font-family: Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif !important;
+  line-height: 1;
+  color: #555;
+}
+
+.jss-page__sheet :global(.jss_header > i[data-fold='closed']::before),
+.jss-page__sheet :global(td.jss_header > i[data-fold='closed']::before) {
+  content: '▶';
+}
+
+.jss-page__sheet :global(td.jss_header:has(> i[data-fold])) {
+  position: relative;
+  padding-right: 18px;
+}
+
 /* Edition Bar */
 .jss-page__sheet :global(.jss_bar) {
   display: flex;
@@ -102,10 +150,46 @@
 }
 
 
-/* 透视源数据：禁用行折叠 +/- 图标 */
+/* 透视源数据：序列号去掉 +/-；折叠改到维度列三角 */
+.jss-page__sheet :global(table.jss-outline-table td.jss_row > i),
 .jss-page__sheet :global(table.jss-outline-table .jss_row > i.material-icons) {
   display: none !important;
+  visibility: hidden !important;
   pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  font-size: 0 !important;
+}
+
+/* 有列组时表头留出三角位置 */
+.jss-page__sheet :global(table.jss-outline-table td.jss_header) {
+  position: relative;
+  padding-right: 18px;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-toggle) {
+  display: inline-block;
+  width: 1.1em;
+  margin-right: 4px;
+  font-size: 11px;
+  line-height: 1;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-label) {
+  vertical-align: middle;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-group-cell),
+.jss-page__sheet :global(table.jss-outline-table td.readonly) {
+  cursor: default;
+  user-select: none;
 }
 
 .jss-page__sheet :global(.jss td.jss_rowgroup),

@@ -142,11 +142,15 @@ const OUTLINE_STOCK = [
   },
 ] as const;
 
+type OutlineGroupCell = { row: number; col: number; label: string };
+
 type OutlineSheet = {
   data: any[][];
   rows: Record<number, { group: number; state: boolean }>;
   mergeCells: Record<string, [number, number]>;
   style: Record<string, string>;
+  /** 行组标题所在列，用于放 ▼/▶（替代行号 +/-） */
+  groupCells: OutlineGroupCell[];
 };
 
 function buildOutlineSourceSheet(): OutlineSheet {
@@ -154,6 +158,7 @@ function buildOutlineSourceSheet(): OutlineSheet {
   const rows: Record<number, { group: number; state: boolean }> = {};
   const mergeCells: Record<string, [number, number]> = {};
   const style: Record<string, string> = {};
+  const groupCells: OutlineGroupCell[] = [];
   const groupBg = 'background-color: #ffe4c4';
   const zebraBg = 'background-color: #e8f4ff';
 
@@ -168,6 +173,7 @@ function buildOutlineSourceSheet(): OutlineSheet {
     rows[pkgStart] = { group: childSpan, state: pkg.expanded };
 
     data.push([pkg.name, '', '', '']);
+    groupCells.push({ row: pkgStart, col: 0, label: pkg.name });
     style[`A${pkgStart + 1}`] = groupBg;
     style[`B${pkgStart + 1}`] = groupBg;
     r += 1;
@@ -178,6 +184,7 @@ function buildOutlineSourceSheet(): OutlineSheet {
       rows[qStart] = { group: itemCount, state: q.expanded };
 
       data.push(['', q.name, '', '']);
+      groupCells.push({ row: qStart, col: 1, label: q.name });
       style[`A${qStart + 1}`] = groupBg;
       style[`B${qStart + 1}`] = groupBg;
       r += 1;
@@ -200,7 +207,17 @@ function buildOutlineSourceSheet(): OutlineSheet {
     }
   });
 
-  return { data, rows, mergeCells, style };
+  return { data, rows, mergeCells, style, groupCells };
+}
+
+/** 折叠维度单元格只读配置 */
+function buildOutlineReadonlyCells(groupCells: OutlineGroupCell[]) {
+  const cells: Record<string, { readOnly: boolean }> = {};
+  groupCells.forEach(({ row, col }) => {
+    const name = cellName(col, row);
+    if (name) cells[name] = { readOnly: true };
+  });
+  return cells;
 }
 
 function cellName(x: number, y: number) {
@@ -305,6 +322,10 @@ export default function JspreadsheetPage() {
 
   const orderData = useMemo(() => buildSeedRows(2000), []);
   const outlineSheet = useMemo(() => buildOutlineSourceSheet(), []);
+  const outlineReadonlyCells = useMemo(
+    () => buildOutlineReadonlyCells(outlineSheet.groupCells),
+    [outlineSheet],
+  );
   const pivotSourceData = useMemo(() => buildPivotSourceData(), []);
   const pivotSourceRowCount = pivotSourceData.length;
 
@@ -505,8 +526,9 @@ export default function JspreadsheetPage() {
         width: 170,
         group: 2,
         state: true,
+        readOnly: true,
       },
-      { type: 'text', title: 'Year Quarter', width: 140 },
+      { type: 'text', title: 'Year Quarter', width: 140, readOnly: true },
       {
         type: 'numeric',
         title: 'Stock Item Key',
@@ -515,6 +537,17 @@ export default function JspreadsheetPage() {
         state: true,
       },
       { type: 'text', title: 'Stock Item', width: 380 },
+    ],
+    [],
+  );
+
+  /** 多列折叠分组标题（与 columns.group 对应） */
+  const outlineNestedHeaders = useMemo(
+    () => [
+      [
+        { title: 'Package / Quarter', colspan: 2 },
+        { title: 'Stock Items', colspan: 2 },
+      ],
     ],
     [],
   );
@@ -570,21 +603,445 @@ export default function JspreadsheetPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // 透视源数据：禁用行号上的 +/- 折叠图标（仍可用工具栏展开/折叠行组）
+  // 透视源数据：去掉序列号 +/-；分组折叠统一 ▼/▶；可折叠属性只读；多列折叠
   useEffect(() => {
+    let disposed = false;
+    let painting = false;
+    let observer: MutationObserver | null = null;
+    let clickHandler: ((e: MouseEvent) => void) | null = null;
+    let boundRoot: HTMLElement | null = null;
+    let styleEl: HTMLStyleElement | null = null;
+
+    const FOLD_STYLE_ID = 'jss-outline-fold-override-v2';
+    const ensureFoldStyle = () => {
+      let el = document.getElementById(FOLD_STYLE_ID) as HTMLStyleElement | null;
+      if (!el) {
+        el = document.createElement('style');
+        el.id = FOLD_STYLE_ID;
+        document.head.appendChild(el);
+      }
+      styleEl = el;
+      el.textContent = `
+        .jss-outline-table td.jss_row > i,
+        .jss-outline-root td.jss_row > i,
+        .jss_container td.jss_row > i {
+          display: none !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+          font-size: 0 !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+        .jss-outline-root td.jss_header,
+        .jss-outline-table td.jss_header,
+        .jss_container td.jss_header {
+          position: relative !important;
+          padding-right: 18px !important;
+        }
+        /* 原始 material +/- 隐藏 */
+        .jss_container td.jss_header > i.jss-fold-tri,
+        .jss-outline-root td.jss_header > i.jss-fold-tri,
+        .jss-outline-table td.jss_header > i.jss-fold-tri {
+          opacity: 0 !important;
+          font-size: 0 !important;
+          width: 14px !important;
+          height: 14px !important;
+          overflow: hidden !important;
+          pointer-events: none !important;
+          color: transparent !important;
+        }
+        /* 可见的 ▼/▶ 徽章 */
+        .jss_container .jss-fold-badge,
+        .jss-outline-root .jss-fold-badge,
+        .jss-outline-table .jss-fold-badge {
+          position: absolute !important;
+          right: 4px !important;
+          top: 50% !important;
+          transform: translateY(-50%) !important;
+          z-index: 6 !important;
+          font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif !important;
+          font-size: 12px !important;
+          font-weight: 700 !important;
+          color: #555 !important;
+          cursor: pointer !important;
+          user-select: none !important;
+          line-height: 1 !important;
+          background: transparent !important;
+          border: none !important;
+        }
+        .jss-outline-root .jss-outline-toggle,
+        .jss-outline-table .jss-outline-toggle {
+          display: inline-block !important;
+          min-width: 1em;
+          margin-right: 6px;
+          font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif !important;
+          font-size: 12px !important;
+          font-weight: 700 !important;
+          color: #555 !important;
+          cursor: pointer !important;
+          user-select: none !important;
+          vertical-align: middle;
+        }
+      `;
+    };
+
+    const ensureColumnGroups = (ws: any) => {
+      if (!ws?.setColumnGroup || (ws as any).__outlineColGroupsBound) return;
+      const applyGroup = (col: number, size: number) => {
+        const existing = ws.cols?.[col]?.group;
+        if (existing) {
+          if (ws.cols[col].state) ws.openColumnGroup?.(col);
+          else ws.closeColumnGroup?.(col);
+          return;
+        }
+        ws.setColumnGroup(col, size, true);
+      };
+      try {
+        applyGroup(0, 2);
+        applyGroup(2, 2);
+        (ws as any).__outlineColGroupsBound = true;
+      } catch {
+        // ignore
+      }
+    };
+
+    /** 表头列组：隐藏 material +/-，叠一层可点的 ▼/▶ */
+    const restyleGroupIcons = (root: HTMLElement) => {
+      const scope =
+        (root.closest('.jss_container, .jss-page__sheet') as HTMLElement | null) || root;
+
+      scope.querySelectorAll<HTMLElement>('td.jss_header, th.jss_header, .jss_header').forEach((header) => {
+        if (header.classList.contains('jss_row')) return;
+
+        const icon = header.querySelector<HTMLElement>(
+          ':scope > i.material-icons, :scope > i.jss-fold-tri, i.material-icons, i.jss-fold-tri',
+        );
+        if (!icon) return;
+        if (icon.parentElement?.classList.contains('jss_row')) return;
+
+        const raw = (icon.textContent || '').trim();
+        // 列组折叠只用 add/remove（显示为 +/-）；其它 material 图标跳过
+        const isClosed = raw === 'add' || raw === '+' || raw === '▶' || raw === '▸';
+        const isOpen = raw === 'remove' || raw === '-' || raw === '−' || raw === '▼' || raw === '▾';
+        const known =
+          isClosed ||
+          isOpen ||
+          icon.classList.contains('jss-fold-tri') ||
+          icon.getAttribute('data-fold') === 'open' ||
+          icon.getAttribute('data-fold') === 'closed';
+        if (!known) return;
+        // 明确排除筛选图标
+        if (
+          raw === 'arrow_drop_down' ||
+          raw === 'filter_list' ||
+          raw === 'search' ||
+          header.classList.contains('jss_filters_icon')
+        ) {
+          return;
+        }
+
+        let open = true;
+        if (isClosed || icon.getAttribute('data-fold') === 'closed') open = false;
+        if (isOpen || icon.getAttribute('data-fold') === 'open') open = true;
+        // 若当前文本仍是 add/remove，以文本为准
+        if (isClosed) open = false;
+        if (isOpen) open = true;
+
+        const tri = open ? '▼' : '▶';
+
+        icon.classList.add('jss-fold-tri');
+        icon.setAttribute('data-fold', open ? 'open' : 'closed');
+        // 隐藏原始 +/-，保留节点供库绑定点击
+        icon.style.cssText =
+          'position:absolute!important;right:4px!important;top:50%!important;transform:translateY(-50%)!important;width:14px!important;height:14px!important;margin:0!important;padding:0!important;overflow:hidden!important;opacity:0!important;font-size:0!important;color:transparent!important;pointer-events:none!important;z-index:1!important;';
+
+        let badge = header.querySelector(':scope > .jss-fold-badge') as HTMLElement | null;
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'jss-fold-badge';
+          badge.contentEditable = 'false';
+          header.style.position = 'relative';
+          if (!header.style.paddingRight) header.style.paddingRight = '18px';
+          header.appendChild(badge);
+          badge.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          badge.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            // 恢复可点后触发原图标
+            icon.style.pointerEvents = 'auto';
+            icon.style.opacity = '0';
+            icon.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            window.setTimeout(() => restyleGroupIcons(scope), 0);
+            window.setTimeout(() => restyleGroupIcons(scope), 50);
+          });
+        }
+        if (badge.textContent !== tri) badge.textContent = tri;
+        badge.setAttribute('data-fold', open ? 'open' : 'closed');
+        badge.title = open ? '折叠列组' : '展开列组';
+        badge.style.cssText =
+          'position:absolute;right:4px;top:50%;transform:translateY(-50%);z-index:6;display:inline-block;font-family:Arial,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;font-weight:700;line-height:1;color:#555;cursor:pointer;user-select:none;background:transparent;border:none;padding:2px;margin:0;';
+      });
+
+      scope.querySelectorAll<HTMLElement>('td.jss_row > i').forEach((icon) => {
+        icon.style.display = 'none';
+        icon.style.pointerEvents = 'none';
+      });
+    };
+
+    const getCellEl = (ws: any, col: number, row: number): HTMLElement | undefined => {
+      return (
+        ws.getCellFromCoords?.(col, row) ||
+        ws.getCell?.(col, row) ||
+        ws.records?.[row]?.[col]?.element ||
+        undefined
+      );
+    };
+
+    const paint = (ws: any, root: HTMLElement) => {
+      if (disposed || painting) return;
+      painting = true;
+      try {
+        restyleGroupIcons(root);
+
+        outlineSheet.groupCells.forEach(({ row, col, label }) => {
+          const name = cellName(col, row);
+          try {
+            ws.setReadOnly?.(name, true);
+          } catch {
+            // ignore
+          }
+          const cell = getCellEl(ws, col, row);
+          if (!cell) return;
+          cell.classList.add('readonly', 'jss-outline-group-cell');
+          const expanded = !!ws.rows?.[row]?.state;
+          const icon = expanded ? '▼' : '▶';
+          const existing = cell.querySelector('.jss-outline-toggle') as HTMLElement | null;
+          if (existing) {
+            existing.textContent = icon;
+            const labelEl = cell.querySelector('.jss-outline-label');
+            if (labelEl) labelEl.textContent = label;
+            return;
+          }
+          cell.innerHTML = `<span class="jss-outline-toggle" data-row="${row}" contenteditable="false">${icon}</span><span class="jss-outline-label">${label}</span>`;
+        });
+      } finally {
+        painting = false;
+      }
+    };
+
     const bind = () => {
       const ws = getWorksheetByName(spreadsheet, '透视源数据');
       if (!ws) return false;
-      const table = ws.table || ws.element;
+      const table = (ws.table || ws.element) as HTMLElement | undefined;
       if (!table) return false;
+
+      // 根节点覆盖整表容器（表头可能与数据区分开）
+      const root =
+        (table.closest('.jss_container') as HTMLElement) ||
+        (ws.element as HTMLElement) ||
+        (table.closest('.jss_worksheet, .jss_content, .jss') as HTMLElement) ||
+        table;
+
+      ensureFoldStyle();
+      ensureColumnGroups(ws);
+      root.classList.add('jss-outline-root');
       table.classList.add('jss-outline-table');
+
+      if ((root as any).__outlineBound) {
+        paint(ws, root);
+        return true;
+      }
+      (root as any).__outlineBound = true;
+      boundRoot = root;
+
+      clickHandler = (e: MouseEvent) => {
+        const target = e.target as HTMLElement | null;
+
+        // 三角徽章自己处理列折叠
+        if (target?.closest?.('.jss-fold-badge')) {
+          requestAnimationFrame(() => paint(ws, root));
+          return;
+        }
+
+        const colToggle = target?.closest?.('i.jss-fold-tri, td.jss_header > i') as HTMLElement | null;
+        if (colToggle && root.contains(colToggle) && colToggle.closest('td.jss_header, .jss_header')) {
+          requestAnimationFrame(() => paint(ws, root));
+          return;
+        }
+
+        const toggle = target?.closest?.('.jss-outline-toggle') as HTMLElement | null;
+        if (!toggle || !root.contains(toggle)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const row = Number(toggle.dataset.row);
+        if (!Number.isFinite(row) || !ws.rows?.[row]?.group) return;
+        if (ws.rows[row].state) ws.closeRowGroup(row);
+        else ws.openRowGroup(row);
+        requestAnimationFrame(() => paint(ws, root));
+      };
+      root.addEventListener('click', clickHandler, true);
+
+      // 切到「透视源数据」页签时再刷一次
+      const onTab = () => {
+        window.setTimeout(() => paint(ws, root), 0);
+        window.setTimeout(() => paint(ws, root), 100);
+      };
+      root.querySelectorAll('.jtabs-container, .jss_tabs, [class*="jtabs"]').forEach((el) => {
+        el.addEventListener('click', onTab);
+      });
+      document.querySelector('.jss-page__sheet')?.addEventListener('click', onTab);
+
+      observer = new MutationObserver(() => {
+        requestAnimationFrame(() => paint(ws, root));
+      });
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+
+      paint(ws, root);
+      // 首次进入可能表头稍后才渲染
+      window.setTimeout(() => paint(ws, root), 100);
+      window.setTimeout(() => paint(ws, root), 400);
       return true;
     };
-    if (bind()) return undefined;
+
+    if (bind()) {
+      return () => {
+        disposed = true;
+        observer?.disconnect();
+        if (boundRoot && clickHandler) {
+          boundRoot.removeEventListener('click', clickHandler, true);
+          delete (boundRoot as any).__outlineBound;
+        }
+      };
+    }
+
     const timer = window.setInterval(() => {
       if (bind()) window.clearInterval(timer);
     }, 50);
-    return () => window.clearInterval(timer);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      observer?.disconnect();
+      if (boundRoot && clickHandler) {
+        boundRoot.removeEventListener('click', clickHandler, true);
+        delete (boundRoot as any).__outlineBound;
+      }
+    };
+  }, [outlineSheet]);
+
+  // 全表：表头列组折叠 add/remove(+/-) → data-fold，由 CSS 画 ▼/▶
+  useEffect(() => {
+    let disposed = false;
+    let root: HTMLElement | null = null;
+    let observer: MutationObserver | null = null;
+    let timer: number | undefined;
+    let poll: number | undefined;
+
+    const markHeaderFoldIcons = (container: HTMLElement) => {
+      container.querySelectorAll<HTMLElement>('.jss_header > i, td.jss_header > i').forEach((icon) => {
+        const parent = icon.parentElement;
+        if (!parent) return;
+        if (parent.classList.contains('jss_filters_icon')) return;
+        if (parent.classList.contains('jss_row')) return;
+
+        const raw = (icon.textContent || '').trim();
+        // 已标记过且库未改回 add/remove，保持
+        const prev = icon.getAttribute('data-fold');
+        let next: 'open' | 'closed' | null = null;
+        if (
+          raw === 'add' ||
+          raw === '+' ||
+          raw === '▶' ||
+          raw === '▸' ||
+          raw === 'keyboard_arrow_right' ||
+          raw === 'arrow-up' ||
+          raw === 'expand'
+        ) {
+          next = 'closed';
+        } else if (
+          raw === 'remove' ||
+          raw === '-' ||
+          raw === '−' ||
+          raw === '▼' ||
+          raw === '▾' ||
+          raw === 'keyboard_arrow_down' ||
+          raw === 'arrow-down' ||
+          raw === 'collapse'
+        ) {
+          next = 'open';
+        } else if (prev === 'open' || prev === 'closed') {
+          // 库可能清空了文本，保留原状态
+          return;
+        } else {
+          return;
+        }
+
+        icon.textContent = next === 'closed' ? '▶' : '▼';
+        icon.classList.remove('material-icons');
+        icon.classList.add('jss-col-fold-toggle', 'jss-fold-tri');
+        if (prev !== next) icon.setAttribute('data-fold', next);
+        icon.style.cssText =
+          'font-family:Arial,"PingFang SC","Microsoft YaHei",sans-serif!important;font-size:12px!important;font-weight:700!important;font-style:normal!important;color:#555!important;line-height:1!important;display:inline-block!important;cursor:pointer!important;position:absolute!important;right:4px!important;top:50%!important;transform:translateY(-50%)!important;z-index:5!important;';
+      });
+    };
+
+    const bind = () => {
+      const sheetRoot = document.querySelector('.jss-page__sheet') as HTMLElement | null;
+      if (!sheetRoot) return false;
+      const list = getWorksheetList(spreadsheet);
+      root =
+        (list[0]?.parent?.element as HTMLElement | undefined) ||
+        (sheetRoot.querySelector('.jss_container') as HTMLElement | null) ||
+        sheetRoot;
+
+      markHeaderFoldIcons(root);
+
+      if ((root as any).__colFoldIconBound) return true;
+      (root as any).__colFoldIconBound = true;
+
+      observer = new MutationObserver(() => {
+        if (disposed || !root) return;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => root && markHeaderFoldIcons(root), 0);
+      });
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+
+      poll = window.setInterval(() => {
+        if (!disposed && root) markHeaderFoldIcons(root);
+      }, 400);
+
+      return true;
+    };
+
+    if (!bind()) {
+      const boot = window.setInterval(() => {
+        if (bind()) window.clearInterval(boot);
+      }, 50);
+      return () => {
+        disposed = true;
+        window.clearInterval(boot);
+        window.clearInterval(poll);
+        window.clearTimeout(timer);
+        observer?.disconnect();
+        if (root) delete (root as any).__colFoldIconBound;
+      };
+    }
+
+    return () => {
+      disposed = true;
+      window.clearInterval(poll);
+      window.clearTimeout(timer);
+      observer?.disconnect();
+      if (root) delete (root as any).__colFoldIconBound;
+    };
   }, []);
 
   const stringifyValue = useCallback((value: any): string => {
@@ -895,8 +1352,8 @@ export default function JspreadsheetPage() {
       <p className="jss-page__hint">
         「订单明细已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
         下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 / 大数据虚拟滚动 /
-        列宽拖动 / 自适应列宽。「透视源数据」按参考图做了 Selling Package → Year Quarter
-        二级行折叠与列折叠；「透视分析」读「透视底表」。
+        列宽拖动 / 自适应列宽。「透视源数据」：行折叠（维度列 ▼/▶，只读）+ 多列折叠
+        （Package/Quarter、Stock Items 表头三角）；「透视分析」读「透视底表」。
       </p>
 
       <input
@@ -969,14 +1426,21 @@ export default function JspreadsheetPage() {
               worksheetName="透视源数据"
               data={outlineSheet.data}
               columns={outlineColumns}
+              nestedHeaders={outlineNestedHeaders}
               rows={outlineSheet.rows}
               mergeCells={outlineSheet.mergeCells}
               style={outlineSheet.style}
+              cells={outlineReadonlyCells}
               filters={true}
               columnResize={true}
               tableOverflow={true}
               tableWidth="100%"
               tableHeight="560px"
+              oneditionstart={(_ws: any, _cell: any, x: any) => {
+                const col = Number(x);
+                if (col === 0 || col === 1) return false;
+                return true;
+              }}
             />
             <Worksheet
               worksheetName="透视底表"
