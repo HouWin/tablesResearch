@@ -32,7 +32,17 @@ export default defineConfig({
     {
       name: 'UniverTable',
       path: '/univerTable',
-      component: './UniverTable',
+      routes: [
+        {
+          path: '/univerTable',
+          redirect: '/univerTable/demo',
+        },
+        {
+          name: '表格示例',
+          path: '/univerTable/demo',
+          component: './UniverTable',
+        },
+      ],
     },
     {
       name: 'Vtable',
@@ -56,7 +66,7 @@ export default defineConfig({
           name: '大数据示例',
           path: '/handsontable/big-data',
           component: './Handsontable/BigDataExample',
-        }
+        },
       ],
     },
     {
