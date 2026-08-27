@@ -13,7 +13,11 @@
 
 # misc
 .DS_Store
+
+# turbopack缓存
 .turbopack/
+.turbo/
+.next/
 
 # umi
 /src/.umi

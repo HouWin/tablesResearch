@@ -46,6 +46,18 @@ const setRowsCollapsed = (
   }
 };
 
+export interface ETableTreeCollapseApi {
+  dispose: () => void;
+  expandAll: () => void;
+  collapseAll: () => void;
+  /** 下钻：展开当前数据行对应的行组 */
+  drillDown: (dataRow?: number) => boolean;
+  /** 上钻：折叠覆盖当前数据行的行组 */
+  drillUp: (dataRow?: number) => boolean;
+  /** 面包屑：当前行所属分组路径 */
+  getBreadcrumb: (dataRow: number) => string[];
+}
+
 /**
  * 树形 UI：用隐藏行实现折叠，折叠箭头只在单元格内（▶/▼），不使用左侧大纲栏。
  */
@@ -55,9 +67,16 @@ export const setupTreeCellCollapse = (
   rowGroups: ETableRowGroup[],
   toggles: ETableTreeToggleBinding[],
   dataStartRow: number,
-): (() => void) => {
+): ETableTreeCollapseApi => {
   if (!univerAPI || !worksheet || !toggles.length) {
-    return () => {};
+    return {
+      dispose: () => {},
+      expandAll: () => {},
+      collapseAll: () => {},
+      drillDown: () => false,
+      drillUp: () => false,
+      getBreadcrumb: () => [],
+    };
   }
 
   const groupMap = new Map(
@@ -67,15 +86,6 @@ export const setupTreeCellCollapse = (
   const collapsedState = new Map(
     toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
   );
-
-  // 初始化默认折叠
-  toggles.forEach((toggle) => {
-    const group = groupMap.get(toggle.groupId);
-    if (!group || !toggle.collapsed) {
-      return;
-    }
-    setRowsCollapsed(worksheet, dataStartRow, group, true);
-  });
 
   const writeLabel = (toggle: ETableTreeToggleBinding, collapsed: boolean) => {
     const text = collapsed ? toggle.collapsedText : toggle.expandedText;
@@ -89,19 +99,36 @@ export const setupTreeCellCollapse = (
     }
   };
 
-  const toggleGroup = (groupId: string) => {
+  const applyCollapsed = (groupId: string, collapsed: boolean) => {
     const toggle = toggles.find((item) => item.groupId === groupId);
     const group = groupMap.get(groupId);
     if (!toggle || !group) {
       return;
     }
+    collapsedState.set(groupId, collapsed);
+    setRowsCollapsed(worksheet, dataStartRow, group, collapsed);
+    writeLabel(toggle, collapsed);
+  };
+
+  // 初始化默认折叠
+  toggles.forEach((toggle) => {
+    const group = groupMap.get(toggle.groupId);
+    if (!group || !toggle.collapsed) {
+      return;
+    }
+    setRowsCollapsed(worksheet, dataStartRow, group, true);
+  });
+
+  const toggleGroup = (groupId: string) => {
     const next = !collapsedState.get(groupId);
-    collapsedState.set(groupId, next);
-    setRowsCollapsed(worksheet, dataStartRow, group, next);
-    writeLabel(toggle, next);
+    applyCollapsed(groupId, next);
 
     // 展开父组后，重新应用内部仍折叠的子组
     if (!next) {
+      const group = groupMap.get(groupId);
+      if (!group) {
+        return;
+      }
       const groupStart = group.startRow;
       const groupEnd = group.startRow + group.count;
       toggles.forEach((item) => {
@@ -117,6 +144,102 @@ export const setupTreeCellCollapse = (
         }
       });
     }
+  };
+
+  const expandAll = () => {
+    // 先展开外层，再按初始状态收起 Region 等仍标记 collapsed 的组
+    toggles.forEach((toggle) => applyCollapsed(toggle.groupId, false));
+  };
+
+  const collapseAll = () => {
+    toggles.forEach((toggle) => applyCollapsed(toggle.groupId, true));
+  };
+
+  const groupsCovering = (dataRow: number) =>
+    toggles
+      .map((toggle) => {
+        const group = groupMap.get(toggle.groupId);
+        if (!group) {
+          return null;
+        }
+        const start = group.startRow;
+        const end = group.startRow + group.count;
+        // 父行本身（toggle.row）或子行区间
+        if (toggle.row === dataRow || (dataRow >= start && dataRow < end)) {
+          return { toggle, group, span: group.count };
+        }
+        return null;
+      })
+      .filter(Boolean) as Array<{
+      toggle: ETableTreeToggleBinding;
+      group: ETableRowGroup;
+      span: number;
+    }>;
+
+  const getActiveDataRow = (): number | null => {
+    try {
+      const selection = worksheet.getSelection?.();
+      const range = selection?.getActiveRange?.() || selection?.getRange?.();
+      const sheetRow = range?.getRow?.();
+      if (typeof sheetRow !== 'number') {
+        return null;
+      }
+      const dataRow = sheetRow - dataStartRow;
+      return dataRow >= 0 ? dataRow : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const drillDown = (dataRow?: number) => {
+    const row = typeof dataRow === 'number' ? dataRow : getActiveDataRow();
+    if (row === null || row < 0) {
+      return false;
+    }
+    // 优先展开当前行上的 toggle，其次展开覆盖该行且仍折叠的最内层组
+    const onRow = toggles.find((item) => item.row === row);
+    if (onRow && collapsedState.get(onRow.groupId)) {
+      applyCollapsed(onRow.groupId, false);
+      return true;
+    }
+    const covering = groupsCovering(row)
+      .filter((item) => collapsedState.get(item.toggle.groupId))
+      .sort((a, b) => a.span - b.span);
+    if (!covering.length) {
+      return false;
+    }
+    applyCollapsed(covering[0].toggle.groupId, false);
+    return true;
+  };
+
+  const drillUp = (dataRow?: number) => {
+    const row = typeof dataRow === 'number' ? dataRow : getActiveDataRow();
+    if (row === null || row < 0) {
+      return false;
+    }
+    const covering = groupsCovering(row)
+      .filter((item) => !collapsedState.get(item.toggle.groupId))
+      .sort((a, b) => a.span - b.span);
+    if (!covering.length) {
+      // 当前行自身有 toggle 且已展开时折叠它
+      const onRow = toggles.find((item) => item.row === row);
+      if (onRow && !collapsedState.get(onRow.groupId)) {
+        applyCollapsed(onRow.groupId, true);
+        return true;
+      }
+      return false;
+    }
+    applyCollapsed(covering[0].toggle.groupId, true);
+    return true;
+  };
+
+  const getBreadcrumb = (dataRow: number) => {
+    return groupsCovering(dataRow)
+      .sort((a, b) => b.span - a.span)
+      .map((item) => {
+        const text = item.toggle.expandedText || item.toggle.collapsedText || item.toggle.groupId;
+        return text.replace(/^[▼▶]\s*/, '').trim();
+      });
   };
 
   let disposable: { dispose?: () => void } | null = null;
@@ -143,11 +266,18 @@ export const setupTreeCellCollapse = (
     console.warn('[ETable] bind tree cell collapse failed', error);
   }
 
-  return () => {
-    try {
-      disposable?.dispose?.();
-    } catch {
-      // ignore
-    }
+  return {
+    dispose: () => {
+      try {
+        disposable?.dispose?.();
+      } catch {
+        // ignore
+      }
+    },
+    expandAll,
+    collapseAll,
+    drillDown,
+    drillUp,
+    getBreadcrumb,
   };
 };

@@ -16,6 +16,42 @@ import type { ETableColumn, ETableMerge, ETableRow } from './types';
 type UniverWorksheet = any;
 
 /**
+ * Univer 默认工作表仅 1000 行 × 20 列。
+ * 写入大数据前先扩容，避免 Range is out of bounds。
+ */
+export const ensureSheetCapacity = (
+  worksheet: UniverWorksheet,
+  rowCount: number,
+  columnCount: number,
+) => {
+  if (!worksheet) {
+    return;
+  }
+  const needRows = Math.max(1, Math.ceil(rowCount));
+  const needCols = Math.max(1, Math.ceil(columnCount));
+  try {
+    const maxRows = typeof worksheet.getMaxRows === 'function'
+      ? worksheet.getMaxRows()
+      : 1000;
+    if (needRows > maxRows) {
+      worksheet.setRowCount(needRows);
+    }
+  } catch (error) {
+    console.warn('[ETable] setRowCount failed', error);
+  }
+  try {
+    const maxCols = typeof worksheet.getMaxColumns === 'function'
+      ? worksheet.getMaxColumns()
+      : 20;
+    if (needCols > maxCols) {
+      worksheet.setColumnCount(needCols);
+    }
+  } catch (error) {
+    console.warn('[ETable] setColumnCount failed', error);
+  }
+};
+
+/**
  * =========================================================
  * 表头
  * =========================================================

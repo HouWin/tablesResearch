@@ -1,3 +1,4 @@
+import path from 'path';
 import { defineConfig } from '@umijs/max';
 
 export default defineConfig({
@@ -74,7 +75,50 @@ export default defineConfig({
       path: '/jspreadsheet',
       component: './Jspreadsheet',
     },
+    {
+      name: 'SpreadJS Demo',
+      path: '/spreadjs-demo',
+      component: './SpreadJSDemo',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},
+  alias: {
+    '@univerjs/preset-sheets-data-validation': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/preset-sheets-data-validation',
+    ),
+    '@univerjs/preset-sheets-find-replace': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/preset-sheets-find-replace',
+    ),
+    '@univerjs/find-replace/locale/zh-CN': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/find-replace/lib/es/locale/zh-CN.js',
+    ),
+    '@univerjs/data-validation/locale/zh-CN': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/data-validation/lib/es/locale/zh-CN.js',
+    ),
+    '@univerjs/sheets-data-validation/locale/zh-CN': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/sheets-data-validation/lib/es/locale/zh-CN.js',
+    ),
+    '@univerjs/sheets-data-validation-ui/locale/zh-CN': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/sheets-data-validation-ui/lib/es/locale/zh-CN.js',
+    ),
+    '@univerjs/sheets-find-replace': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/sheets-find-replace',
+    ),
+    '@univerjs/sheets-find-replace/lib/facade': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/sheets-find-replace/lib/es/facade.js',
+    ),
+    '@univerjs/sheets-data-validation/lib/facade': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/sheets-data-validation/lib/es/facade.js',
+    ),
+  },
 });

@@ -23,6 +23,25 @@
   line-height: 1.5;
 }
 
+.jss-page__outline-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 4px 0 2px;
+}
+
+.jss-page__outline-tools-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.jss-page__outline-tools-meta {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .jss-page__body {
   display: grid;
   grid-template-columns: 1fr 300px;
@@ -38,6 +57,22 @@
   overflow: visible;
   border: 1px solid #e8e8e8;
   background: #fff;
+  position: relative;
+}
+
+.jss-page__sheet-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(1px);
+}
+
+.jss-page__sheet.is-loading {
+  pointer-events: none;
 }
 
 .jss-page__sheet :global(.jss_container) {
@@ -150,7 +185,7 @@
 }
 
 
-/* 透视源数据：序列号去掉 +/-；折叠改到维度列三角 */
+/* 透视源数据：序列号去掉 +/-；Category 树形折叠三角 + 缩进加粗 */
 .jss-page__sheet :global(table.jss-outline-table td.jss_row > i),
 .jss-page__sheet :global(table.jss-outline-table .jss_row > i.material-icons) {
   display: none !important;
@@ -164,12 +199,6 @@
   font-size: 0 !important;
 }
 
-/* 有列组时表头留出三角位置 */
-.jss-page__sheet :global(table.jss-outline-table td.jss_header) {
-  position: relative;
-  padding-right: 18px;
-}
-
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-toggle) {
   display: inline-block;
   width: 1.1em;
@@ -180,16 +209,44 @@
   cursor: pointer;
   user-select: none;
   vertical-align: middle;
+  font-weight: 700;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-toggle.is-static) {
+  cursor: default;
 }
 
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-label) {
   vertical-align: middle;
+  font-weight: 700;
+  color: #222;
 }
 
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-group-cell),
 .jss-page__sheet :global(table.jss-outline-table td.readonly) {
   cursor: default;
   user-select: none;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-category-col) {
+  text-align: left !important;
+  background-color: #e8f1f8 !important;
+  font-weight: 700 !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-region-col) {
+  text-align: left !important;
+  font-weight: 700 !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-region-col .jss-outline-toggle) {
+  margin-right: 5px;
+  color: #555;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-region-col .jss-outline-label) {
+  font-weight: 700;
+  color: #222;
 }
 
 .jss-page__sheet :global(.jss td.jss_rowgroup),

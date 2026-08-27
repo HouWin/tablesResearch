@@ -21,16 +21,30 @@ export const TREE_COLLAPSE_ICON = '▶';
  * 优先 measureGroups（多级表头：Region → Sales/Profit），否则用扁平 measures。
  */
 export const buildTreeColumns = (config: ETableTreeConfig) => {
+  const lockDims = Boolean(config.treeUI);
   const columns: Array<{
     id: string;
     title: string;
     width?: number;
-    children?: Array<{ id: string; title: string; width?: number }>;
+    editable?: boolean;
+    type?: 'text' | 'number' | 'date' | 'select';
+    options?: string[];
+    numberFormat?: string;
+    children?: Array<{
+      id: string;
+      title: string;
+      width?: number;
+      editable?: boolean;
+      type?: 'text' | 'number' | 'date' | 'select';
+      options?: string[];
+      numberFormat?: string;
+    }>;
   }> = [
     ...config.dimensions.map((item) => ({
       id: item.field,
       title: item.title,
       width: item.width,
+      editable: lockDims ? false : undefined,
     })),
   ];
   if (config.attribute) {
@@ -38,6 +52,7 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
       id: config.attribute.field,
       title: config.attribute.title,
       width: config.attribute.width,
+      editable: lockDims ? false : undefined,
     });
   }
   if (config.measureGroups?.length) {
@@ -49,6 +64,9 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
           id: item.field,
           title: item.title,
           width: item.width,
+          type: item.type,
+          options: item.options,
+          numberFormat: item.numberFormat,
         })),
       });
     });
@@ -59,6 +77,9 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
       id: item.field,
       title: item.title,
       width: item.width,
+      type: item.type,
+      options: item.options,
+      numberFormat: item.numberFormat,
     })),
   );
   return columns;
@@ -157,6 +178,15 @@ const styleMeasureCell = (
     return value;
   }
   if (typeof value === 'object') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (value < 0) {
+      return {
+        value,
+        style: { cl: { rgb: '#CF1322' } },
+      };
+    }
     return value;
   }
   const text = String(value);

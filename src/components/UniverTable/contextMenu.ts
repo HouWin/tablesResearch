@@ -52,6 +52,16 @@ export interface ETableContextMenuContext {
   ) => Promise<any>;
   // 附件变化回调
   onAttachmentsChange?: (cell: string, files: any[]) => void;
+  // 查看单元格历史
+  onViewCellHistory?: (cell: string) => void;
+  // 数据追踪
+  onViewDataTrace?: (cell: string) => void;
+  // 下钻
+  onDrillDown?: () => void;
+  // 上钻
+  onDrillUp?: () => void;
+  // 快速搜索
+  onQuickSearch?: () => void;
 }
 
 export interface ETableContextMenuItem {
@@ -149,6 +159,9 @@ export const NATIVE_CONTEXT_MENU_HIDE_CONFIG: Record<string, { hidden: true }> =
   'sheets.command.insert-note': { hidden: true },
   'sheets.command.delete-note': { hidden: true },
   'sheets.command.toggle-note': { hidden: true },
+  'data-validation.operation.open-data-validation-panel': { hidden: true },
+  'data-validation.command.add-rule': { hidden: true },
+  'sheet.command.add-data-validation': { hidden: true },
 };
 
 /**
@@ -572,6 +585,48 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
       return getCellAttachments(range).length === 0;
     },
   },
+  { type: 'separator' },
+  {
+    id: 'etable-cell-history',
+    title: '查看单元格历史',
+    icon: 'CellHistoryIcon',
+    action: ({ cell, onViewCellHistory }) => {
+      onViewCellHistory?.(cell);
+    },
+  },
+  {
+    id: 'etable-data-trace',
+    title: '数据追踪',
+    icon: 'DataTraceIcon',
+    action: ({ cell, onViewDataTrace }) => {
+      onViewDataTrace?.(cell);
+    },
+  },
+  { type: 'separator' },
+  {
+    id: 'etable-drill-down',
+    title: '下钻（展开行组）',
+    icon: 'DrillDownIcon',
+    action: ({ onDrillDown }) => {
+      onDrillDown?.();
+    },
+  },
+  {
+    id: 'etable-drill-up',
+    title: '上钻（折叠行组）',
+    icon: 'DrillUpIcon',
+    action: ({ onDrillUp }) => {
+      onDrillUp?.();
+    },
+  },
+  {
+    id: 'etable-quick-search',
+    title: '快速搜索',
+    icon: 'QuickSearchIcon',
+    action: ({ onQuickSearch }) => {
+      onQuickSearch?.();
+    },
+  },
 ];
 
 /**
@@ -672,6 +727,11 @@ const createMenuContext = (
   extras?: {
     onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
     onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+    onViewCellHistory?: ETableContextMenuContext['onViewCellHistory'];
+    onViewDataTrace?: ETableContextMenuContext['onViewDataTrace'];
+    onDrillDown?: ETableContextMenuContext['onDrillDown'];
+    onDrillUp?: ETableContextMenuContext['onDrillUp'];
+    onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
   },
 ): ETableContextMenuContext => {
   const current = getCurrentSelection(univerAPI, worksheet);
@@ -685,6 +745,11 @@ const createMenuContext = (
     cell: current.cell,
     onUploadAttachment: extras?.onUploadAttachment,
     onAttachmentsChange: extras?.onAttachmentsChange,
+    onViewCellHistory: extras?.onViewCellHistory,
+    onViewDataTrace: extras?.onViewDataTrace,
+    onDrillDown: extras?.onDrillDown,
+    onDrillUp: extras?.onDrillUp,
+    onQuickSearch: extras?.onQuickSearch,
   };
 };
 
@@ -718,6 +783,11 @@ const registerMenu = (
   extras?: {
     onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
     onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+    onViewCellHistory?: ETableContextMenuContext['onViewCellHistory'];
+    onViewDataTrace?: ETableContextMenuContext['onViewDataTrace'];
+    onDrillDown?: ETableContextMenuContext['onDrillDown'];
+    onDrillUp?: ETableContextMenuContext['onDrillUp'];
+    onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
   },
 ) => {
   const menu = univerAPI.createMenu({
@@ -763,6 +833,11 @@ const registerSubmenu = (
   extras?: {
     onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
     onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+    onViewCellHistory?: ETableContextMenuContext['onViewCellHistory'];
+    onViewDataTrace?: ETableContextMenuContext['onViewDataTrace'];
+    onDrillDown?: ETableContextMenuContext['onDrillDown'];
+    onDrillUp?: ETableContextMenuContext['onDrillUp'];
+    onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
   },
 ) => {
   const root = univerAPI.createSubmenu({ id: submenu.id, title: submenu.title });
@@ -828,6 +903,11 @@ export const customizeContextMenu = (
   extras?: {
     onUploadAttachment?: ETableContextMenuContext['onUploadAttachment'];
     onAttachmentsChange?: ETableContextMenuContext['onAttachmentsChange'];
+    onViewCellHistory?: ETableContextMenuContext['onViewCellHistory'];
+    onViewDataTrace?: ETableContextMenuContext['onViewDataTrace'];
+    onDrillDown?: ETableContextMenuContext['onDrillDown'];
+    onDrillUp?: ETableContextMenuContext['onDrillUp'];
+    onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
   },
 ) => {
   if (!univerAPI || !worksheet || !Array.isArray(items) || !items.length) {
