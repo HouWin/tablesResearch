@@ -208,9 +208,16 @@ export const renderData = (worksheet: UniverWorksheet, rows: ETableRow[] = [], l
   const values = rows.map((row) => {
     return leafColumns.map((column) => {
       const cell = row.data?.[column.id];
-      // 兼容对象类型数据
+      // 兼容带样式的单元格对象
       if (cell !== null && typeof cell === 'object') {
-        return ((cell as any).value ?? null);
+        const styledCell = cell as { value?: unknown; style?: unknown };
+        if (styledCell.style) {
+          return {
+            v: styledCell.value ?? null,
+            s: styledCell.style,
+          };
+        }
+        return styledCell.value ?? null;
       }
       // undefined 统一转换成 null。
       return cell ?? null;

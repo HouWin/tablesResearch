@@ -261,6 +261,11 @@ export interface ETableTreeNode {
    * 例如 { region: 'East' }，会写入对应维度列并参与纵向合并。
    */
   data?: Record<string, ETablePrimitive>;
+  /**
+   * 当前节点行上的指标/字段值（父行汇总、叶子明细均可）。
+   * 若包含 attribute.field，会写入 Region 列。
+   */
+  values?: Record<string, ETablePrimitive | ETableCell>;
   /** 子节点 */
   children?: ETableTreeNode[];
   /** 属性列表（仅叶子节点使用） */
@@ -293,10 +298,22 @@ export interface ETableTreeColumnGroup {
 export interface ETableTreeConfig {
   /** 维度列（不含属性列） */
   dimensions: Array<{ field: string; title: string; width?: number }>;
-  /** 属性列 */
-  attribute: { field: string; title: string; width?: number };
-  /** 指标列 */
-  measures: Array<{ field: string; title: string; width?: number }>;
+  /** 属性列（可选；行内属性展开。与 measureGroups 列维度互斥场景下不要混用） */
+  attribute?: { field: string; title: string; width?: number };
+  /** 指标列（扁平；若配置了 measureGroups 则忽略） */
+  measures?: Array<{ field: string; title: string; width?: number }>;
+  /**
+   * 指标列分组（列维度，如 Region）。
+   * 与行树 Category 完全独立：行折叠不影响列，列折叠不影响行。
+   * 例：East / Central / West 各组下挂 Sales、Profit。
+   */
+  measureGroups?: Array<{
+    id: string;
+    title: string;
+    /** 是否默认折叠该列组 */
+    collapsed?: boolean;
+    measures: Array<{ field: string; title: string; width?: number }>;
+  }>;
   /**
    * 树节点 label 写入方式：
    * - 'single'：所有层级写入 dimensions[0]（同列树，如 Category 下的 Furniture / Bookcases）
@@ -304,13 +321,31 @@ export interface ETableTreeConfig {
    * @default 'single'
    */
   labelMode?: 'single' | 'depth';
+  /**
+   * 树形 UI：
+   * 同列缩进 + 单元格内 ▶/▼，点击单元格折叠行，不使用左侧大纲栏。
+   */
+  treeUI?: boolean;
   /** 属性明细是否默认折叠（仅当属性带 children 时生效） */
   collapseAttributes?: boolean;
   /**
    * 列分组（列折叠）。
-   * 用 field 声明，例如把两个 Region 列、Sales+Profit 分成可折叠列组。
+   * 用 field 声明；若已配置 measureGroups，会自动生成，无需再传。
    */
   columnGroups?: ETableTreeColumnGroup[];
+}
+
+/**
+ * 树形单元格内折叠绑定（treeUI）。
+ */
+export interface ETableTreeToggleBinding {
+  groupId: string;
+  /** 相对于数据区域的行 */
+  row: number;
+  column: number;
+  collapsed: boolean;
+  expandedText: string;
+  collapsedText: string;
 }
 
 /**
@@ -322,6 +357,45 @@ export interface ETableFlattenResult {
   rowGroups: ETableRowGroup[];
   columnGroups: ETableColumnGroup[];
   merges: ETableMerge[];
+  treeToggles?: ETableTreeToggleBinding[];
+}
+
+/**
+ * 多重分组维度列。
+ */
+export interface ETableGroupDimension {
+  field: string;
+  title: string;
+  width?: number;
+}
+
+/**
+ * 多重分组明细/指标列。
+ */
+export interface ETableGroupMeasure {
+  field: string;
+  title: string;
+  width?: number;
+}
+
+/**
+ * 平铺数据多重分组配置。
+ *
+ * dimensions 从左到右表示分组层级（如 Selling Package → Year Quarter）；
+ * measures 为展开后显示的明细列。
+ */
+export interface ETableGroupConfig {
+  dimensions: ETableGroupDimension[];
+  measures: ETableGroupMeasure[];
+  /** 维度列背景色，如 #FFE0B2 */
+  dimensionStyle?: { bg?: string };
+  /** 未在 collapsedPaths 中匹配时的默认折叠状态 */
+  defaultCollapsed?: boolean;
+  /**
+   * 指定默认折叠的分组路径。
+   * 例如 [{ sellingPackage: 'Each', yearQuarter: '2013Q1' }]
+   */
+  collapsedPaths?: Array<Partial<Record<string, ETablePrimitive>>>;
 }
 
 /**
@@ -346,6 +420,10 @@ export interface ETableProps {
   treeData?: ETableTreeNode[];
   /** 树形展平配置（配合 treeData 使用） */
   treeConfig?: ETableTreeConfig;
+  /** 平铺数据（配合 groupConfig 做多重分组） */
+  groupData?: Array<Record<string, ETablePrimitive>>;
+  /** 多重分组配置（配合 groupData 使用） */
+  groupConfig?: ETableGroupConfig;
   /** 初始化批注 */
   comments?: ETableComment[];
   /** 初始化单元格附件 */

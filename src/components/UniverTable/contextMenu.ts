@@ -7,6 +7,9 @@ import {
 } from './attachment';
 import { message } from 'antd';
 import { of } from 'rxjs';
+import { ICommandService } from '@univerjs/core';
+import { AddCommentCommand } from '@univerjs/thread-comment';
+import { SetActiveCommentOperation } from '@univerjs/thread-comment-ui';
 import { IMenuManagerService } from '@univerjs/ui';
 import { SheetsThreadCommentPopupService } from '@univerjs/sheets-thread-comment-ui';
 
@@ -123,8 +126,18 @@ export const NATIVE_CONTEXT_MENU_HIDE_CONFIG: Record<string, { hidden: true }> =
   'sheet.command.set-selection-frozen': { hidden: true },
   'sheet.command.set-row-frozen': { hidden: true },
   'sheet.command.set-col-frozen': { hidden: true },
+  'sheet.command.set-first-row-frozen': { hidden: true },
+  'sheet.command.set-first-column-frozen': { hidden: true },
+  'sheet.command.cancel-frozen': { hidden: true },
+  'sheet.menu.copy-special': { hidden: true },
+  'sheet.menu.sheet-frozen': { hidden: true },
+  'sheet.column-header-menu.sheet-frozen': { hidden: true },
+  'sheet.row-header-menu.sheet-frozen': { hidden: true },
+  'sheet.operation.screenshot': { hidden: true },
   'sheet.menu.clear-selection': { hidden: true },
   'sheet.menu.paste-special': { hidden: true },
+  'sheet.menu.cell-insert': { hidden: true },
+  'sheet.menu.delete': { hidden: true },
   'sheet.contextMenu.permission': { hidden: true },
   'sheet.contextMenu.text-to-number': { hidden: true },
   'sheet.command.add-range-protection-from-context-menu': { hidden: true },
@@ -287,6 +300,98 @@ const pasteSelection = async (context: ETableContextMenuContext) => {
   }
 };
 
+/** 右键后短暂抑制 hover 临时批注弹层（ms） */
+const COMMENT_POPUP_SUPPRESS_MS = 600;
+
+const getUniverInjector = (univerAPI: any) =>
+  univerAPI?.__getInjector?.() ||
+  univerAPI?.getGlobalContext?.()?.injector ||
+  univerAPI?._injector;
+
+/**
+ * 修复：有批注单元格首次右键时，hover 临时弹层与 clickOutside 抢占，导致菜单不出现。
+ *
+ * 1. 右键 capture 阶段先关闭批注弹层
+ * 2. 抑制 debounce hover 触发的 temp 弹层
+ */
+export const setupCommentContextMenuGuard = (
+  univerAPI: any,
+  container: HTMLElement,
+): (() => void) => {
+  const injector = getUniverInjector(univerAPI);
+  if (!injector || !container) {
+    return () => {};
+  }
+
+  let popupService: SheetsThreadCommentPopupService;
+  let commandService: ICommandService;
+  try {
+    popupService = injector.get(SheetsThreadCommentPopupService);
+    commandService = injector.get(ICommandService);
+  } catch {
+    return () => {};
+  }
+
+  let suppressHoverPopupUntil = 0;
+
+  const shouldSuppressHoverPopup = () => Date.now() < suppressHoverPopupUntil;
+
+  const hideCommentPopup = () => {
+    try {
+      popupService.hidePopup();
+    } catch {
+      // ignore
+    }
+    try {
+      commandService.executeCommand(SetActiveCommentOperation.id);
+    } catch {
+      // ignore
+    }
+  };
+
+  const prepareForContextMenu = () => {
+    suppressHoverPopupUntil = Date.now() + COMMENT_POPUP_SUPPRESS_MS;
+    hideCommentPopup();
+  };
+
+  const onPointerDownCapture = (event: PointerEvent) => {
+    if (event.button !== 2) {
+      return;
+    }
+    if (!container.contains(event.target as Node)) {
+      return;
+    }
+    prepareForContextMenu();
+  };
+
+  const onContextMenuCapture = (event: MouseEvent) => {
+    if (!container.contains(event.target as Node)) {
+      return;
+    }
+    prepareForContextMenu();
+  };
+
+  const popupSub = popupService.activePopup$.subscribe((popup) => {
+    if (!popup?.temp || !shouldSuppressHoverPopup()) {
+      return;
+    }
+    window.setTimeout(() => {
+      if (shouldSuppressHoverPopup() && popupService.activePopup?.temp) {
+        hideCommentPopup();
+      }
+    }, 0);
+  });
+
+  container.addEventListener('pointerdown', onPointerDownCapture, true);
+  container.addEventListener('contextmenu', onContextMenuCapture, true);
+
+  return () => {
+    container.removeEventListener('pointerdown', onPointerDownCapture, true);
+    container.removeEventListener('contextmenu', onContextMenuCapture, true);
+    popupSub.unsubscribe();
+  };
+};
+
 /**
  * 打开单元格批注弹层（立即显示，无需再 hover）。
  *
@@ -295,6 +400,7 @@ const pasteSelection = async (context: ETableContextMenuContext) => {
  *    在鼠标移到无批注单元格时会直接 hidePopup。
  * 2. 延迟打开，避免右键菜单关闭时的 clickOutside 立刻把弹层关掉。
  * 3. trigger: 'context-menu' 用于自动聚焦输入框。
+ * 4. 保存批注后自动关闭弹层，避免下次右键被 clickOutside 拦截。
  */
 const openCommentPopup = (context: ETableContextMenuContext) => {
   const { univerAPI, range, worksheet } = context;
@@ -314,10 +420,7 @@ const openCommentPopup = (context: ETableContextMenuContext) => {
 
   const show = () => {
     try {
-      const injector =
-        univerAPI?.__getInjector?.() ||
-        univerAPI?.getGlobalContext?.()?.injector ||
-        univerAPI?._injector;
+      const injector = getUniverInjector(univerAPI);
       const workbook = univerAPI?.getActiveWorkbook?.();
       const sheet = workbook?.getActiveSheet?.() || worksheet;
       const unitId = workbook?.getId?.();
@@ -325,12 +428,41 @@ const openCommentPopup = (context: ETableContextMenuContext) => {
 
       if (injector && unitId && subUnitId) {
         const popupService = injector.get(SheetsThreadCommentPopupService);
+        const commandService = injector.get(ICommandService);
+        const cellRef = numberToColumnName(col) + String(row + 1);
+        let commandListener: { dispose: () => void } | null = null;
+
+        const disposeCommandListener = () => {
+          commandListener?.dispose();
+          commandListener = null;
+        };
+
         popupService.showPopup({
           unitId,
           subUnitId,
           row,
           col,
           trigger: 'context-menu',
+        }, disposeCommandListener);
+
+        commandListener = commandService.onCommandExecuted((commandInfo) => {
+          if (commandInfo.id !== AddCommentCommand.id) {
+            return;
+          }
+          const params = commandInfo.params as {
+            unitId?: string;
+            subUnitId?: string;
+            comment?: { ref?: string };
+          };
+          if (
+            params?.unitId !== unitId ||
+            params?.subUnitId !== subUnitId ||
+            params?.comment?.ref !== cellRef
+          ) {
+            return;
+          }
+          // 批注保存后弹层仍开着，首次右键会先触发 clickOutside 关闭弹层
+          window.setTimeout(() => popupService.hidePopup(), 0);
         });
         return true;
       }
@@ -391,7 +523,7 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
   {
     id: 'etable-add-attachment',
     title: '添加附件',
-    icon: 'AttachmentIcon',
+    icon: 'AddAttachmentIcon',
     action: async ({ range, cell, onUploadAttachment, onAttachmentsChange }) => {
       if (!range) {
         return;
@@ -407,7 +539,7 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
   {
     id: 'etable-view-attachment',
     title: '查看附件',
-    icon: 'AttachmentIcon',
+    icon: 'ViewAttachmentIcon',
     action: ({ range, cell }) => {
       if (!range) {
         return;
@@ -424,7 +556,7 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
   {
     id: 'etable-clear-attachment',
     title: '清空附件',
-    icon: 'AttachmentIcon',
+    icon: 'ClearAttachmentIcon',
     action: ({ range, cell, onAttachmentsChange }) => {
       if (!range) {
         return;
@@ -438,15 +570,6 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
         return true;
       }
       return getCellAttachments(range).length === 0;
-    },
-  },
-  { type: 'separator' },
-  {
-    id: 'etable-delete-row', title: '删除当前行', action: ({ worksheet, row }) => {
-      if (!worksheet || row < 0) {
-        return;
-      }
-      worksheet.getRange(row, 0, 1, worksheet.getColumnCount()).clear();
     },
   },
 ];

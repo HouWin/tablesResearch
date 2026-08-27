@@ -35,7 +35,7 @@ export const DeleteCommentIcon = (props: React.SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-// 附件 icon
+// 附件 icon（通用）
 export const AttachmentIcon = () => (
   <svg
     className="icon"
@@ -48,6 +48,57 @@ export const AttachmentIcon = () => (
     style={{ verticalAlign: 'middle' }}
   >
     <path d="M704 128c-70.4 0-128 57.6-128 128v448c0 88-72 160-160 160s-160-72-160-160V256h64v448c0 52.8 43.2 96 96 96s96-43.2 96-96V256c0-88 72-160 160-160s160 72 160 160v480c0 123.2-100.8 224-224 224s-224-100.8-224-224V320h64v416c0 88 72 160 160 160s160-72 160-160V256c0-70.4-57.6-128-128-128z" />
+  </svg>
+);
+
+// 添加附件 icon（回形针 + 加号）
+export const AddAttachmentIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M704 128c-70.4 0-128 57.6-128 128v448c0 88-72 160-160 160s-160-72-160-160V256h64v448c0 52.8 43.2 96 96 96s96-43.2 96-96V256c0-88 72-160 160-160s160 72 160 160v480c0 123.2-100.8 224-224 224s-224-100.8-224-224V320h64v416c0 88 72 160 160 160s160-72 160-160V256c0-70.4-57.6-128-128-128z" />
+    <path d="M832 192h-64v-64c0-17.6-14.4-32-32-32s-32 14.4-32 32v64h-64c-17.6 0-32 14.4-32 32s14.4 32 32 32h64v64c0 17.6 14.4 32 32 32s32-14.4 32-32v-64h64c17.6 0 32-14.4 32-32s-14.4-32-32-32z" />
+  </svg>
+);
+
+// 查看附件 icon（文件夹/文档列表）
+export const ViewAttachmentIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M832 384H576V128H192c-17.6 0-32 14.4-32 32v704c0 17.6 14.4 32 32 32h640c17.6 0 32-14.4 32-32V416c0-17.6-14.4-32-32-32zM640 192v192h192L640 192zM192 864V192h320v256c0 17.6 14.4 32 32 32h256v384H192z" />
+    <path d="M320 512h384c17.6 0 32-14.4 32-32s-14.4-32-32-32H320c-17.6 0-32 14.4-32 32s14.4 32 32 32zM320 640h256c17.6 0 32-14.4 32-32s-14.4-32-32-32H320c-17.6 0-32 14.4-32 32s14.4 32 32 32z" />
+  </svg>
+);
+
+// 清空附件 icon（回形针 + 删除线）
+export const ClearAttachmentIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M704 128c-70.4 0-128 57.6-128 128v448c0 88-72 160-160 160s-160-72-160-160V256h64v448c0 52.8 43.2 96 96 96s96-43.2 96-96V256c0-88 72-160 160-160s160 72 160 160v480c0 123.2-100.8 224-224 224s-224-100.8-224-224V320h64v416c0 88 72 160 160 160s160-72 160-160V256c0-70.4-57.6-128-128-128z" />
+    <path d="M128 128l768 768 45.3-45.3L173.3 82.7 128 128z" />
   </svg>
 );
 
@@ -89,6 +140,9 @@ const ICON_MAP = {
   AddCommentIcon,
   DeleteCommentIcon,
   AttachmentIcon,
+  AddAttachmentIcon,
+  ViewAttachmentIcon,
+  ClearAttachmentIcon,
   CopyIcon,
   PasteIcon,
 } as const;
