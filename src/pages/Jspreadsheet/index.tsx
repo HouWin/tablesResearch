@@ -778,7 +778,7 @@ function JspreadsheetPageInner() {
 
   /**
    * 透视分析表（参考图片）：
-   * - 行维度：Category → SubCategory（多行折叠，▼/▶）
+   * - 行维度：Category → SubCategory（自定义折叠，行号列无原生三角；A/B 列单元格内 ▼/▶）
    * - 列维度：Region（多列折叠）
    * - 值：Sales / Profit
    */
@@ -944,7 +944,7 @@ function JspreadsheetPageInner() {
       }
     });
 
-    const FOLD_STYLE_ID = 'jss-outline-fold-override-v4';
+    const FOLD_STYLE_ID = 'jss-outline-fold-override-v10';
     const ensureFoldStyle = () => {
       let el = document.getElementById(FOLD_STYLE_ID) as HTMLStyleElement | null;
       if (!el) {
@@ -953,15 +953,19 @@ function JspreadsheetPageInner() {
         document.head.appendChild(el);
       }
       el.textContent = `
-        .jss-outline-table td.jss_row > i,
-        .jss-outline-root td.jss_row > i,
-        .jss_container td.jss_row > i {
+        /* 透视源数据表内：去掉所有 material-icons */
+        table.jss-outline-table i.material-icons {
           display: none !important;
           visibility: hidden !important;
           pointer-events: none !important;
           font-size: 0 !important;
           width: 0 !important;
           height: 0 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          opacity: 0 !important;
+          position: absolute !important;
+          left: -9999px !important;
         }
         .jss-outline-root .jss-outline-toggle,
         .jss-outline-table .jss-outline-toggle {
@@ -1000,6 +1004,78 @@ function JspreadsheetPageInner() {
           color: #222 !important;
         }
       `;
+    };
+
+    const getOutlineTable = (ws: any, fallback?: HTMLElement | null) => {
+      const content = ws?.content as HTMLElement | undefined;
+      const el = ws?.element as HTMLElement | undefined;
+      const tableProp = ws?.table;
+      const fromProp =
+        typeof tableProp === 'object' && tableProp?.nodeType
+          ? (tableProp as HTMLElement)
+          : null;
+      const table =
+        (fromProp?.matches?.('table') ? fromProp : null) ||
+        content?.querySelector?.('table.jss') ||
+        el?.querySelector?.('table.jss') ||
+        fallback?.querySelector?.('table.jss') ||
+        (fallback?.matches?.('table') ? fallback : null) ||
+        fromProp ||
+        content ||
+        el ||
+        null;
+      return table as HTMLElement | null;
+    };
+
+    /** 透视源数据表格内：删除全部 i.material-icons */
+    const stripMaterialIcons = (scope: HTMLElement | null) => {
+      if (!scope) return;
+      const table =
+        (scope.matches?.('table.jss-outline-table, table.jss') ? scope : null) ||
+        scope.querySelector('table.jss-outline-table, table.jss');
+      const root = table || scope;
+      root.querySelectorAll('i.material-icons').forEach((icon) => {
+        icon.remove();
+      });
+    };
+
+    /** 可见行序号连续从 1 起排（折叠后不跳号） */
+    const renumberVisibleRows = (table: HTMLElement | null) => {
+      if (!table) return;
+      let seq = 1;
+      const tbody = table.tBodies?.[0] || table.querySelector('tbody');
+      const trs = tbody
+        ? Array.from(tbody.children).filter((n) => n.tagName === 'TR')
+        : Array.from(table.querySelectorAll('tr'));
+      trs.forEach((tr) => {
+        const el = tr as HTMLElement;
+        const cell = el.querySelector('td.jss_row') as HTMLElement | null;
+        if (!cell) return;
+        try {
+          if (el.style.display === 'none' || getComputedStyle(el).display === 'none') {
+            return;
+          }
+        } catch {
+          return;
+        }
+        if (el.classList.contains('jss_hidden')) return;
+
+        cell.querySelectorAll('i').forEach((i) => i.remove());
+        let wrote = false;
+        Array.from(cell.childNodes).forEach((node) => {
+          if (node.nodeType !== Node.TEXT_NODE) return;
+          if (!wrote) {
+            node.textContent = String(seq);
+            wrote = true;
+          } else {
+            node.textContent = '';
+          }
+        });
+        if (!wrote) {
+          cell.insertBefore(document.createTextNode(String(seq)), cell.firstChild);
+        }
+        seq += 1;
+      });
     };
 
     const getCellEl = (ws: any, col: number, row: number): HTMLElement | undefined => {
@@ -1098,21 +1174,24 @@ function JspreadsheetPageInner() {
       }
     };
 
-    const paint = (ws: any, root: HTMLElement) => {
+    const paint = (ws: any, root: HTMLElement, outlineTable?: HTMLElement | null) => {
       if (disposed || painting) return;
       painting = true;
       try {
-        root.querySelectorAll<HTMLElement>('td.jss_row > i').forEach((icon) => {
-          icon.style.display = 'none';
-          icon.style.pointerEvents = 'none';
-        });
+        const table =
+          outlineTable ||
+          getOutlineTable(ws) ||
+          (root.querySelector('table.jss-outline-table') as HTMLElement | null);
+        stripMaterialIcons(table);
 
         // 优先只画可见单元格（虚拟滚动时 groupCells 可能几十万）
-        const visible = root.querySelectorAll<HTMLElement>(
-          'td[data-x="0"], td[data-x="1"], td[data-x=\'0\'], td[data-x=\'1\']',
+        const searchRoot = table || root;
+        const visible = searchRoot.querySelectorAll<HTMLElement>(
+          'td[data-x="0"], td[data-x="1"]',
         );
         if (visible.length) {
           visible.forEach((cell) => {
+            if (cell.classList.contains('jss_row')) return;
             const col = Number(cell.getAttribute('data-x'));
             const row = Number(cell.getAttribute('data-y'));
             if (!Number.isFinite(col) || !Number.isFinite(row)) return;
@@ -1120,28 +1199,34 @@ function JspreadsheetPageInner() {
             if (!meta) return;
             paintCell(ws, cell, meta);
           });
-          return;
+        } else {
+          // fallback：无 data-x 时按元数据尝试（演示树很小）
+          outlineSheet.groupCells.forEach((meta) => {
+            const el = getCellEl(ws, meta.col, meta.row);
+            if (el) paintCell(ws, el, meta);
+          });
         }
 
-        // fallback：无 data-x 时按元数据尝试（演示树很小）
-        outlineSheet.groupCells.forEach((meta) => {
-          const el = getCellEl(ws, meta.col, meta.row);
-          if (el) paintCell(ws, el, meta);
-        });
+        renumberVisibleRows(table);
       } finally {
         painting = false;
       }
     };
 
-    const syncView = (ws: any, root: HTMLElement, scope?: { from: number; to: number }) => {
+    const syncView = (
+      ws: any,
+      root: HTMLElement,
+      scope?: { from: number; to: number },
+      outlineTable?: HTMLElement | null,
+    ) => {
       applyRegionVisibility(ws, scope);
-      paint(ws, root);
+      paint(ws, root, outlineTable);
     };
 
     const bind = () => {
       const ws = getWorksheetByName(spreadsheet, '透视源数据');
       if (!ws) return false;
-      const table = (ws.table || ws.element) as HTMLElement | undefined;
+      const table = getOutlineTable(ws);
       if (!table) return false;
 
       const root =
@@ -1153,9 +1238,10 @@ function JspreadsheetPageInner() {
       ensureFoldStyle();
       root.classList.add('jss-outline-root');
       table.classList.add('jss-outline-table');
+      stripMaterialIcons(table);
 
       if ((root as any).__outlineBound) {
-        syncView(ws, root);
+        syncView(ws, root, undefined, table);
         return true;
       }
       (root as any).__outlineBound = true;
@@ -1183,12 +1269,12 @@ function JspreadsheetPageInner() {
               if (r > row && r <= row + span) regionState.set(r, false);
             });
             ws.closeRowGroup(row);
-            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }), 0);
-            requestAnimationFrame(() => paint(ws, root));
+            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }, table), 0);
+            requestAnimationFrame(() => paint(ws, root, table));
           } else {
             ws.openRowGroup(row);
-            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }), 0);
-            requestAnimationFrame(() => paint(ws, root));
+            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }, table), 0);
+            requestAnimationFrame(() => paint(ws, root, table));
           }
           return;
         }
@@ -1204,15 +1290,15 @@ function JspreadsheetPageInner() {
         regionState.set(row, next);
         window.setTimeout(() => {
           applyOneRegion(ws, row);
-          paint(ws, root);
+          paint(ws, root, table);
         }, 0);
-        requestAnimationFrame(() => paint(ws, root));
+        requestAnimationFrame(() => paint(ws, root, table));
       };
       root.addEventListener('click', clickHandler, true);
 
       const onTab = () => {
-        window.setTimeout(() => syncView(ws, root), 0);
-        window.setTimeout(() => syncView(ws, root), 100);
+        window.setTimeout(() => syncView(ws, root, undefined, table), 0);
+        window.setTimeout(() => syncView(ws, root, undefined, table), 100);
       };
       root.querySelectorAll('.jtabs-container, .jss_tabs, [class*="jtabs"]').forEach((el) => {
         el.addEventListener('click', onTab);
@@ -1220,13 +1306,16 @@ function JspreadsheetPageInner() {
       document.querySelector('.jss-page__sheet')?.addEventListener('click', onTab);
 
       observer = new MutationObserver(() => {
-        requestAnimationFrame(() => paint(ws, root));
+        requestAnimationFrame(() => {
+          stripMaterialIcons(table);
+          paint(ws, root, table);
+        });
       });
-      observer.observe(root, { childList: true, subtree: true, characterData: true });
+      observer.observe(table, { childList: true, subtree: true });
 
-      syncView(ws, root);
-      window.setTimeout(() => syncView(ws, root), 100);
-      window.setTimeout(() => syncView(ws, root), 400);
+      syncView(ws, root, undefined, table);
+      window.setTimeout(() => syncView(ws, root, undefined, table), 100);
+      window.setTimeout(() => syncView(ws, root, undefined, table), 400);
       return true;
     };
 
@@ -1255,7 +1344,6 @@ function JspreadsheetPageInner() {
     };
   }, [outlineSheet, sheetNonce]);
 
-
   // 全表：表头列组折叠 add/remove(+/-) → data-fold，由 CSS 画 ▼/▶
   useEffect(() => {
     let disposed = false;
@@ -1270,6 +1358,9 @@ function JspreadsheetPageInner() {
         if (!parent) return;
         if (parent.classList.contains('jss_filters_icon')) return;
         if (parent.classList.contains('jss_row')) return;
+        if (icon.closest('td.jss_row')) return;
+        // 透视源数据表：不把 material-icons 转成三角，后面统一删除
+        if (icon.closest('table.jss-outline-table')) return;
 
         const raw = (icon.textContent || '').trim();
         // 已标记过且库未改回 add/remove，保持
@@ -1309,6 +1400,10 @@ function JspreadsheetPageInner() {
         if (prev !== next) icon.setAttribute('data-fold', next);
         icon.style.cssText =
           'font-family:Arial,"PingFang SC","Microsoft YaHei",sans-serif!important;font-size:12px!important;font-weight:700!important;font-style:normal!important;color:#555!important;line-height:1!important;display:inline-block!important;cursor:pointer!important;position:absolute!important;right:4px!important;top:50%!important;transform:translateY(-50%)!important;z-index:5!important;';
+      });
+      // 透视源数据：表内残留的 material-icons 全部移除
+      container.querySelectorAll('table.jss-outline-table i.material-icons').forEach((icon) => {
+        icon.remove();
       });
     };
 

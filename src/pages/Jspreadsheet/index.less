@@ -185,9 +185,8 @@
 }
 
 
-/* 透视源数据：序列号去掉 +/-；Category 树形折叠三角 + 缩进加粗 */
-.jss-page__sheet :global(table.jss-outline-table td.jss_row > i),
-.jss-page__sheet :global(table.jss-outline-table .jss_row > i.material-icons) {
+/* 透视源数据：表内全部 i.material-icons 去掉（序号列 +/-、表头等） */
+.jss-page__sheet :global(table.jss-outline-table i.material-icons) {
   display: none !important;
   visibility: hidden !important;
   pointer-events: none !important;
@@ -197,6 +196,7 @@
   padding: 0 !important;
   overflow: hidden !important;
   font-size: 0 !important;
+  opacity: 0 !important;
 }
 
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-toggle) {
