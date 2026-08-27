@@ -22,9 +22,12 @@ export const TREE_COLLAPSE_ICON = '▶';
 
 /**
  * 根据树形配置生成列定义。
- * 优先 measureGroups（多级表头：Region → Sales/Profit），否则用扁平 measures。
+ * 优先 headerColumns（自定义多级表头），其次 measureGroups，否则用扁平 measures。
  */
 export const buildTreeColumns = (config: ETableTreeConfig) => {
+  if (config.headerColumns?.length) {
+    return config.headerColumns;
+  }
   const lockDims = Boolean(config.treeUI);
   const columns: Array<{
     id: string;
@@ -524,9 +527,10 @@ export const flattenTreeData = (
       }
 
       if (labelField) {
+        const labelDepth = labelMode === 'depth' ? 0 : depth;
         path[labelField] = treeUI
           ? toLabelCell(
-              formatTreeLabel(node.label, depth, {
+              formatTreeLabel(node.label, labelDepth, {
                 expandable: hasChildren,
                 collapsed,
               }),
@@ -585,6 +589,8 @@ export const flattenTreeData = (
       rows.push({
         id: node.id,
         data: buildData(path, regionLabel, summaryValues),
+        // 有子节点的分组汇总行禁止编辑
+        readonly: true,
         style: resolveRowStyle(depth),
       });
       currentRow += 1;
@@ -678,17 +684,20 @@ export const flattenTreeData = (
           };
           childGroups.push(categoryGroup);
           if (treeUI) {
+            const toggleColumn =
+              fieldColumnIndex.get(labelField ?? '') ?? labelColumn;
+            const labelDepth = labelMode === 'depth' ? 0 : depth;
             treeToggles.push({
               groupId: node.id,
               row: summaryStart,
-              column: labelColumn,
+              column: toggleColumn,
               collapsed,
               kind: 'category',
-              expandedText: formatTreeLabel(node.label, depth, {
+              expandedText: formatTreeLabel(node.label, labelDepth, {
                 expandable: true,
                 collapsed: false,
               }),
-              collapsedText: formatTreeLabel(node.label, depth, {
+              collapsedText: formatTreeLabel(node.label, labelDepth, {
                 expandable: true,
                 collapsed: true,
               }),
@@ -713,6 +722,19 @@ export const flattenTreeData = (
             }
           });
         }
+      }
+
+      // treeUI + depth：父级维度列纵向合并，对齐「品类 / 子品类 / 区域」多列表头
+      if (treeUI && labelMode === 'depth' && labelField && totalCount > 1) {
+        pushMerge(
+          labelField,
+          summaryStart,
+          totalCount,
+          formatTreeLabel(node.label, 0, {
+            expandable: hasChildren,
+            collapsed,
+          }),
+        );
       }
 
       // treeUI：中间维度列只跨「汇总 + Region 明细」，不吞进 Category 子行
@@ -776,6 +798,7 @@ export const flattenTreeData = (
     rows.push({
       id: '__group_grand_total__',
       data,
+      readonly: true,
       style: {
         bg: stats.grandTotalBackground || '#FFF7E6',
       },
