@@ -13,6 +13,8 @@
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
     "@ant-design/pro-components": "^2.4.4",
+    "@grapecity-software/spread-sheets": "^19.1.4",
+    "@grapecity-software/spread-sheets-resources-zh": "^19.1.4",
     "@handsontable/react-wrapper": "^18.0.0",
     "@jspreadsheet/bar": "^7.0.2",
     "@jspreadsheet/comments": "^6.3.3",
@@ -44,6 +46,7 @@
     "jspreadsheet": "^12.8.8",
     "jsuites": "^6.4.2",
     "lemonadejs": "^5.3.6",
+    "lucide-react": "^1.33.0",
     "material-icons": "^1.13.14",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

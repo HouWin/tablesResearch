@@ -21,16 +21,19 @@ export const TREE_COLLAPSE_ICON = '▶';
  * 优先 measureGroups（多级表头：Region → Sales/Profit），否则用扁平 measures。
  */
 export const buildTreeColumns = (config: ETableTreeConfig) => {
+  const lockDims = Boolean(config.treeUI);
   const columns: Array<{
     id: string;
     title: string;
     width?: number;
-    children?: Array<{ id: string; title: string; width?: number }>;
+    editable?: boolean;
+    children?: Array<{ id: string; title: string; width?: number; editable?: boolean }>;
   }> = [
     ...config.dimensions.map((item) => ({
       id: item.field,
       title: item.title,
       width: item.width,
+      editable: lockDims ? false : undefined,
     })),
   ];
   if (config.attribute) {
@@ -38,6 +41,7 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
       id: config.attribute.field,
       title: config.attribute.title,
       width: config.attribute.width,
+      editable: lockDims ? false : undefined,
     });
   }
   if (config.measureGroups?.length) {
