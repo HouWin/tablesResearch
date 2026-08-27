@@ -27,7 +27,18 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
     title: string;
     width?: number;
     editable?: boolean;
-    children?: Array<{ id: string; title: string; width?: number; editable?: boolean }>;
+    type?: 'text' | 'number' | 'date' | 'select';
+    options?: string[];
+    numberFormat?: string;
+    children?: Array<{
+      id: string;
+      title: string;
+      width?: number;
+      editable?: boolean;
+      type?: 'text' | 'number' | 'date' | 'select';
+      options?: string[];
+      numberFormat?: string;
+    }>;
   }> = [
     ...config.dimensions.map((item) => ({
       id: item.field,
@@ -53,6 +64,9 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
           id: item.field,
           title: item.title,
           width: item.width,
+          type: item.type,
+          options: item.options,
+          numberFormat: item.numberFormat,
         })),
       });
     });
@@ -63,6 +77,9 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
       id: item.field,
       title: item.title,
       width: item.width,
+      type: item.type,
+      options: item.options,
+      numberFormat: item.numberFormat,
     })),
   );
   return columns;
@@ -161,6 +178,15 @@ const styleMeasureCell = (
     return value;
   }
   if (typeof value === 'object') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (value < 0) {
+      return {
+        value,
+        style: { cl: { rgb: '#CF1322' } },
+      };
+    }
     return value;
   }
   const text = String(value);

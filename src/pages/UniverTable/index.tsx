@@ -1,21 +1,60 @@
+import { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Breadcrumb,
+  Button,
+  Card,
+  Col,
+  Input,
+  Modal,
+  Progress,
+  Row,
+  Select,
+  Space,
+  Spin,
+  Statistic,
+  Switch,
+  Tooltip,
+  Tree,
+  message,
+} from 'antd';
+import {
+  ExpandAltOutlined,
+  ShrinkOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+  VerticalAlignTopOutlined,
+  VerticalAlignBottomOutlined,
+} from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
+import { flattenTreeData } from '@/components/UniverTable/tree';
+import {
+  generateScaledTreeData,
+  PROFIT_OPTIONS,
+  toProfitLevel,
+} from '@/components/UniverTable/treeDataGenerator';
 import type {
+  ETableCellChangeRecord,
+  ETableDataTraceNode,
   ETableOptions,
+  ETableRef,
   ETableTreeAttribute,
   ETableTreeConfig,
   ETableTreeNode,
 } from '@/components/UniverTable/types';
 
-/**
- * 对齐目标图：Category | Region | Sales | Profit
- *
- * - 第 1 列 Category：行树折叠（Furniture → Bookcases…）
- * - 第 2 列 Region：独立折叠（East → Central / West / South）
- * - 两者互不影响
- */
-const money = (n: number) =>
-  `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** 树形演示 / 树形大数据规模（展平后的工作表行数） */
+const DATA_SCALE_OPTIONS = [
+  { value: 'tree', label: '树形演示' },
+  { value: 10000, label: '1万行（树形）' },
+  { value: 50000, label: '5万行（树形）' },
+  { value: 100000, label: '10万行（树形）' },
+  { value: 500000, label: '50万行（树形）' },
+  { value: 1000000, label: '100万行（树形）' },
+] as const;
+
+type DataScale = (typeof DATA_SCALE_OPTIONS)[number]['value'];
 
 const treeConfig: ETableTreeConfig = {
   treeUI: true,
@@ -24,12 +63,23 @@ const treeConfig: ETableTreeConfig = {
   dimensions: [{ field: 'category', title: 'Category', width: 180 }],
   attribute: { field: 'region', title: 'Region', width: 120 },
   measures: [
-    { field: 'sales', title: 'Sales', width: 130 },
-    { field: 'profit', title: 'Profit', width: 130 },
+    {
+      field: 'sales',
+      title: 'Sales',
+      width: 130,
+      type: 'number',
+      numberFormat: '$#,##0.00',
+    },
+    {
+      field: 'profit',
+      title: 'Profit',
+      width: 130,
+      type: 'select',
+      options: [...PROFIT_OPTIONS],
+    },
   ],
 };
 
-/** East 默认展示；展开 Region 后显示其他地区（与 Category 无关） */
 const regionAttributes = (
   prefix: string,
   east: [number, number],
@@ -41,22 +91,22 @@ const regionAttributes = (
     id: `${prefix}-east`,
     label: 'East',
     collapsed: true,
-    values: { sales: money(east[0]), profit: money(east[1]) },
+    values: { sales: east[0], profit: toProfitLevel(east[1]) },
   },
   {
     id: `${prefix}-central`,
     label: 'Central',
-    values: { sales: money(central[0]), profit: money(central[1]) },
+    values: { sales: central[0], profit: toProfitLevel(central[1]) },
   },
   {
     id: `${prefix}-west`,
     label: 'West',
-    values: { sales: money(west[0]), profit: money(west[1]) },
+    values: { sales: west[0], profit: toProfitLevel(west[1]) },
   },
   {
     id: `${prefix}-south`,
     label: 'South',
-    values: { sales: money(south[0]), profit: money(south[1]) },
+    values: { sales: south[0], profit: toProfitLevel(south[1]) },
   },
 ];
 
@@ -218,7 +268,7 @@ const treeData: ETableTreeNode[] = [
 const defaultOptions: ETableOptions = {
   name: 'Sales by Category',
   defaultColumnWidth: 110,
-  defaultRowHeight: 32,
+  defaultRowHeight: 28,
   showGridLines: true,
   freezeRows: 1,
   freezeColumns: 0,
@@ -227,18 +277,482 @@ const defaultOptions: ETableOptions = {
   enableContextMenu: true,
 } as any;
 
+const countNodes = (nodes: ETableTreeNode[]): number =>
+  nodes.reduce(
+    (sum, node) => sum + 1 + (node.children ? countNodes(node.children) : 0),
+    0,
+  );
+
 const UniverTablePage = () => {
+  const tableRef = useRef<ETableRef>(null);
+  const [dataScale, setDataScale] = useState<DataScale>('tree');
+  const [scaledTreeData, setScaledTreeData] = useState<ETableTreeNode[] | null>(
+    null,
+  );
+  const [flatRowCount, setFlatRowCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [tableKey, setTableKey] = useState(0);
+  const [gridLines, setGridLines] = useState(true);
+  const [freezeHeader, setFreezeHeader] = useState(true);
+  const [contextMenu, setContextMenu] = useState(true);
+  const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
+  const [focusCell, setFocusCell] = useState('C2');
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [breadcrumb, setBreadcrumb] = useState<string[]>([]);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [traceTree, setTraceTree] = useState<ETableDataTraceNode | null>(null);
+
+  const isDemoTree = dataScale === 'tree';
+  const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
+  const activeTreeData = isDemoTree ? treeData : scaledTreeData ?? [];
+  const cellHistory = useMemo(
+    () => tracks.filter((item) => item.cell === focusCell),
+    [tracks, focusCell],
+  );
+
+  const loadScaledTree = useCallback(async (count: number) => {
+    if (count >= 500000) {
+      message.warning('数据量较大，生成与渲染可能较慢，请耐心等待');
+    }
+    setLoading(true);
+    setProgress(0);
+    try {
+      const { treeData: generated, flatRowCount: rows } =
+        await generateScaledTreeData(count, setProgress);
+      setScaledTreeData(generated);
+      setFlatRowCount(rows);
+      setTracks([]);
+      setTableKey((key) => key + 1);
+      message.success(
+        `成功生成树形数据，约 ${rows.toLocaleString()} 行（展平后）`,
+      );
+    } catch {
+      message.error('树形数据生成失败');
+    } finally {
+      setLoading(false);
+      setProgress(100);
+    }
+  }, []);
+
+  const handleScaleChange = async (value: DataScale) => {
+    setDataScale(value);
+    if (value === 'tree') {
+      setScaledTreeData(null);
+      setFlatRowCount(0);
+      setTracks([]);
+      setTableKey((key) => key + 1);
+      message.success('已切换到树形演示数据');
+      return;
+    }
+    await loadScaledTree(value);
+  };
+
+  const handleRegenerate = async () => {
+    if (dataScale === 'tree') {
+      setTracks([]);
+      setTableKey((key) => key + 1);
+      message.success('已重新加载树形演示');
+      return;
+    }
+    await loadScaledTree(dataScale);
+  };
+
+  const stats = useMemo(() => {
+    const treeNodes = countNodes(activeTreeData);
+    const sheetRows = isDemoTree
+      ? flattenTreeData(activeTreeData, treeConfig).rows.length
+      : flatRowCount;
+    const cols = 4;
+    return {
+      treeNodes,
+      sheetRows,
+      totalCols: cols,
+      totalCells: sheetRows * cols,
+      modeLabel: isDemoTree ? '树形演示' : '树形大数据',
+    };
+  }, [activeTreeData, flatRowCount, isDemoTree]);
+
+  const options = useMemo(
+    () => ({
+      ...defaultOptions,
+      name: isDemoTree ? 'Sales by Category' : `Tree Data ${targetRowCount}`,
+      showGridLines: gridLines,
+      freezeRows: freezeHeader ? 1 : 0,
+      enableContextMenu: contextMenu,
+      defaultRowHeight: 32,
+    }),
+    [gridLines, freezeHeader, contextMenu, isDemoTree, targetRowCount],
+  );
+
+  const refreshBreadcrumb = () => {
+    setBreadcrumb(tableRef.current?.getBreadcrumb() || []);
+  };
+
+  const handleExpandAll = () => {
+    tableRef.current?.expandAllRows();
+    message.success('已展开全部 Category 行组');
+    refreshBreadcrumb();
+  };
+
+  const handleCollapseAll = () => {
+    tableRef.current?.collapseAllRows();
+    message.success('已折叠全部 Category 行组');
+    refreshBreadcrumb();
+  };
+
+  const handleDrillDown = () => {
+    const ok = tableRef.current?.drillDown();
+    message[ok ? 'success' : 'info'](ok ? '已下钻展开' : '当前行无可下钻分组');
+    refreshBreadcrumb();
+  };
+
+  const handleDrillUp = () => {
+    const ok = tableRef.current?.drillUp();
+    message[ok ? 'success' : 'info'](ok ? '已上钻折叠' : '当前行无可上钻分组');
+    refreshBreadcrumb();
+  };
+
+  const handleQuickSearch = async () => {
+    if (searchKeyword.trim()) {
+      const result = await tableRef.current?.search(searchKeyword.trim());
+      if (result?.count) {
+        message.success(`找到 ${result.count} 处，已定位 ${result.cell || ''}`);
+      } else {
+        message.warning('未找到匹配内容');
+      }
+      return;
+    }
+    const ok = tableRef.current?.openSearch();
+    if (!ok) {
+      message.warning('快速搜索不可用');
+    }
+  };
+
+  const handleViewHistory = (cell: string) => {
+    setFocusCell(cell);
+    message.info(`已切换到 ${cell} 的历史记录`);
+  };
+
+  const handleViewTrace = (cell: string) => {
+    setFocusCell(cell);
+    const trace = tableRef.current?.getDataTrace(cell) || null;
+    setTraceTree(trace);
+    setTraceOpen(true);
+  };
+
+  const toAntdTree = (node: ETableDataTraceNode, key = 'root'): any => ({
+    key,
+    title: node.value ? `${node.label}: ${node.value}` : node.label,
+    children: node.children?.map((child, index) =>
+      toAntdTree(child, `${key}-${index}`),
+    ),
+  });
+
   return (
-    <div style={{ width: '100%', height: 'calc(100vh - 100px)' }}>
-      <div style={{ padding: '8px 12px', color: '#595959', fontSize: 13 }}>
-        第 1 列 Category、第 2 列 Region 均可折叠，互不影响：点 Category 展开子类；点
-        Region 的 ▶ 展开 Central / West / South。
-      </div>
-      <ETable
-        treeData={treeData}
-        treeConfig={treeConfig}
-        options={defaultOptions}
-      />
+    <div style={{ padding: 24, background: '#f0f2f5', minHeight: '100%' }}>
+      <Card style={{ marginBottom: 16 }}>
+        <Row justify="space-between" align="middle">
+          <Col>
+            <h2 style={{ margin: 0 }}>Univer 树形分组 / 大数据示例</h2>
+            <p style={{ margin: '4px 0 0 0', color: '#666' }}>
+              上钻下钻 · 单元格历史 · 数据追踪 · 快速搜索 · Sales 数字 / Profit 下拉
+            </p>
+          </Col>
+          <Col>
+            <Space wrap>
+              <Select
+                value={dataScale}
+                style={{ width: 140 }}
+                onChange={handleScaleChange}
+                options={DATA_SCALE_OPTIONS.map((item) => ({
+                  value: item.value,
+                  label: item.label,
+                }))}
+              />
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                loading={loading}
+                onClick={handleRegenerate}
+              >
+                重新生成
+              </Button>
+              <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
+                全部展开
+              </Button>
+              <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
+                全部折叠
+              </Button>
+            </Space>
+          </Col>
+        </Row>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]}>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic title="树节点数" value={stats.treeNodes} suffix="个" />
+          </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic title="展平行数" value={stats.sheetRows} suffix="行" />
+          </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic title="总列数" value={stats.totalCols} suffix="列" />
+          </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic title="变更记录" value={tracks.length} suffix="条" />
+          </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic title="数据模式" value={stats.modeLabel} />
+          </Col>
+        </Row>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]} align="middle">
+          <Col xs={24} lg={14}>
+            <Space wrap>
+              <Tooltip title="下钻：展开当前选中行组">
+                <Button
+                  icon={<VerticalAlignBottomOutlined />}
+                  onClick={handleDrillDown}
+                >
+                  下钻
+                </Button>
+              </Tooltip>
+              <Tooltip title="上钻：折叠当前选中行组">
+                <Button
+                  icon={<VerticalAlignTopOutlined />}
+                  onClick={handleDrillUp}
+                >
+                  上钻
+                </Button>
+              </Tooltip>
+              <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
+                展开行
+              </Button>
+              <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
+                折叠行
+              </Button>
+              <Input.Search
+                placeholder="快速搜索"
+                allowClear
+                style={{ width: 220 }}
+                value={searchKeyword}
+                onChange={(e) => setSearchKeyword(e.target.value)}
+                onSearch={handleQuickSearch}
+                enterButton={<SearchOutlined />}
+              />
+              <Button onClick={() => tableRef.current?.openSearch()}>
+                查找面板
+              </Button>
+            </Space>
+          </Col>
+          <Col xs={24} lg={10}>
+            <Space wrap>
+              <span>功能开关：</span>
+              <Switch
+                checked={gridLines}
+                onChange={setGridLines}
+                checkedChildren="网格线"
+                unCheckedChildren="网格线"
+              />
+              <Switch
+                checked={freezeHeader}
+                onChange={setFreezeHeader}
+                checkedChildren="冻结表头"
+                unCheckedChildren="冻结表头"
+              />
+              <Switch
+                checked={contextMenu}
+                onChange={setContextMenu}
+                checkedChildren="右键菜单"
+                unCheckedChildren="右键菜单"
+              />
+            </Space>
+          </Col>
+        </Row>
+        {breadcrumb.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <Breadcrumb
+              items={[
+                { title: '根' },
+                ...breadcrumb.map((item) => ({ title: item })),
+              ]}
+            />
+          </div>
+        )}
+        {loading && (
+          <div style={{ marginTop: 12 }}>
+            <Progress percent={progress} status="active" />
+          </div>
+        )}
+      </Card>
+
+      <Row gutter={16}>
+        <Col xs={24} xl={17}>
+          <Card>
+            <Alert
+              message="树形交互说明"
+              description={
+                isDemoTree
+                  ? 'Sales 为数字列，Profit 为下拉（High/Medium/Low/Loss）。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
+                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。编辑 Sales/Profit 会写入数据追踪；50万/100万行可能较慢。`
+              }
+              type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
+              showIcon
+              closable
+              style={{ marginBottom: 16 }}
+            />
+            {loading ? (
+              <div
+                style={{
+                  height: 560,
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+              >
+                <Spin size="large" tip={`生成树形数据中… ${progress}%`} />
+              </div>
+            ) : isDemoTree || scaledTreeData ? (
+              <div style={{ height: 560 }}>
+                <ETable
+                  ref={tableRef}
+                  key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}`}
+                  treeData={activeTreeData}
+                  treeConfig={treeConfig}
+                  options={options}
+                  onCellChange={(record: ETableCellChangeRecord) => {
+                    setTracks((prev) => [record, ...prev].slice(0, 200));
+                    setFocusCell(record.cell);
+                  }}
+                  onSelectionChange={(cell: string) => {
+                    setFocusCell(cell);
+                    refreshBreadcrumb();
+                  }}
+                  onViewCellHistory={handleViewHistory}
+                  onViewDataTrace={handleViewTrace}
+                />
+              </div>
+            ) : (
+              <div
+                style={{
+                  height: 560,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#999',
+                }}
+              >
+                请选择数据规模并点击「重新生成」
+              </div>
+            )}
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={7}>
+          <Card
+            size="small"
+            title="数据追踪（最近变更）"
+            style={{ marginBottom: 16, minHeight: 280 }}
+            extra={
+              <Button
+                type="link"
+                size="small"
+                onClick={() => {
+                  setTracks([]);
+                  tableRef.current?.clearTracks();
+                }}
+              >
+                清空
+              </Button>
+            }
+          >
+            {tracks.length === 0 ? (
+              <div style={{ color: '#999' }}>编辑任意单元格后，变更会记录在这里。</div>
+            ) : (
+              <ul style={{ paddingLeft: 18, margin: 0, maxHeight: 220, overflow: 'auto' }}>
+                {tracks.slice(0, 40).map((item) => (
+                  <li key={item.id} style={{ marginBottom: 8 }}>
+                    <div>
+                      <a onClick={() => setFocusCell(item.cell)}>{item.cell}</a>
+                      <span style={{ color: '#999' }}> · {item.time}</span>
+                    </div>
+                    <div>
+                      {item.from || '∅'} → {item.to || '∅'}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card size="small" title={`单元格历史 · ${focusCell}`} style={{ minHeight: 240 }}>
+            {cellHistory.length === 0 ? (
+              <div style={{ color: '#999' }}>
+                编辑当前单元格并确认后，这里会列出该格的变更历史。也可右键「查看单元格历史」。
+              </div>
+            ) : (
+              <ul style={{ paddingLeft: 18, margin: 0, maxHeight: 200, overflow: 'auto' }}>
+                {cellHistory.map((item) => (
+                  <li key={item.id} style={{ marginBottom: 8 }}>
+                    <div style={{ color: '#999' }}>{item.time}</div>
+                    <div>
+                      {item.from || '∅'} → {item.to || '∅'}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Card style={{ marginTop: 16 }} size="small">
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={12}>
+            <h4>功能说明</h4>
+            <ul>
+              <li>上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</li>
+              <li>单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</li>
+              <li>快速搜索：工具栏搜索或 Ctrl/Cmd+F 查找面板</li>
+              <li>Sales 数字列，Profit 下拉（{PROFIT_OPTIONS.join(' / ')}）</li>
+            </ul>
+          </Col>
+          <Col xs={24} md={12}>
+            <h4>封装特点</h4>
+            <ul>
+              <li>
+                声明式 <code>treeData</code> + <code>treeConfig</code>
+              </li>
+              <li>
+                列 <code>type: number | select</code> + 数据验证
+              </li>
+              <li>Ref：drillDown / drillUp / openSearch / getDataTrace</li>
+              <li>基于 Univer Sheets Preset 组合能力</li>
+            </ul>
+          </Col>
+        </Row>
+      </Card>
+
+      <Modal
+        title={traceTree?.label || '数据追踪'}
+        open={traceOpen}
+        onCancel={() => setTraceOpen(false)}
+        footer={null}
+        width={480}
+      >
+        {traceTree ? (
+          <Tree
+            defaultExpandAll
+            treeData={[toAntdTree(traceTree)]}
+          />
+        ) : (
+          <div style={{ color: '#999' }}>暂无追踪信息</div>
+        )}
+      </Modal>
     </div>
   );
 };

@@ -4,12 +4,20 @@ import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
 import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
+import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
+import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
-import { renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
+import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
+import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
 import { setupTreeCellCollapse } from './treeCollapse';
+import type { ETableTreeCollapseApi } from './treeCollapse';
 import { setupReadonlyCells } from './readonly';
+import { applyColumnTypes } from './columnTypes';
+import { setupCellHistory } from './cellHistory';
+import type { ETableCellHistoryApi } from './cellHistory';
+import { openQuickSearch, searchAndSelect } from './search';
 import {
   customizeContextMenu,
   defaultContextMenuItems,
@@ -28,15 +36,25 @@ import {
 } from './attachment';
 import { registerAllIcons } from './icons';
 import { customizeColumnHeaders } from './header';
-import type { ETableAttachmentFile, ETableProps, ETableRef } from './types';
+import type {
+  ETableAttachmentFile,
+  ETableDataTraceNode,
+  ETableProps,
+  ETableRef,
+} from './types';
+import { message } from 'antd';
 import UniverPresetSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
 import UniverPresetSheetsAdvancedZhCN from '@univerjs/preset-sheets-advanced/locales/zh-CN';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import UniverPresetSheetsNoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN';
+import UniverPresetSheetsDataValidationZhCN from '@univerjs/preset-sheets-data-validation/lib/es/locales/zh-CN';
+import UniverPresetSheetsFindReplaceZhCN from '@univerjs/preset-sheets-find-replace/lib/es/locales/zh-CN';
 import '@univerjs/preset-sheets-advanced/lib/index.css';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import '@univerjs/preset-sheets-thread-comment/lib/index.css';
 import '@univerjs/preset-sheets-note/lib/index.css';
+import '@univerjs/preset-sheets-data-validation/lib/index.css';
+import '@univerjs/preset-sheets-find-replace/lib/index.css';
 
 
 /**
@@ -64,6 +82,10 @@ import '@univerjs/preset-sheets-note/lib/index.css';
 * 14. 树形数据 + 属性层折叠（treeData）
 * 15. 列分组折叠（columnGroups / treeConfig.columnGroups）
 * 16. 单元格附件
+* 17. 上钻 / 下钻
+* 18. 单元格历史 / 数据追踪
+* 19. 快速搜索
+* 20. 列类型（number / select 下拉）
 */
 const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   // 取组件参数
@@ -82,13 +104,25 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     attachments = [],
     onUploadAttachment,
     onAttachmentsChange,
+    onCellChange,
+    onSelectionChange,
+    onViewCellHistory,
+    onViewDataTrace,
     onReady,
   } = props;
 
   const onUploadAttachmentRef = useRef(onUploadAttachment);
   const onAttachmentsChangeRef = useRef(onAttachmentsChange);
+  const onCellChangeRef = useRef(onCellChange);
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  const onViewCellHistoryRef = useRef(onViewCellHistory);
+  const onViewDataTraceRef = useRef(onViewDataTrace);
   onUploadAttachmentRef.current = onUploadAttachment;
   onAttachmentsChangeRef.current = onAttachmentsChange;
+  onCellChangeRef.current = onCellChange;
+  onSelectionChangeRef.current = onSelectionChange;
+  onViewCellHistoryRef.current = onViewCellHistory;
+  onViewDataTraceRef.current = onViewDataTrace;
 
   /**
    * 优先 treeData，其次 groupData，否则使用外部 flat props。
@@ -136,6 +170,86 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const workbookRef = useRef<any>(null);
   // Worksheet
   const worksheetRef = useRef<any>(null);
+  const treeCollapseApiRef = useRef<ETableTreeCollapseApi | null>(null);
+  const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
+  const leafColumnsRef = useRef<any[]>([]);
+  const headerDepthRef = useRef(0);
+
+  const buildDataTrace = (cell?: string): ETableDataTraceNode | null => {
+    const worksheet = worksheetRef.current;
+    if (!worksheet) {
+      return null;
+    }
+    let target = cell;
+    if (!target) {
+      try {
+        const range = worksheet.getSelection?.()?.getActiveRange?.();
+        const row = range?.getRow?.() ?? 0;
+        const column = range?.getColumn?.() ?? 0;
+        let name = '';
+        let v = column + 1;
+        while (v > 0) {
+          const rem = (v - 1) % 26;
+          name = String.fromCharCode(65 + rem) + name;
+          v = Math.floor((v - 1) / 26);
+        }
+        target = `${name}${row + 1}`;
+      } catch {
+        return null;
+      }
+    }
+    if (!target) {
+      return null;
+    }
+    try {
+      const range = worksheet.getRange(target);
+      const row = range.getRow?.() ?? 0;
+      const column = range.getColumn?.() ?? 0;
+      const value = range.getValue?.();
+      const leaf = leafColumnsRef.current[column];
+      const dataRow = row - headerDepthRef.current;
+      const crumb = treeCollapseApiRef.current?.getBreadcrumb(dataRow) || [];
+      const history = cellHistoryApiRef.current?.getCellHistory(target) || [];
+      const children: ETableDataTraceNode[] = [
+        {
+          label: '当前值',
+          value: value === null || value === undefined ? '∅' : String(value),
+        },
+        {
+          label: '列',
+          value: leaf?.title ? `${leaf.title} (${leaf.type || 'text'})` : String(column),
+        },
+      ];
+      if (crumb.length) {
+        children.push({
+          label: '行路径',
+          value: crumb.join(' / '),
+          children: crumb.map((item) => ({ label: item })),
+        });
+      }
+      if (history.length) {
+        children.push({
+          label: '变更历史',
+          children: history.slice(0, 8).map((item) => ({
+            label: item.time,
+            value: `${item.from || '∅'} → ${item.to || '∅'}`,
+          })),
+        });
+      } else {
+        children.push({
+          label: '来源',
+          value: '原始录入 / 演示数据（无上游计算）',
+        });
+      }
+      return {
+        label: `数据追踪 · ${target}`,
+        children,
+      };
+    } catch {
+      return null;
+    }
+  };
+
   //  对外暴露API
   useImperativeHandle(ref, () => ({
     // Univer API
@@ -176,6 +290,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     },
     // 一次性折叠所有行分组
     collapseAllRows() {
+      if (treeCollapseApiRef.current) {
+        treeCollapseApiRef.current.collapseAll();
+        return;
+      }
       const worksheet = worksheetRef.current;
       if (!worksheet) {
         return;
@@ -190,6 +308,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     },
     // 一次性展开所有行分组
     expandAllRows() {
+      if (treeCollapseApiRef.current) {
+        treeCollapseApiRef.current.expandAll();
+        return;
+      }
       const worksheet = worksheetRef.current;
       if (!worksheet) {
         return;
@@ -364,6 +486,41 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       }
       showAttachmentsModal(cell, getCellAttachments(worksheet.getRange(cell)));
     },
+    drillDown() {
+      return Boolean(treeCollapseApiRef.current?.drillDown());
+    },
+    drillUp() {
+      return Boolean(treeCollapseApiRef.current?.drillUp());
+    },
+    getBreadcrumb() {
+      try {
+        const worksheet = worksheetRef.current;
+        const range = worksheet?.getSelection?.()?.getActiveRange?.();
+        const sheetRow = range?.getRow?.() ?? 0;
+        const dataRow = sheetRow - headerDepthRef.current;
+        return treeCollapseApiRef.current?.getBreadcrumb(dataRow) || [];
+      } catch {
+        return [];
+      }
+    },
+    openSearch() {
+      return openQuickSearch(univerAPIRef.current);
+    },
+    async search(keyword: string) {
+      return searchAndSelect(univerAPIRef.current, keyword);
+    },
+    getTracks() {
+      return cellHistoryApiRef.current?.getTracks() || [];
+    },
+    getCellHistory(cell: string) {
+      return cellHistoryApiRef.current?.getCellHistory(cell) || [];
+    },
+    clearTracks() {
+      cellHistoryApiRef.current?.clear();
+    },
+    getDataTrace(cell?: string) {
+      return buildDataTrace(cell);
+    },
   }), []);
 
   // 初始化 Univer
@@ -387,6 +544,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           UniverPresetSheetsAdvancedZhCN,
           UniverPresetSheetsThreadCommentZhCN,
           UniverPresetSheetsNoteZhCN,
+          UniverPresetSheetsDataValidationZhCN,
+          UniverPresetSheetsFindReplaceZhCN,
         ),
       },
       // Preset
@@ -394,6 +553,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         // Core：顺带预隐藏一批常见原生右键命令（自定义菜单注册后还会再扫一遍）
         UniverSheetsCorePreset({
           container: containerRef.current,
+          header: false,
+          toolbar: false,
+          formulaBar: false,
+          footer: false,
           menu: NATIVE_CONTEXT_MENU_HIDE_CONFIG,
         }),
         // Advanced
@@ -402,6 +565,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         UniverSheetsThreadCommentPreset(),
         // Note（附件角标）
         UniverSheetsNotePreset(),
+        // 数据验证（下拉 / 数字）
+        UniverSheetsDataValidationPreset(),
+        // 查找替换（快速搜索）
+        UniverSheetsFindReplacePreset(),
       ],
     });
     // 保存 Univer API
@@ -415,10 +582,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       return;
     }
     worksheetRef.current = worksheet;
+    // 0. 扩容：默认仅 1000×20，大数据写入前必须先扩大
+    const { maxDepth: headerDepth } = buildHeaderLayout(columns);
+    const leafCount = flattenColumns(columns).length;
+    ensureSheetCapacity(
+      worksheet,
+      headerDepth + rows.length + 10,
+      Math.max(leafCount + 2, 20),
+    );
     // 1. 网格线
     worksheet.setHiddenGridlines(!showGridLines);
     // 2. 渲染业务多级表头
     const { leafColumns, maxDepth } = renderHeader(worksheet, columns);
+    leafColumnsRef.current = leafColumns;
+    headerDepthRef.current = maxDepth;
     // 3. ⭐ 自定义 Univer 原生列头
     if (customizeColumnHeader && leafColumns.length) {
       const columnsCfg: Record<number, string> = {};
@@ -448,6 +625,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
     // 6. 渲染数据
     renderData(worksheet, rows, leafColumns, maxDepth);
+    // 6.5 列类型：Sales 数字 / Profit 下拉等
+    applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length);
     // 7. 设置数据行高
     if (rows.length) {
       renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
@@ -457,14 +636,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
     let disposeTreeCollapse: (() => void) | undefined;
     if (treeUI && treeToggles.length) {
-      disposeTreeCollapse = setupTreeCellCollapse(
+      const api = setupTreeCellCollapse(
         univerAPI,
         worksheet,
         rowGroups,
         treeToggles,
         maxDepth,
       );
+      treeCollapseApiRef.current = api;
+      disposeTreeCollapse = () => {
+        api.dispose();
+        treeCollapseApiRef.current = null;
+      };
     } else {
+      treeCollapseApiRef.current = null;
       createRowOutlines(worksheet, rowGroups, maxDepth);
     }
     // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
@@ -537,21 +722,53 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     } catch (error) {
       console.warn('[Table] apply attachments failed', error);
     }
-    // 13.5 注册自定义右键菜单
+    // 13.5 单元格历史 / 数据追踪
+    const historyApi = setupCellHistory(univerAPI, worksheet, {
+      onChange: (record) => onCellChangeRef.current?.(record),
+      onSelectionChange: (cell, row, column) =>
+        onSelectionChangeRef.current?.(cell, row, column),
+    });
+    cellHistoryApiRef.current = historyApi;
+
+    // 13.6 注册自定义右键菜单
     let disposeCommentContextMenuGuard: (() => void) | undefined;
+    const menuExtras = {
+      onUploadAttachment: async (file: File, cell: string) => {
+        if (onUploadAttachmentRef.current) {
+          return onUploadAttachmentRef.current(file, cell);
+        }
+        return defaultUploadAttachment(file);
+      },
+      onAttachmentsChange: (cell: string, files: ETableAttachmentFile[]) => {
+        onAttachmentsChangeRef.current?.(cell, files);
+      },
+      onViewCellHistory: (cell: string) => {
+        onViewCellHistoryRef.current?.(cell);
+      },
+      onViewDataTrace: (cell: string) => {
+        onViewDataTraceRef.current?.(cell);
+      },
+      onDrillDown: () => {
+        const ok = treeCollapseApiRef.current?.drillDown();
+        if (!ok) {
+          message.info('当前行无可下钻分组');
+        }
+      },
+      onDrillUp: () => {
+        const ok = treeCollapseApiRef.current?.drillUp();
+        if (!ok) {
+          message.info('当前行无可上钻分组');
+        }
+      },
+      onQuickSearch: () => {
+        if (!openQuickSearch(univerAPI)) {
+          message.warning('快速搜索不可用');
+        }
+      },
+    };
     if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
       try {
-        customizeContextMenu(univerAPI, worksheet, contextMenuItems, {
-          onUploadAttachment: async (file, cell) => {
-            if (onUploadAttachmentRef.current) {
-              return onUploadAttachmentRef.current(file, cell);
-            }
-            return defaultUploadAttachment(file);
-          },
-          onAttachmentsChange: (cell, files) => {
-            onAttachmentsChangeRef.current?.(cell, files);
-          },
-        });
+        customizeContextMenu(univerAPI, worksheet, contextMenuItems, menuExtras);
         if (containerRef.current) {
           disposeCommentContextMenuGuard = setupCommentContextMenuGuard(
             univerAPI,
@@ -576,6 +793,12 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         disposeTreeCollapse?.();
       } catch (error) {
         console.warn('[Table] dispose tree collapse failed', error);
+      }
+      try {
+        historyApi.dispose();
+        cellHistoryApiRef.current = null;
+      } catch (error) {
+        console.warn('[Table] dispose cell history failed', error);
       }
       try {
         disposeCommentContextMenuGuard?.();
@@ -609,6 +832,21 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         onAttachmentsChange: (cell, files) => {
           onAttachmentsChangeRef.current?.(cell, files);
         },
+        onViewCellHistory: (cell) => {
+          onViewCellHistoryRef.current?.(cell);
+        },
+        onViewDataTrace: (cell) => {
+          onViewDataTraceRef.current?.(cell);
+        },
+        onDrillDown: () => {
+          treeCollapseApiRef.current?.drillDown();
+        },
+        onDrillUp: () => {
+          treeCollapseApiRef.current?.drillUp();
+        },
+        onQuickSearch: () => {
+          openQuickSearch(univerAPI);
+        },
       });
     }
   }, [univerAPIRef.current, worksheetRef.current]);
@@ -635,6 +873,8 @@ export type {
   ETableAttachment,
   ETableAttachmentFile,
   ETableComment,
+  ETableCellChangeRecord,
+  ETableDataTraceNode,
 } from './types';
 
 export default Table;
