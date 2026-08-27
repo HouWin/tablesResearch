@@ -47,6 +47,10 @@ export interface ETableColumn {
   hidden?: boolean;
   /** 单元格类型 */
   type?: 'text' | 'number' | 'date' | 'select';
+  /** select 下拉选项 */
+  options?: string[];
+  /** number 列数字格式，默认 0.00 */
+  numberFormat?: string;
   /**
    * Univer 列索引
    *
@@ -301,7 +305,14 @@ export interface ETableTreeConfig {
   /** 属性列（可选；行内属性展开。与 measureGroups 列维度互斥场景下不要混用） */
   attribute?: { field: string; title: string; width?: number };
   /** 指标列（扁平；若配置了 measureGroups 则忽略） */
-  measures?: Array<{ field: string; title: string; width?: number }>;
+  measures?: Array<{
+    field: string;
+    title: string;
+    width?: number;
+    type?: 'text' | 'number' | 'date' | 'select';
+    options?: string[];
+    numberFormat?: string;
+  }>;
   /**
    * 指标列分组（列维度，如 Region）。
    * 与行树 Category 完全独立：行折叠不影响列，列折叠不影响行。
@@ -312,7 +323,14 @@ export interface ETableTreeConfig {
     title: string;
     /** 是否默认折叠该列组 */
     collapsed?: boolean;
-    measures: Array<{ field: string; title: string; width?: number }>;
+    measures: Array<{
+      field: string;
+      title: string;
+      width?: number;
+      type?: 'text' | 'number' | 'date' | 'select';
+      options?: string[];
+      numberFormat?: string;
+    }>;
   }>;
   /**
    * 树节点 label 写入方式：
@@ -399,6 +417,29 @@ export interface ETableGroupConfig {
 }
 
 /**
+ * 单元格变更记录（历史 / 数据追踪）。
+ */
+export interface ETableCellChangeRecord {
+  id: string;
+  cell: string;
+  row: number;
+  column: number;
+  from: string;
+  to: string;
+  time: string;
+  source?: 'edit' | 'paste' | 'api';
+}
+
+/**
+ * 数据追踪节点（计算血缘的简化展示）。
+ */
+export interface ETableDataTraceNode {
+  label: string;
+  value?: string;
+  children?: ETableDataTraceNode[];
+}
+
+/**
  * ETable 组件参数。
  *
  * 用于配置多级表头、数据、合并、行列分组、批注以及工作表基础配置。
@@ -438,6 +479,14 @@ export interface ETableProps {
   ) => Promise<ETableAttachmentFile | ETableAttachmentFile[]>;
   /** 附件变化回调 */
   onAttachmentsChange?: (cell: string, files: ETableAttachmentFile[]) => void;
+  /** 单元格值变更（数据追踪 / 历史） */
+  onCellChange?: (record: ETableCellChangeRecord) => void;
+  /** 选区变化 */
+  onSelectionChange?: (cell: string, row: number, column: number) => void;
+  /** 右键查看单元格历史 */
+  onViewCellHistory?: (cell: string) => void;
+  /** 右键数据追踪 */
+  onViewDataTrace?: (cell: string) => void;
   /** 表格配置 */
   options?: ETableOptions;
   /** Univer 初始化完成 */
@@ -505,4 +554,22 @@ export interface ETableRef {
   clearAttachments(cell: string): void;
   /** 查看指定单元格附件（弹窗） */
   viewAttachments(cell: string): void;
+  /** 下钻：展开当前选中行组 */
+  drillDown(): boolean;
+  /** 上钻：折叠当前选中行组 */
+  drillUp(): boolean;
+  /** 当前行面包屑 */
+  getBreadcrumb(): string[];
+  /** 打开快速搜索 */
+  openSearch(): boolean;
+  /** 按关键字搜索并定位 */
+  search(keyword: string): Promise<{ count: number; cell?: string }>;
+  /** 全部变更记录 */
+  getTracks(): ETableCellChangeRecord[];
+  /** 指定单元格历史 */
+  getCellHistory(cell: string): ETableCellChangeRecord[];
+  /** 清空变更记录 */
+  clearTracks(): void;
+  /** 构建当前单元格数据追踪树 */
+  getDataTrace(cell?: string): ETableDataTraceNode | null;
 }

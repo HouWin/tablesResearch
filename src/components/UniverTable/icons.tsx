@@ -136,6 +136,91 @@ export const PasteIcon = () => (
   </svg>
 );
 
+// 单元格历史 icon（时钟）
+export const CellHistoryIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M512 96C282.624 96 96 282.624 96 512s186.624 416 416 416 416-186.624 416-416S741.376 96 512 96z m0 768c-194.133333 0-352-157.866667-352-352s157.866667-352 352-352 352 157.866667 352 352-157.866667 352-352 352z" />
+    <path d="M544 320h-64v224c0 11.733333 6.4 22.4 16.64 28.16l160 96 34.133333-55.466667L544 521.6V320z" />
+  </svg>
+);
+
+// 数据追踪 icon（分支树）
+export const DataTraceIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M192 160h192v128H192V160z m448 0h192v128H640V160zM192 736h192v128H192V736z m448 0h192v128H640V736z" />
+    <path d="M256 288v160h512V288h-64v96H320V288H256zM480 448h64v160h-64V448zM256 608v128h64v-64h384v64h64V608H256z" />
+  </svg>
+);
+
+// 下钻 icon（向下展开）
+export const DrillDownIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M512 704L192 320h640L512 704z" />
+    <path d="M192 192h640v64H192V192z" />
+  </svg>
+);
+
+// 上钻 icon（向上收起）
+export const DrillUpIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M512 320l320 384H192L512 320z" />
+    <path d="M192 768h640v64H192v-64z" />
+  </svg>
+);
+
+// 快速搜索 icon（放大镜）
+export const QuickSearchIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M469.333333 170.666667c-164.266667 0-298.666667 134.4-298.666666 298.666666s134.4 298.666667 298.666666 298.666667 298.666667-134.4 298.666667-298.666667-134.4-298.666667-298.666667-298.666666z m0 533.333333c-129.066667 0-234.666667-105.6-234.666666-234.666667s105.6-234.666667 234.666666-234.666666 234.666667 105.6 234.666667 234.666666-105.6 234.666667-234.666667 234.666667z" />
+    <path d="M789.333333 748.8l-113.066666-113.066667-45.226667 45.226667 113.066667 113.066667c12.8 12.8 33.066667 12.8 45.226666 0 12.8-12.8 12.8-33.066667 0-45.226667z" />
+  </svg>
+);
+
 const ICON_MAP = {
   AddCommentIcon,
   DeleteCommentIcon,
@@ -145,6 +230,11 @@ const ICON_MAP = {
   ClearAttachmentIcon,
   CopyIcon,
   PasteIcon,
+  CellHistoryIcon,
+  DataTraceIcon,
+  DrillDownIcon,
+  DrillUpIcon,
+  QuickSearchIcon,
 } as const;
 
 // 2. 增强版的图标注册函数
