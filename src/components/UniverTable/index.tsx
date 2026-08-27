@@ -977,6 +977,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 Table.displayName = 'Table';
 
 export { flattenTreeData, buildTreeColumns, buildTreeColumnGroups } from './tree';
+export { applyGroupStatistics, computeGrandTotalValues } from './groupStatistics';
 export type {
   ETableProps,
   ETableRef,
@@ -991,6 +992,8 @@ export type {
   ETableComment,
   ETableCellChangeRecord,
   ETableDataTraceNode,
+  ETableGroupStatistics,
+  ETableGroupStatisticField,
 } from './types';
 
 export default Table;

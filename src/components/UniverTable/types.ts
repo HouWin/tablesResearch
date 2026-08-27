@@ -369,6 +369,45 @@ export interface ETableTreeConfig {
    * 用 field 声明；若已配置 measureGroups，会自动生成，无需再传。
    */
   columnGroups?: ETableTreeColumnGroup[];
+  /**
+   * 分组统计：按子节点/属性明细自动汇总，统计名称可自定义。
+   * 例：fields: [{ field: 'sales', method: 'sum', name: '销售额合计' }]
+   * labelTemplate: '{label} 小计'
+   */
+  groupStatistics?: ETableGroupStatistics;
+}
+
+/** 分组统计字段 */
+export interface ETableGroupStatisticField {
+  /** 指标字段（对应 measures.field） */
+  field: string;
+  /** 汇总方式，默认 sum */
+  method?: 'sum' | 'avg' | 'count' | 'min' | 'max';
+  /**
+   * 统计名称（可自定义）。
+   * 可用于 labelTemplate 的 {statName}，不传则回退为 measures.title / field。
+   */
+  name?: string;
+}
+
+/** 分组统计配置 */
+export interface ETableGroupStatistics {
+  /** 是否启用，默认 true（配置了 fields 即启用） */
+  enabled?: boolean;
+  /**
+   * 分组行标签模板。
+   * 占位符：{label} 原节点名、{statName} 首个统计字段的自定义名称
+   * 例：'{label} 小计' → Furniture 小计
+   */
+  labelTemplate?: string;
+  /** 是否在表格底部追加总计行 */
+  showGrandTotal?: boolean;
+  /** 总计行名称，默认「总计」 */
+  grandTotalLabel?: string;
+  /** 总计行背景色 */
+  grandTotalBackground?: string;
+  /** 参与统计的字段 */
+  fields: ETableGroupStatisticField[];
 }
 
 /**

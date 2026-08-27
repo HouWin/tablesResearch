@@ -14,6 +14,7 @@ import {
   Spin,
   Statistic,
   Switch,
+  Tag,
   Tooltip,
   Tree,
   message,
@@ -73,6 +74,20 @@ const treeConfig: ETableTreeConfig = {
   // 行背景：顶层分类 / 子类 / 更深层级
   rowBackgrounds: ['#E8F3FF', '#F5FAFF', '#FFFFFF'],
   regionDetailBackground: '#FAFBFC',
+  // 分组统计：子项自动汇总，统计名称 / 分组标签可自定义
+  groupStatistics: {
+    labelTemplate: '{label} 小计',
+    showGrandTotal: true,
+    grandTotalLabel: '全部合计',
+    grandTotalBackground: '#FFF7E6',
+    fields: [
+      {
+        field: 'sales',
+        method: 'sum',
+        name: '销售额合计',
+      },
+    ],
+  },
   measures: [
     {
       field: 'sales',
@@ -106,44 +121,44 @@ const regionAttributes = (
   south: [number, number],
   dateSeed = 1,
 ): ETableTreeAttribute[] => [
-  {
-    id: `${prefix}-east`,
-    label: 'East',
-    collapsed: true,
-    values: {
-      sales: east[0],
-      profit: toProfitLevel(east[1]),
-      date: toDemoDate(dateSeed),
+    {
+      id: `${prefix}-east`,
+      label: 'East',
+      collapsed: true,
+      values: {
+        sales: east[0],
+        profit: toProfitLevel(east[1]),
+        date: toDemoDate(dateSeed),
+      },
     },
-  },
-  {
-    id: `${prefix}-central`,
-    label: 'Central',
-    values: {
-      sales: central[0],
-      profit: toProfitLevel(central[1]),
-      date: toDemoDate(dateSeed + 1),
+    {
+      id: `${prefix}-central`,
+      label: 'Central',
+      values: {
+        sales: central[0],
+        profit: toProfitLevel(central[1]),
+        date: toDemoDate(dateSeed + 1),
+      },
     },
-  },
-  {
-    id: `${prefix}-west`,
-    label: 'West',
-    values: {
-      sales: west[0],
-      profit: toProfitLevel(west[1]),
-      date: toDemoDate(dateSeed + 2),
+    {
+      id: `${prefix}-west`,
+      label: 'West',
+      values: {
+        sales: west[0],
+        profit: toProfitLevel(west[1]),
+        date: toDemoDate(dateSeed + 2),
+      },
     },
-  },
-  {
-    id: `${prefix}-south`,
-    label: 'South',
-    values: {
-      sales: south[0],
-      profit: toProfitLevel(south[1]),
-      date: toDemoDate(dateSeed + 3),
+    {
+      id: `${prefix}-south`,
+      label: 'South',
+      values: {
+        sales: south[0],
+        profit: toProfitLevel(south[1]),
+        date: toDemoDate(dateSeed + 3),
+      },
     },
-  },
-];
+  ];
 
 /** 给树节点写入中间 Region 维度值（默认 East，与截图一致） */
 const withRegionDim = (
@@ -808,7 +823,16 @@ const UniverTablePage = () => {
             )}
           </Card>
 
-          <Card size="small" title={`单元格历史 · ${focusCell}`} style={{ minHeight: 240 }}>
+          <Card
+            size="small"
+            title={
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>单元格历史 · {focusCell}</div>
+                <Tag color="blue"><span>提示：编辑单元格历史记录会显示在下方</span></Tag>
+              </div>
+            }
+            style={{ minHeight: 240 }}
+          >
             {cellHistory.length === 0 ? (
               <div style={{ color: '#999' }}>
                 编辑当前单元格并确认后，这里会列出该格的变更历史。也可右键「查看单元格历史」。
@@ -832,29 +856,24 @@ const UniverTablePage = () => {
       <Card style={{ marginTop: 16 }} size="small">
         <Row gutter={[16, 16]}>
           <Col xs={24} md={12}>
-            <h4>功能说明</h4>
-            <ul>
-              <li>上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</li>
-              <li>回撤 / 重做：工具栏按钮、右键菜单或 Ctrl/Cmd+Z / Ctrl+Y</li>
-              <li>单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</li>
-              <li>快速搜索：工具栏搜索或 Ctrl/Cmd+F 查找面板</li>
-              <li>虚拟滚动：Canvas 仅绘制可视区；大数据分片写入（可在功能开关关闭）</li>
-              <li>
-                Sales 数字列，Profit 下拉（{PROFIT_OPTIONS.join(' / ')}），Date 日期列
-              </li>
+            <h4>💡 功能说明</h4>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, paddingBottom: 8, margin: 0 }}>
+              <li><Tag color="green">上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</Tag></li>
+              <li><Tag color="green">回撤 / 重做：工具栏按钮、右键菜单或 Ctrl/Cmd+Z / Ctrl+Y</Tag></li>
+              <li><Tag color="green">单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</Tag></li>
+              <li><Tag color="green">快速搜索：工具栏搜索或 Ctrl/Cmd+F 查找面板</Tag></li>
+              <li><Tag color="green">虚拟滚动：Canvas 仅绘制可视区；大数据分片写入（可在功能开关关闭）</Tag></li>
+              <li><Tag color="green">分组统计：父行按子项自动汇总；统计名称可配（如「销售额合计」），标签模板如「{'{label}'} 小计」</Tag></li>
+              <li><Tag color="green">Sales 数字列，Profit 下拉（{PROFIT_OPTIONS.join(' / ')}），Date 日期列</Tag></li>
             </ul>
           </Col>
           <Col xs={24} md={12}>
-            <h4>封装特点</h4>
-            <ul>
-              <li>
-                声明式 <code>treeData</code> + <code>treeConfig</code>
-              </li>
-              <li>
-                列 <code>type: number | select | date</code> + 数据验证
-              </li>
-              <li>Ref：drillDown / drillUp / openSearch / getDataTrace</li>
-              <li>基于 Univer Sheets Preset 组合能力</li>
+            <h4>🔍 封装特点</h4>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, paddingBottom: 8, margin: 0 }}>
+              <li><Tag color="cyan">上声明式 <code>treeData</code> + <code>treeConfig</code></Tag></li>
+              <li><Tag color="cyan">列 <code>type: number | select | date</code> + 数据验证</Tag></li>
+              <li><Tag color="cyan">Ref：drillDown / drillUp / openSearch / getDataTrace</Tag></li>
+              <li><Tag color="cyan">基于 Univer Sheets Preset 组合能力</Tag></li>
             </ul>
           </Col>
         </Row>
