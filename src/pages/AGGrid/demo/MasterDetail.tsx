@@ -5,6 +5,7 @@ import { Modal, Table, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import AgGridWrap from '@/components/AgGridWrap'
 import { generateMockData } from '@/utils/mockData'
+import { formatCurrency } from '@/utils/format'
 import type { FinanceRow, GridColDef } from '@/types/grid'
 
 // 自定义下钻按钮组件
@@ -56,7 +57,7 @@ const PriceCell = (params: ICellRendererParams<FinanceRow> & { onCellClick?: (ro
         cursor: 'pointer',
       }}
     >
-      ¥{params.value?.toLocaleString()}
+      {formatCurrency(params.value)}
     </a>
   )
 }
@@ -209,7 +210,7 @@ const MasterDetail = () => {
     { title: '明细产品', dataIndex: 'product', key: 'product', width: 200 },
     { title: '产品大类', dataIndex: 'category', key: 'category', width: 120 },
     { title: '数量', dataIndex: 'qty', key: 'qty', width: 100 },
-    { title: '单价', dataIndex: 'price', key: 'price', width: 120, render: (val: number) => `¥${val.toFixed(2)}` },
+    { title: '单价', dataIndex: 'price', key: 'price', width: 120, render: (val: any) => formatCurrency(val) },
     { title: '业务日期', dataIndex: 'dt', key: 'dt', width: 120 },
     { title: '状态', dataIndex: 'remark', key: 'remark', width: 100 },
   ], [])

@@ -41,10 +41,10 @@ const ServerSideBigData = () => {
         columnDefs={columnDefs}
         defaultColDef={defaultColDef}
         onGridReady={onGridReady}
-        rowModelType="clientSide"
-        cacheBlockSize={100}
-        maxBlocksInCache={10}
-        infiniteInitialRowCount={10000}
+        // 使用客户端行模型，AG Grid会自动启用虚拟滚动优化
+        // 如需使用真正的服务端模式，需要设置 rowModelType="serverSide" 并配置 datasource
+        // rowModelType="serverSide"
+        // datasource={dataSource}
         suppressScrollOnNewData={true}
       />
     </AgGridWrap>

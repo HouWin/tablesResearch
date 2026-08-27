@@ -5,6 +5,7 @@ import AgGridWrap from '@/components/AgGridWrap'
 import { Modal, List, Tag, Button, message } from 'antd'
 import { UploadOutlined, PaperClipOutlined } from '@ant-design/icons'
 import { generateMockData } from '@/utils/mockData'
+import { formatNumber } from '@/utils/format'
 import type { FinanceRow, GridColDef } from '@/types/grid'
 
 interface Attachment {
@@ -116,7 +117,7 @@ const CellAttachment = () => {
               <List.Item.Meta
                 avatar={<PaperClipOutlined style={{ fontSize: 24, color: '#1890ff' }} />}
                 title={item.fileName}
-                description={`大小: ${(item.fileSize / 1024).toFixed(0)} KB | 上传时间: ${item.uploadTime}`}
+                description={`大小: ${formatNumber(item.fileSize / 1024, '-')} KB | 上传时间: ${item.uploadTime}`}
               />
             </List.Item>
           )}
