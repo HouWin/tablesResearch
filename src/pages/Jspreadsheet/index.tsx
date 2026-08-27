@@ -187,7 +187,22 @@ function splitToStates(sales: number, profit: number, seed: number) {
   return rows;
 }
 
-function buildOutlineSourceSheet(): OutlineSheet {
+type OutlineCatInput = {
+  name: string;
+  expanded: boolean;
+  children: { name: string; sales: number; profit: number }[];
+};
+
+function outlineRowsForCat(childCount: number) {
+  const stateCount = EAST_STATES.length;
+  return 1 + stateCount + childCount * (1 + stateCount);
+}
+
+function buildOutlineFromCats(
+  cats: OutlineCatInput[],
+  opts?: { liteStyle?: boolean },
+): OutlineSheet {
+  const liteStyle = !!opts?.liteStyle;
   const data: any[][] = [];
   const rows: Record<number, { group: number; state: boolean }> = {};
   const mergeCells: Record<string, [number, number]> = {};
@@ -200,7 +215,7 @@ function buildOutlineSourceSheet(): OutlineSheet {
   let seed = 1;
 
   let r = 0;
-  OUTLINE_TREE.forEach((cat) => {
+  cats.forEach((cat) => {
     const catStart = r;
     const catSales = round2(cat.children.reduce((a, c) => a + c.sales, 0));
     const catProfit = round2(cat.children.reduce((a, c) => a + c.profit, 0));
@@ -225,10 +240,15 @@ function buildOutlineSourceSheet(): OutlineSheet {
     splitToStates(catSales, catProfit, seed++).forEach((st) => {
       data.push(['', st.name, st.sales, st.profit]);
       catRegionCell.detailRows!.push(r);
-      groupCells.push({ row: r, col: 1, label: st.name, kind: 'leaf', indent: 1 });
-      style[`A${r + 1}`] = 'background-color: #e8f1f8;';
-      style[`B${r + 1}`] = regionBold;
-      if (st.profit < 0) style[`D${r + 1}`] = negProfit;
+      // 大数据量不给州行建 leaf 元数据，折叠箭头只挂在 Category/Region
+      if (!liteStyle) {
+        groupCells.push({ row: r, col: 1, label: st.name, kind: 'leaf', indent: 1 });
+        style[`A${r + 1}`] = 'background-color: #e8f1f8;';
+        style[`B${r + 1}`] = regionBold;
+        if (st.profit < 0) style[`D${r + 1}`] = negProfit;
+      } else if (st.profit < 0) {
+        style[`D${r + 1}`] = negProfit;
+      }
       r += 1;
     });
     mergeCells[`A${catStart + 1}`] = [1, 1 + stateCount];
@@ -255,10 +275,14 @@ function buildOutlineSourceSheet(): OutlineSheet {
       splitToStates(sub.sales, sub.profit, seed++).forEach((st) => {
         data.push(['', st.name, st.sales, st.profit]);
         subRegionCell.detailRows!.push(r);
-        groupCells.push({ row: r, col: 1, label: st.name, kind: 'leaf', indent: 1 });
-        style[`A${r + 1}`] = 'background-color: #e8f1f8;';
-        style[`B${r + 1}`] = regionBold;
-        if (st.profit < 0) style[`D${r + 1}`] = negProfit;
+        if (!liteStyle) {
+          groupCells.push({ row: r, col: 1, label: st.name, kind: 'leaf', indent: 1 });
+          style[`A${r + 1}`] = 'background-color: #e8f1f8;';
+          style[`B${r + 1}`] = regionBold;
+          if (st.profit < 0) style[`D${r + 1}`] = negProfit;
+        } else if (st.profit < 0) {
+          style[`D${r + 1}`] = negProfit;
+        }
         r += 1;
       });
       mergeCells[`A${subStart + 1}`] = [1, 1 + stateCount];
@@ -270,6 +294,50 @@ function buildOutlineSourceSheet(): OutlineSheet {
   return { data, rows, mergeCells, style, groupCells };
 }
 
+/** 任意数据量都生成可折叠树；大数据用 liteStyle 减轻元数据 */
+function buildOutlineSourceSheet(targetRows?: number | 'demo'): OutlineSheet {
+  if (targetRows === undefined || targetRows === 'demo') {
+    return buildOutlineFromCats(
+      OUTLINE_TREE.map((cat) => ({
+        name: cat.name,
+        expanded: cat.expanded,
+        children: cat.children.map((c) => ({ ...c })),
+      })),
+    );
+  }
+
+  const count = Number(targetRows);
+  if (!Number.isFinite(count) || count <= 0) {
+    return buildOutlineSourceSheet('demo');
+  }
+
+  const liteStyle = count > 10000;
+  const cats: OutlineCatInput[] = [];
+  let approx = 0;
+  let i = 0;
+  while (approx < count) {
+    const tpl = OUTLINE_TREE[i % OUTLINE_TREE.length];
+    const batch = Math.floor(i / OUTLINE_TREE.length);
+    const suffix = batch === 0 ? '' : ` ${batch + 1}`;
+    const children = tpl.children.map((c, ci) => ({
+      name: `${c.name}${suffix}`,
+      sales: round2(c.sales * (1 + ((i * 3 + ci) % 7) * 0.01)),
+      profit: round2(c.profit * (1 + ((i * 5 + ci) % 5) * 0.02)),
+    }));
+    cats.push({
+      name: `${tpl.name}${suffix}`,
+      // 大数据默认只展开第一组，避免首屏 hideRow 扫全表
+      expanded: i === 0,
+      children,
+    });
+    approx += outlineRowsForCat(children.length);
+    i += 1;
+    if (i > 500000) break;
+  }
+
+  return buildOutlineFromCats(cats, { liteStyle });
+}
+
 const ORDER_SCALE_OPTIONS = [
   { value: '2000', label: '演示 · 2 千行' },
   { value: '10000', label: '1 万行' },
@@ -278,6 +346,16 @@ const ORDER_SCALE_OPTIONS = [
 ] as const;
 
 type OrderScale = (typeof ORDER_SCALE_OPTIONS)[number]['value'];
+
+const OUTLINE_SCALE_OPTIONS = [
+  { value: 'demo', label: '演示 · 折叠树' },
+  { value: '2000', label: '2 千行' },
+  { value: '10000', label: '1 万行' },
+  { value: '100000', label: '10 万行' },
+  { value: '1000000', label: '100 万行（慎用）' },
+] as const;
+
+type OutlineScale = (typeof OUTLINE_SCALE_OPTIONS)[number]['value'];
 
 /** 折叠维度单元格只读配置 */
 function buildOutlineReadonlyCells(groupCells: OutlineGroupCell[]) {
@@ -403,17 +481,24 @@ function JspreadsheetPageInner() {
   const [orderScale, setOrderScale] = useState<OrderScale>('2000');
   const [orderBusy, setOrderBusy] = useState(false);
   const [orderLoadInfo, setOrderLoadInfo] = useState('');
+  const [outlineScale, setOutlineScale] = useState<OutlineScale>('demo');
+  const [outlineBusy, setOutlineBusy] = useState(false);
+  const [outlineLoadInfo, setOutlineLoadInfo] = useState('');
   const [sheetNonce, setSheetNonce] = useState(0);
   const [orderData, setOrderData] = useState(() => buildSeedRows(2000));
+  const [outlineSheet, setOutlineSheet] = useState(() => buildOutlineSourceSheet('demo'));
 
-  const outlineSheet = useMemo(() => buildOutlineSourceSheet(), []);
-  const outlineReadonlyCells = useMemo(
-    () => buildOutlineReadonlyCells(outlineSheet.groupCells),
-    [outlineSheet],
-  );
+  const outlineReadonlyCells = useMemo(() => {
+    // 百万行量级不预建 cells 映射，靠 oneditionstart 拦编辑
+    if (outlineSheet.groupCells.length > 20000) return undefined;
+    return buildOutlineReadonlyCells(outlineSheet.groupCells);
+  }, [outlineSheet]);
   const pivotSourceData = useMemo(() => buildPivotSourceData(), []);
   const pivotSourceRowCount = pivotSourceData.length;
   const isOrderPerf = orderScale !== '2000';
+  const isOutlinePerf = outlineScale === '100000' || outlineScale === '1000000';
+  const sheetBusy = orderBusy || outlineBusy;
+  const sheetLoadInfo = orderBusy ? orderLoadInfo : outlineLoadInfo;
 
   const destroySpreadsheet = useCallback(() => {
     // 只清空 ref，让 React 通过 key 卸载旧节点。
@@ -421,13 +506,12 @@ function JspreadsheetPageInner() {
     spreadsheet.current = null;
   }, []);
 
-  const openOrderWorksheet = useCallback(() => {
+  const openWorksheetByName = useCallback((name: string) => {
     const list = getWorksheetList(spreadsheet);
     if (!list.length) return null;
     const idx = list.findIndex(
       (ws) =>
-        ws?.options?.worksheetName === '订单明细' ||
-        ws?.getWorksheetName?.() === '订单明细',
+        ws?.options?.worksheetName === name || ws?.getWorksheetName?.() === name,
     );
     const parent = list[0]?.parent;
     if (idx >= 0 && parent?.openWorksheet) {
@@ -437,12 +521,22 @@ function JspreadsheetPageInner() {
         // ignore
       }
     }
-    return idx >= 0 ? list[idx] : getWorksheetByName(spreadsheet, '订单明细');
+    return idx >= 0 ? list[idx] : getWorksheetByName(spreadsheet, name);
   }, []);
+
+  const openOrderWorksheet = useCallback(
+    () => openWorksheetByName('订单明细'),
+    [openWorksheetByName],
+  );
+
+  const openOutlineWorksheet = useCallback(
+    () => openWorksheetByName('透视源数据'),
+    [openWorksheetByName],
+  );
 
   const handleOrderScaleChange = useCallback(
     (value: OrderScale) => {
-      if (orderBusy) return;
+      if (sheetBusy) return;
       if (value === orderScale) return;
 
       const count = Number(value);
@@ -489,7 +583,66 @@ function JspreadsheetPageInner() {
         }
       }, 50);
     },
-    [orderBusy, orderScale, destroySpreadsheet, openOrderWorksheet, message],
+    [sheetBusy, orderScale, destroySpreadsheet, openOrderWorksheet, message],
+  );
+
+  const handleOutlineScaleChange = useCallback(
+    (value: OutlineScale) => {
+      if (sheetBusy) return;
+      if (value === outlineScale) return;
+
+      const label =
+        value === 'demo' ? '演示折叠树' : `${Number(value).toLocaleString()} 行`;
+      setOutlineBusy(true);
+      setOutlineScale(value);
+      setOutlineLoadInfo(`正在生成透视源数据（${label}）…`);
+
+      window.setTimeout(() => {
+        const t0 = performance.now();
+        try {
+          const next =
+            value === 'demo'
+              ? buildOutlineSourceSheet('demo')
+              : buildOutlineSourceSheet(Number(value));
+          const genCost = Math.round(performance.now() - t0);
+          const rows = next.data.length;
+          setOutlineLoadInfo(
+            `${rows.toLocaleString()} 行已生成（${genCost}ms），正在渲染表格…`,
+          );
+
+          destroySpreadsheet();
+          setOutlineSheet(next);
+          setSheetNonce((n) => n + 1);
+
+          window.setTimeout(() => {
+            openOutlineWorksheet();
+            const total = Math.round(performance.now() - t0);
+            setOutlineLoadInfo(
+              `透视源数据 ${rows.toLocaleString()} 行 · 总耗时 ${total}ms`,
+            );
+            setOutlineBusy(false);
+            try {
+              message.success(`透视源数据已加载 ${rows.toLocaleString()} 行`);
+            } catch {
+              // ignore
+            }
+          }, 200);
+        } catch (err) {
+          destroySpreadsheet();
+          setOutlineScale('demo');
+          setOutlineSheet(buildOutlineSourceSheet('demo'));
+          setSheetNonce((n) => n + 1);
+          setOutlineLoadInfo('加载失败，已回到演示折叠树');
+          setOutlineBusy(false);
+          try {
+            message.error(`加载失败：${(err as Error)?.message || err}`);
+          } catch {
+            // ignore
+          }
+        }
+      }, 50);
+    },
+    [sheetBusy, outlineScale, destroySpreadsheet, openOutlineWorksheet, message],
   );
 
   const columns = useMemo(
@@ -769,9 +922,8 @@ function JspreadsheetPageInner() {
   }, [sheetNonce]);
 
   // 透视源数据：Category 树形第一列；Region 列每一行都可折叠；隐藏行号 +/-
-  // sheetNonce：订单明细切换数据量会 remount 整表，需重新绑定折叠操作
+  // sheetNonce：切换数据量会 remount 整表，需重新绑定折叠操作
   useEffect(() => {
-    // 大数据压测模式不做折叠 DOM 注入
     if (!outlineSheet.groupCells.length) return undefined;
 
     let disposed = false;
@@ -782,9 +934,13 @@ function JspreadsheetPageInner() {
 
     /** Region 折叠状态：key = 标题行号 */
     const regionState = new Map<number, boolean>();
+    const foldMetaByKey = new Map<string, OutlineGroupCell>();
+    const regionByRow = new Map<number, OutlineGroupCell>();
     outlineSheet.groupCells.forEach((cell) => {
+      foldMetaByKey.set(`${cell.col}:${cell.row}`, cell);
       if (cell.kind === 'region') {
         regionState.set(cell.row, !!cell.expanded);
+        regionByRow.set(cell.row, cell);
       }
     });
 
@@ -855,20 +1011,91 @@ function JspreadsheetPageInner() {
       );
     };
 
-    const applyRegionVisibility = (ws: any) => {
-      // 仅控制 Region→州 显隐，不影响 Category→子类折叠
-      outlineSheet.groupCells.forEach((cell) => {
-        if (cell.kind !== 'region' || !cell.detailRows?.length) return;
-        const open = !!regionState.get(cell.row);
-        cell.detailRows.forEach((detailRow) => {
-          try {
-            if (open) ws.showRow?.(detailRow);
-            else ws.hideRow?.(detailRow);
-          } catch {
-            // ignore
-          }
-        });
+    const applyOneRegion = (ws: any, row: number) => {
+      const cell = regionByRow.get(row);
+      if (!cell?.detailRows?.length) return;
+      const open = !!regionState.get(row);
+      cell.detailRows.forEach((detailRow) => {
+        try {
+          if (open) ws.showRow?.(detailRow);
+          else ws.hideRow?.(detailRow);
+        } catch {
+          // ignore
+        }
       });
+    };
+
+    /** 只处理展开品类内的 Region，避免百万行全表 hideRow */
+    const applyRegionVisibility = (ws: any, scope?: { from: number; to: number }) => {
+      if (scope) {
+        regionByRow.forEach((cell, row) => {
+          if (row < scope.from || row > scope.to) return;
+          applyOneRegion(ws, row);
+        });
+        return;
+      }
+      const rowGroups = ws.rows || {};
+      Object.keys(rowGroups).forEach((key) => {
+        const row = Number(key);
+        const meta = rowGroups[row];
+        if (!meta?.group || !meta.state) return;
+        const span = Number(meta.group) || 0;
+        applyRegionVisibility(ws, { from: row, to: row + span });
+      });
+    };
+
+    const paintCell = (
+      ws: any,
+      cell: HTMLElement,
+      meta: OutlineGroupCell,
+    ) => {
+      const { row, col, label, kind, indent = 0 } = meta;
+      cell.classList.add('readonly', 'jss-outline-group-cell');
+      if (col === 0) {
+        cell.classList.add('jss-outline-category-col');
+        cell.style.backgroundColor = '#e8f1f8';
+      }
+      if (col === 1) cell.classList.add('jss-outline-region-col');
+
+      const pad = col === 0 ? 8 + indent * 18 : 8 + indent * 16;
+      cell.style.paddingLeft = `${pad}px`;
+      cell.style.fontWeight = '700';
+      cell.style.textAlign = 'left';
+
+      const canFold = kind === 'category' || kind === 'region';
+      const expanded =
+        kind === 'category'
+          ? !!ws.rows?.[row]?.state
+          : kind === 'region'
+            ? !!regionState.get(row)
+            : false;
+      const icon = canFold ? (expanded ? '▼' : '▶') : '';
+
+      const existing = cell.querySelector('.jss-outline-toggle') as HTMLElement | null;
+      if (existing) {
+        if (canFold) {
+          existing.textContent = icon;
+          existing.classList.remove('is-static');
+          existing.dataset.row = String(row);
+          existing.dataset.kind = kind;
+        } else {
+          existing.remove();
+        }
+        let labelEl = cell.querySelector('.jss-outline-label') as HTMLElement | null;
+        if (!labelEl) {
+          labelEl = document.createElement('span');
+          labelEl.className = 'jss-outline-label';
+          cell.appendChild(labelEl);
+        }
+        labelEl.textContent = label;
+        return;
+      }
+
+      if (canFold) {
+        cell.innerHTML = `<span class="jss-outline-toggle" data-row="${row}" data-kind="${kind}" contenteditable="false">${icon}</span><span class="jss-outline-label">${label}</span>`;
+      } else {
+        cell.innerHTML = `<span class="jss-outline-label">${label}</span>`;
+      }
     };
 
     const paint = (ws: any, root: HTMLElement) => {
@@ -880,70 +1107,34 @@ function JspreadsheetPageInner() {
           icon.style.pointerEvents = 'none';
         });
 
-        outlineSheet.groupCells.forEach(({ row, col, label, kind, indent = 0 }) => {
-          const name = cellName(col, row);
-          try {
-            ws.setReadOnly?.(name, true);
-          } catch {
-            // ignore
-          }
-          const cell = getCellEl(ws, col, row);
-          if (!cell) return;
-          cell.classList.add('readonly', 'jss-outline-group-cell');
-          if (col === 0) {
-            cell.classList.add('jss-outline-category-col');
-            cell.style.backgroundColor = '#e8f1f8';
-          }
-          if (col === 1) cell.classList.add('jss-outline-region-col');
+        // 优先只画可见单元格（虚拟滚动时 groupCells 可能几十万）
+        const visible = root.querySelectorAll<HTMLElement>(
+          'td[data-x="0"], td[data-x="1"], td[data-x=\'0\'], td[data-x=\'1\']',
+        );
+        if (visible.length) {
+          visible.forEach((cell) => {
+            const col = Number(cell.getAttribute('data-x'));
+            const row = Number(cell.getAttribute('data-y'));
+            if (!Number.isFinite(col) || !Number.isFinite(row)) return;
+            const meta = foldMetaByKey.get(`${col}:${row}`);
+            if (!meta) return;
+            paintCell(ws, cell, meta);
+          });
+          return;
+        }
 
-          const pad = col === 0 ? 8 + indent * 18 : 8 + indent * 16;
-          cell.style.paddingLeft = `${pad}px`;
-          cell.style.fontWeight = '700';
-          cell.style.textAlign = 'left';
-
-          const canFold = kind === 'category' || kind === 'region';
-          const expanded =
-            kind === 'category'
-              ? !!ws.rows?.[row]?.state
-              : kind === 'region'
-                ? !!regionState.get(row)
-                : false;
-          const showIcon = canFold;
-          const icon = showIcon ? (expanded ? '▼' : '▶') : '';
-
-          const existing = cell.querySelector('.jss-outline-toggle') as HTMLElement | null;
-          if (existing) {
-            if (showIcon) {
-              existing.textContent = icon;
-              existing.classList.remove('is-static');
-              existing.dataset.row = String(row);
-              existing.dataset.kind = kind;
-            } else {
-              existing.remove();
-            }
-            let labelEl = cell.querySelector('.jss-outline-label') as HTMLElement | null;
-            if (!labelEl) {
-              labelEl = document.createElement('span');
-              labelEl.className = 'jss-outline-label';
-              cell.appendChild(labelEl);
-            }
-            labelEl.textContent = label;
-            return;
-          }
-
-          if (showIcon) {
-            cell.innerHTML = `<span class="jss-outline-toggle" data-row="${row}" data-kind="${kind}" contenteditable="false">${icon}</span><span class="jss-outline-label">${label}</span>`;
-          } else {
-            cell.innerHTML = `<span class="jss-outline-label">${label}</span>`;
-          }
+        // fallback：无 data-x 时按元数据尝试（演示树很小）
+        outlineSheet.groupCells.forEach((meta) => {
+          const el = getCellEl(ws, meta.col, meta.row);
+          if (el) paintCell(ws, el, meta);
         });
       } finally {
         painting = false;
       }
     };
 
-    const syncView = (ws: any, root: HTMLElement) => {
-      applyRegionVisibility(ws);
+    const syncView = (ws: any, root: HTMLElement, scope?: { from: number; to: number }) => {
+      applyRegionVisibility(ws, scope);
       paint(ws, root);
     };
 
@@ -984,29 +1175,38 @@ function JspreadsheetPageInner() {
 
         if (kind === 'category') {
           if (!ws.rows?.[row]?.group) return;
-          // 第一列只切换品类→子类，不改 Region 折叠状态
-          if (ws.rows[row].state) ws.closeRowGroup(row);
-          else ws.openRowGroup(row);
-          window.setTimeout(() => syncView(ws, root), 0);
-          requestAnimationFrame(() => syncView(ws, root));
+          const wasOpen = !!ws.rows[row].state;
+          const span = Number(ws.rows[row].group) || 0;
+          if (wasOpen) {
+            regionState.set(row, false);
+            regionByRow.forEach((_c, r) => {
+              if (r > row && r <= row + span) regionState.set(r, false);
+            });
+            ws.closeRowGroup(row);
+            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }), 0);
+            requestAnimationFrame(() => paint(ws, root));
+          } else {
+            ws.openRowGroup(row);
+            window.setTimeout(() => syncView(ws, root, { from: row, to: row + span }), 0);
+            requestAnimationFrame(() => paint(ws, root));
+          }
           return;
         }
 
-        // 第二列只切换 Region→州，不影响第一列子类显隐
-        const meta = outlineSheet.groupCells.find(
-          (c) => c.kind === 'region' && c.row === row,
-        );
+        const meta = regionByRow.get(row);
         if (!meta?.detailRows?.length) return;
 
-        // 品类仍折叠时，先展开品类组才能看到州行（不改变 Region 以外的互斥逻辑）
         if (ws.rows?.[row]?.group && !ws.rows[row].state) {
           ws.openRowGroup(row);
         }
 
         const next = !regionState.get(row);
         regionState.set(row, next);
-        window.setTimeout(() => syncView(ws, root), 0);
-        requestAnimationFrame(() => syncView(ws, root));
+        window.setTimeout(() => {
+          applyOneRegion(ws, row);
+          paint(ws, root);
+        }, 0);
+        requestAnimationFrame(() => paint(ws, root));
       };
       root.addEventListener('click', clickHandler, true);
 
@@ -1054,6 +1254,7 @@ function JspreadsheetPageInner() {
       }
     };
   }, [outlineSheet, sheetNonce]);
+
 
   // 全表：表头列组折叠 add/remove(+/-) → data-fold，由 CSS 画 ▼/▶
   useEffect(() => {
@@ -1476,7 +1677,7 @@ function JspreadsheetPageInner() {
       <p className="jss-page__hint">
         「订单明细已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
         下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 / 大数据虚拟滚动 /
-        列宽拖动 / 自适应列宽。「透视源数据」：Category / Region 两列折叠互不影响；
+        列宽拖动 / 自适应列宽。「透视源数据」：Category / Region 两列折叠；可用下方下拉压测行数；
         「透视分析」读「透视底表」。
       </p>
 
@@ -1488,13 +1689,22 @@ function JspreadsheetPageInner() {
           value={orderScale}
           options={ORDER_SCALE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
           onChange={(v) => handleOrderScaleChange(v as OrderScale)}
-          disabled={orderBusy}
+          disabled={sheetBusy}
         />
-        {orderLoadInfo ? (
-          <span className="jss-page__outline-tools-meta">{orderLoadInfo}</span>
+        <span className="jss-page__outline-tools-label">透视源数据 · 数据量</span>
+        <Select
+          size="small"
+          style={{ width: 200 }}
+          value={outlineScale}
+          options={OUTLINE_SCALE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          onChange={(v) => handleOutlineScaleChange(v as OutlineScale)}
+          disabled={sheetBusy}
+        />
+        {sheetLoadInfo ? (
+          <span className="jss-page__outline-tools-meta">{sheetLoadInfo}</span>
         ) : (
           <span className="jss-page__outline-tools-meta">
-            仅压测「订单明细」虚拟滚动（10 万 / 100 万行）
+            订单明细 / 透视源数据均可压测虚拟滚动（10 万 / 100 万行）
           </span>
         )}
       </div>
@@ -1508,10 +1718,10 @@ function JspreadsheetPageInner() {
       />
 
       <div className="jss-page__body">
-        <div className={`jss-page__sheet${orderBusy ? ' is-loading' : ''}`}>
-          {orderBusy ? (
+        <div className={`jss-page__sheet${sheetBusy ? ' is-loading' : ''}`}>
+          {sheetBusy ? (
             <div className="jss-page__sheet-loading">
-              <Spin size="large" tip={orderLoadInfo || '加载中…'} />
+              <Spin size="large" tip={sheetLoadInfo || '加载中…'} />
             </div>
           ) : null}
           <Spreadsheet
@@ -1580,11 +1790,13 @@ function JspreadsheetPageInner() {
               mergeCells={outlineSheet.mergeCells}
               style={outlineSheet.style}
               cells={outlineReadonlyCells}
-              filters={true}
+              filters={!isOutlinePerf}
               columnResize={true}
               tableOverflow={true}
               tableWidth="100%"
               tableHeight="560px"
+              virtualizationX={false}
+              virtualizationY={true}
               oneditionstart={(_ws: any, _cell: any, x: any) => {
                 const col = Number(x);
                 if (col === 0 || col === 1) return false;
