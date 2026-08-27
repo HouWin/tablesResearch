@@ -9,6 +9,7 @@ import { renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHe
 import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
 import { setupTreeCellCollapse } from './treeCollapse';
+import { setupReadonlyCells } from './readonly';
 import {
   customizeContextMenu,
   defaultContextMenuItems,
@@ -466,6 +467,26 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     } else {
       createRowOutlines(worksheet, rowGroups, maxDepth);
     }
+    // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
+    const readonlyColumns = leafColumns
+      .map((column, index) => (column.editable === false ? index : -1))
+      .filter((index) => index >= 0);
+    // treeUI 默认锁定 dimensions + attribute 对应列
+    if (treeUI && treeConfig) {
+      const lockFields = new Set([
+        ...treeConfig.dimensions.map((item) => item.field),
+        ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
+      ]);
+      leafColumns.forEach((column, index) => {
+        if (lockFields.has(column.id) && !readonlyColumns.includes(index)) {
+          readonlyColumns.push(index);
+        }
+      });
+    }
+    const disposeReadonly = setupReadonlyCells(univerAPI, {
+      headerRowCount: maxDepth,
+      readonlyColumns,
+    });
     // 10. 列分组
     createColumnOutlines(worksheet, columnGroups);
     // 11. 冻结行
@@ -546,6 +567,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 
     // 15. 销毁
     return () => {
+      try {
+        disposeReadonly?.();
+      } catch (error) {
+        console.warn('[Table] dispose readonly failed', error);
+      }
       try {
         disposeTreeCollapse?.();
       } catch (error) {
