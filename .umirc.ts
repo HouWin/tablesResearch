@@ -75,6 +75,11 @@ export default defineConfig({
       path: '/jspreadsheet',
       component: './Jspreadsheet',
     },
+    {
+      name: 'SpreadJS Demo',
+      path: '/spreadjs-demo',
+      component: './SpreadJSDemo',
+    },
   ],
   npmClient: 'yarn',
   utoopack: {},

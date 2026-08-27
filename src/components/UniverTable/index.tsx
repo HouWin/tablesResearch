@@ -852,8 +852,19 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   }, [univerAPIRef.current, worksheetRef.current]);
 
   return (
-    <div style={{ width: '100%', height: '100%', minHeight: 600 }}>
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+        position: 'relative',
+      }}
+    >
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%', overflow: 'hidden' }}
+      />
     </div>
   );
 });

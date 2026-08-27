@@ -617,7 +617,7 @@ const UniverTablePage = () => {
                 <Spin size="large" tip={`生成树形数据中… ${progress}%`} />
               </div>
             ) : isDemoTree || scaledTreeData ? (
-              <div style={{ height: 560 }}>
+              <div style={{ height: 560, overflow: 'hidden' }}>
                 <ETable
                   ref={tableRef}
                   key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}`}
