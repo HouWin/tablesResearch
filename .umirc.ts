@@ -33,17 +33,7 @@ export default defineConfig({
     {
       name: 'UniverTable',
       path: '/univerTable',
-      routes: [
-        {
-          path: '/univerTable',
-          redirect: '/univerTable/demo',
-        },
-        {
-          name: '表格示例',
-          path: '/univerTable/demo',
-          component: './UniverTable',
-        },
-      ],
+      component: './UniverTable',
     },
     {
       name: 'Vtable',

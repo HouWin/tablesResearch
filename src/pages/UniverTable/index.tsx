@@ -25,6 +25,8 @@ import {
   SearchOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
+  UndoOutlined,
+  RedoOutlined,
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
@@ -32,6 +34,7 @@ import { flattenTreeData } from '@/components/UniverTable/tree';
 import {
   generateScaledTreeData,
   PROFIT_OPTIONS,
+  toDemoDate,
   toProfitLevel,
 } from '@/components/UniverTable/treeDataGenerator';
 import type {
@@ -60,22 +63,37 @@ const treeConfig: ETableTreeConfig = {
   treeUI: true,
   labelMode: 'single',
   collapseAttributes: true,
-  dimensions: [{ field: 'category', title: 'Category', width: 180 }],
-  attribute: { field: 'region', title: 'Region', width: 120 },
+  dimensions: [
+    { field: 'category', title: 'Category', width: 180 },
+    // 中间维度列（截图中 Category 与可折叠 Region 之间的 Region）
+    { field: 'region', title: 'Region', width: 100 },
+  ],
+  // 可折叠 Region 属性列（East / Central / West / South）
+  attribute: { field: 'attribute', title: 'Region', width: 120 },
+  // 行背景：顶层分类 / 子类 / 更深层级
+  rowBackgrounds: ['#E8F3FF', '#F5FAFF', '#FFFFFF'],
+  regionDetailBackground: '#FAFBFC',
   measures: [
     {
       field: 'sales',
-      title: 'Sales',
+      title: '数字',
       width: 130,
       type: 'number',
       numberFormat: '$#,##0.00',
     },
     {
       field: 'profit',
-      title: 'Profit',
+      title: '下拉',
       width: 130,
       type: 'select',
       options: [...PROFIT_OPTIONS],
+    },
+    {
+      field: 'date',
+      title: '日期',
+      width: 130,
+      type: 'date',
+      numberFormat: 'yyyy-mm-dd',
     },
   ],
 };
@@ -86,31 +104,59 @@ const regionAttributes = (
   central: [number, number],
   west: [number, number],
   south: [number, number],
+  dateSeed = 1,
 ): ETableTreeAttribute[] => [
   {
     id: `${prefix}-east`,
     label: 'East',
     collapsed: true,
-    values: { sales: east[0], profit: toProfitLevel(east[1]) },
+    values: {
+      sales: east[0],
+      profit: toProfitLevel(east[1]),
+      date: toDemoDate(dateSeed),
+    },
   },
   {
     id: `${prefix}-central`,
     label: 'Central',
-    values: { sales: central[0], profit: toProfitLevel(central[1]) },
+    values: {
+      sales: central[0],
+      profit: toProfitLevel(central[1]),
+      date: toDemoDate(dateSeed + 1),
+    },
   },
   {
     id: `${prefix}-west`,
     label: 'West',
-    values: { sales: west[0], profit: toProfitLevel(west[1]) },
+    values: {
+      sales: west[0],
+      profit: toProfitLevel(west[1]),
+      date: toDemoDate(dateSeed + 2),
+    },
   },
   {
     id: `${prefix}-south`,
     label: 'South',
-    values: { sales: south[0], profit: toProfitLevel(south[1]) },
+    values: {
+      sales: south[0],
+      profit: toProfitLevel(south[1]),
+      date: toDemoDate(dateSeed + 3),
+    },
   },
 ];
 
-const treeData: ETableTreeNode[] = [
+/** 给树节点写入中间 Region 维度值（默认 East，与截图一致） */
+const withRegionDim = (
+  nodes: ETableTreeNode[],
+  region = 'East',
+): ETableTreeNode[] =>
+  nodes.map((node) => ({
+    ...node,
+    data: { ...node.data, region },
+    children: node.children ? withRegionDim(node.children, region) : undefined,
+  }));
+
+const treeData: ETableTreeNode[] = withRegionDim([
   {
     id: 'furniture',
     label: 'Furniture',
@@ -121,6 +167,7 @@ const treeData: ETableTreeNode[] = [
       [52000, 2100],
       [48000, 1800],
       [41000, -900],
+      11,
     ),
     children: [
       {
@@ -132,6 +179,7 @@ const treeData: ETableTreeNode[] = [
           [12000, 400],
           [9800, -200],
           [7500, 120],
+          21,
         ),
       },
       {
@@ -143,6 +191,7 @@ const treeData: ETableTreeNode[] = [
           [22000, 1100],
           [18500, 900],
           [16000, 700],
+          31,
         ),
       },
       {
@@ -154,6 +203,7 @@ const treeData: ETableTreeNode[] = [
           [6200, 300],
           [5100, 180],
           [4300, 90],
+          41,
         ),
       },
       {
@@ -165,6 +215,7 @@ const treeData: ETableTreeNode[] = [
           [11800, -400],
           [9600, -300],
           [8200, -220],
+          51,
         ),
       },
     ],
@@ -179,6 +230,7 @@ const treeData: ETableTreeNode[] = [
       [58000, 12000],
       [49000, 9800],
       [42000, 7200],
+      61,
     ),
     children: [
       {
@@ -190,6 +242,7 @@ const treeData: ETableTreeNode[] = [
           [18000, 3200],
           [15000, 2800],
           [12000, 2100],
+          71,
         ),
       },
       {
@@ -201,6 +254,7 @@ const treeData: ETableTreeNode[] = [
           [14000, 4000],
           [11000, 3200],
           [9000, 2500],
+          81,
         ),
       },
       {
@@ -212,6 +266,7 @@ const treeData: ETableTreeNode[] = [
           [21000, 3600],
           [17000, 2900],
           [14000, 2200],
+          91,
         ),
       },
     ],
@@ -226,6 +281,7 @@ const treeData: ETableTreeNode[] = [
       [72000, 13000],
       [65000, 11000],
       [58000, 9200],
+      101,
     ),
     children: [
       {
@@ -237,6 +293,7 @@ const treeData: ETableTreeNode[] = [
           [28000, 5200],
           [24000, 4100],
           [20000, 3500],
+          111,
         ),
       },
       {
@@ -248,6 +305,7 @@ const treeData: ETableTreeNode[] = [
           [23000, 4500],
           [19000, 3800],
           [16000, 3000],
+          121,
         ),
       },
       {
@@ -259,11 +317,12 @@ const treeData: ETableTreeNode[] = [
           [18000, 2800],
           [15000, 2200],
           [12000, 1800],
+          131,
         ),
       },
     ],
   },
-];
+]);
 
 const defaultOptions: ETableOptions = {
   name: 'Sales by Category',
@@ -273,6 +332,8 @@ const defaultOptions: ETableOptions = {
   freezeRows: 1,
   freezeColumns: 0,
   customizeColumnHeader: true,
+  /** Canvas 可视区虚拟绘制 + 大数据分片写入 */
+  virtualScroll: true,
   contextMenuItems: defaultContextMenuItems,
   enableContextMenu: true,
 } as any;
@@ -296,6 +357,8 @@ const UniverTablePage = () => {
   const [gridLines, setGridLines] = useState(true);
   const [freezeHeader, setFreezeHeader] = useState(true);
   const [contextMenu, setContextMenu] = useState(true);
+  const [virtualScroll, setVirtualScroll] = useState(true);
+  const [renderMs, setRenderMs] = useState<number | null>(null);
   const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
   const [focusCell, setFocusCell] = useState('C2');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -317,6 +380,7 @@ const UniverTablePage = () => {
     }
     setLoading(true);
     setProgress(0);
+    setRenderMs(null);
     try {
       const { treeData: generated, flatRowCount: rows } =
         await generateScaledTreeData(count, setProgress);
@@ -341,6 +405,7 @@ const UniverTablePage = () => {
       setScaledTreeData(null);
       setFlatRowCount(0);
       setTracks([]);
+      setRenderMs(null);
       setTableKey((key) => key + 1);
       message.success('已切换到树形演示数据');
       return;
@@ -351,6 +416,7 @@ const UniverTablePage = () => {
   const handleRegenerate = async () => {
     if (dataScale === 'tree') {
       setTracks([]);
+      setRenderMs(null);
       setTableKey((key) => key + 1);
       message.success('已重新加载树形演示');
       return;
@@ -363,7 +429,7 @@ const UniverTablePage = () => {
     const sheetRows = isDemoTree
       ? flattenTreeData(activeTreeData, treeConfig).rows.length
       : flatRowCount;
-    const cols = 4;
+    const cols = 6;
     return {
       treeNodes,
       sheetRows,
@@ -380,9 +446,10 @@ const UniverTablePage = () => {
       showGridLines: gridLines,
       freezeRows: freezeHeader ? 1 : 0,
       enableContextMenu: contextMenu,
+      virtualScroll,
       defaultRowHeight: 32,
     }),
-    [gridLines, freezeHeader, contextMenu, isDemoTree, targetRowCount],
+    [gridLines, freezeHeader, contextMenu, virtualScroll, isDemoTree, targetRowCount],
   );
 
   const refreshBreadcrumb = () => {
@@ -429,6 +496,16 @@ const UniverTablePage = () => {
     }
   };
 
+  const handleUndo = async () => {
+    const ok = await tableRef.current?.undo();
+    message[ok ? 'success' : 'info'](ok ? '已撤销上一步编辑' : '没有可撤销的操作');
+  };
+
+  const handleRedo = async () => {
+    const ok = await tableRef.current?.redo();
+    message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
+  };
+
   const handleViewHistory = (cell: string) => {
     setFocusCell(cell);
     message.info(`已切换到 ${cell} 的历史记录`);
@@ -456,7 +533,7 @@ const UniverTablePage = () => {
           <Col>
             <h2 style={{ margin: 0 }}>Univer 树形分组 / 大数据示例</h2>
             <p style={{ margin: '4px 0 0 0', color: '#666' }}>
-              上钻下钻 · 单元格历史 · 数据追踪 · 快速搜索 · Sales 数字 / Profit 下拉
+              上钻下钻 · 回撤重做 · 单元格历史 · 数据追踪 · 快速搜索 · Sales 数字 / Profit 下拉 / Date 日期
             </p>
           </Col>
           <Col>
@@ -506,6 +583,20 @@ const UniverTablePage = () => {
           <Col xs={12} sm={8} md={6}>
             <Statistic title="数据模式" value={stats.modeLabel} />
           </Col>
+          <Col xs={12} sm={8} md={6}>
+            <Statistic
+              title="渲染时长"
+              value={renderMs ?? '-'}
+              suffix={renderMs == null ? undefined : 'ms'}
+              valueStyle={
+                renderMs != null && renderMs > 3000
+                  ? { color: '#cf1322' }
+                  : renderMs != null && renderMs > 1000
+                    ? { color: '#d48806' }
+                    : undefined
+              }
+            />
+          </Col>
         </Row>
       </Card>
 
@@ -513,6 +604,16 @@ const UniverTablePage = () => {
         <Row gutter={[16, 16]} align="middle">
           <Col xs={24} lg={14}>
             <Space wrap>
+              <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
+                <Button icon={<UndoOutlined />} onClick={handleUndo}>
+                  回撤
+                </Button>
+              </Tooltip>
+              <Tooltip title="重做（Ctrl/Cmd+Y / Ctrl+Shift+Z）">
+                <Button icon={<RedoOutlined />} onClick={handleRedo}>
+                  重做
+                </Button>
+              </Tooltip>
               <Tooltip title="下钻：展开当前选中行组">
                 <Button
                   icon={<VerticalAlignBottomOutlined />}
@@ -570,6 +671,16 @@ const UniverTablePage = () => {
                 checkedChildren="右键菜单"
                 unCheckedChildren="右键菜单"
               />
+              <Switch
+                checked={virtualScroll}
+                onChange={(checked) => {
+                  setVirtualScroll(checked);
+                  setRenderMs(null);
+                  setTableKey((k) => k + 1);
+                }}
+                checkedChildren="虚拟滚动"
+                unCheckedChildren="虚拟滚动"
+              />
             </Space>
           </Col>
         </Row>
@@ -597,7 +708,7 @@ const UniverTablePage = () => {
               message="树形交互说明"
               description={
                 isDemoTree
-                  ? 'Sales 为数字列，Profit 为下拉（High/Medium/Low/Loss）。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
+                  ? 'Sales 为数字列，Profit 为下拉（High/Medium/Low/Loss），Date 为日期列。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
                   : `当前约 ${stats.sheetRows.toLocaleString()} 行。编辑 Sales/Profit 会写入数据追踪；50万/100万行可能较慢。`
               }
               type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
@@ -620,10 +731,18 @@ const UniverTablePage = () => {
               <div style={{ height: 560, overflow: 'hidden' }}>
                 <ETable
                   ref={tableRef}
-                  key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}`}
+                  key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}`}
                   treeData={activeTreeData}
                   treeConfig={treeConfig}
                   options={options}
+                  onReady={({ renderMs: ms }) => {
+                    if (typeof ms === 'number') {
+                      setRenderMs(ms);
+                      if (ms >= 1000) {
+                        message.info(`表格渲染完成，耗时 ${ms.toLocaleString()} ms`);
+                      }
+                    }
+                  }}
                   onCellChange={(record: ETableCellChangeRecord) => {
                     setTracks((prev) => [record, ...prev].slice(0, 200));
                     setFocusCell(record.cell);
@@ -716,9 +835,13 @@ const UniverTablePage = () => {
             <h4>功能说明</h4>
             <ul>
               <li>上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</li>
+              <li>回撤 / 重做：工具栏按钮、右键菜单或 Ctrl/Cmd+Z / Ctrl+Y</li>
               <li>单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</li>
               <li>快速搜索：工具栏搜索或 Ctrl/Cmd+F 查找面板</li>
-              <li>Sales 数字列，Profit 下拉（{PROFIT_OPTIONS.join(' / ')}）</li>
+              <li>虚拟滚动：Canvas 仅绘制可视区；大数据分片写入（可在功能开关关闭）</li>
+              <li>
+                Sales 数字列，Profit 下拉（{PROFIT_OPTIONS.join(' / ')}），Date 日期列
+              </li>
             </ul>
           </Col>
           <Col xs={24} md={12}>
@@ -728,7 +851,7 @@ const UniverTablePage = () => {
                 声明式 <code>treeData</code> + <code>treeConfig</code>
               </li>
               <li>
-                列 <code>type: number | select</code> + 数据验证
+                列 <code>type: number | select | date</code> + 数据验证
               </li>
               <li>Ref：drillDown / drillUp / openSearch / getDataTrace</li>
               <li>基于 Univer Sheets Preset 组合能力</li>

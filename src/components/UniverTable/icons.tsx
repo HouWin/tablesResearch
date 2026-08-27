@@ -221,6 +221,38 @@ export const QuickSearchIcon = () => (
   </svg>
 );
 
+// 撤销 / 回撤
+export const UndoIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M512 192c-176.8 0-320 143.2-320 320v64H96l160 160 160-160H320v-64c0-106.1 85.9-192 192-192s192 85.9 192 192-85.9 192-192 192c-17.7 0-32 14.3-32 32s14.3 32 32 32c141.4 0 256-114.6 256-256S653.4 192 512 192z" />
+  </svg>
+);
+
+// 重做
+export const RedoIcon = () => (
+  <svg
+    className="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="1em"
+    height="1em"
+    fill="currentColor"
+    style={{ verticalAlign: 'middle' }}
+  >
+    <path d="M512 192c141.4 0 256 114.6 256 256v64h96L704 672 544 512h96v-64c0-106.1-85.9-192-192-192s-192 85.9-192 192 85.9 192 192 192c17.7 0 32 14.3 32 32s-14.3 32-32 32c-141.4 0-256-114.6-256-256S370.6 192 512 192z" />
+  </svg>
+);
+
 const ICON_MAP = {
   AddCommentIcon,
   DeleteCommentIcon,
@@ -235,6 +267,8 @@ const ICON_MAP = {
   DrillDownIcon,
   DrillUpIcon,
   QuickSearchIcon,
+  UndoIcon,
+  RedoIcon,
 } as const;
 
 // 2. 增强版的图标注册函数

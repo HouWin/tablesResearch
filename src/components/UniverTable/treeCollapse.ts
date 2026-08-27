@@ -108,15 +108,44 @@ export const setupTreeCellCollapse = (
     collapsedState.set(groupId, collapsed);
     setRowsCollapsed(worksheet, dataStartRow, group, collapsed);
     writeLabel(toggle, collapsed);
+
+    // Category 收起时：本组内全部 Region（同行 East + 子项 East）重置为收起
+    if (collapsed && toggle.kind === 'category') {
+      const catStart = group.startRow;
+      const catEnd = group.startRow + group.count;
+      toggles.forEach((regionToggle) => {
+        if (regionToggle.kind !== 'region' || regionToggle.groupId === groupId) {
+          return;
+        }
+        const regionGroup = groupMap.get(regionToggle.groupId);
+        const onSummaryRow = regionToggle.row === toggle.row;
+        const headerInCategory =
+          regionToggle.row >= catStart && regionToggle.row < catEnd;
+        const bodyInCategory = Boolean(
+          regionGroup &&
+            regionGroup.startRow >= catStart &&
+            regionGroup.startRow + regionGroup.count <= catEnd,
+        );
+        if (!onSummaryRow && !headerInCategory && !bodyInCategory) {
+          return;
+        }
+        // 已收起也要写回 ▶，并强制状态为收起（重置）
+        if (collapsedState.get(regionToggle.groupId)) {
+          collapsedState.set(regionToggle.groupId, true);
+          writeLabel(regionToggle, true);
+          return;
+        }
+        applyCollapsed(regionToggle.groupId, true);
+      });
+    }
   };
 
-  // 初始化默认折叠
+  // 初始化默认折叠（Category 收起会联动同行 Region）
   toggles.forEach((toggle) => {
-    const group = groupMap.get(toggle.groupId);
-    if (!group || !toggle.collapsed) {
+    if (!toggle.collapsed || !groupMap.get(toggle.groupId)) {
       return;
     }
-    setRowsCollapsed(worksheet, dataStartRow, group, true);
+    applyCollapsed(toggle.groupId, true);
   });
 
   const toggleGroup = (groupId: string) => {

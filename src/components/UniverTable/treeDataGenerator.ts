@@ -36,6 +36,14 @@ export const toProfitLevel = (n: number): (typeof PROFIT_OPTIONS)[number] => {
   return 'High';
 };
 
+/** 由 seed 生成稳定演示日期 YYYY-MM-DD */
+export const toDemoDate = (seed: number): string => {
+  const year = 2020 + (Math.abs(seed) % 6);
+  const month = (Math.abs(seed * 7) % 12) + 1;
+  const day = (Math.abs(seed * 13) % 28) + 1;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
 const regionAttributesFast = (
   prefix: string,
   seed: number,
@@ -53,22 +61,38 @@ const regionAttributesFast = (
       id: `${prefix}-east`,
       label: 'East',
       collapsed: true,
-      values: { sales: moneyFast(east[0]), profit: toProfitLevel(east[1]) },
+      values: {
+        sales: moneyFast(east[0]),
+        profit: toProfitLevel(east[1]),
+        date: toDemoDate(seed * 10),
+      },
     },
     {
       id: `${prefix}-central`,
       label: 'Central',
-      values: { sales: moneyFast(central[0]), profit: toProfitLevel(central[1]) },
+      values: {
+        sales: moneyFast(central[0]),
+        profit: toProfitLevel(central[1]),
+        date: toDemoDate(seed * 10 + 1),
+      },
     },
     {
       id: `${prefix}-west`,
       label: 'West',
-      values: { sales: moneyFast(west[0]), profit: toProfitLevel(west[1]) },
+      values: {
+        sales: moneyFast(west[0]),
+        profit: toProfitLevel(west[1]),
+        date: toDemoDate(seed * 10 + 2),
+      },
     },
     {
       id: `${prefix}-south`,
       label: 'South',
-      values: { sales: moneyFast(south[0]), profit: toProfitLevel(south[1]) },
+      values: {
+        sales: moneyFast(south[0]),
+        profit: toProfitLevel(south[1]),
+        date: toDemoDate(seed * 10 + 3),
+      },
     },
   ];
 };
@@ -131,6 +155,7 @@ export const generateScaledTreeData = (
           children[leafIndex] = {
             id: `leaf-${categoryIndex}-${leafIndex}`,
             label: `${LEAF_NAMES[globalLeaf % LEAF_NAMES.length]} ${globalLeaf + 1}`,
+            data: { region: 'East' },
             attributes: regionAttributesFast(
               `leaf-${categoryIndex}-${leafIndex}`,
               globalLeaf + 1,
@@ -151,6 +176,7 @@ export const generateScaledTreeData = (
           id: `cat-${categoryIndex}`,
           label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
           collapsed: categoryIndex > 0,
+          data: { region: 'East' },
           attributes: regionAttributesFast(`cat-${categoryIndex}`, categoryIndex),
           children,
         };

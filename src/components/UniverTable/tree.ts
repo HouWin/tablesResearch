@@ -220,6 +220,30 @@ export const flattenTreeData = (
   const treeToggles: ETableTreeToggleBinding[] = [];
   const labelMode = config.labelMode ?? 'single';
   const treeUI = Boolean(config.treeUI);
+  const DEFAULT_ROW_BACKGROUNDS = ['#E8F3FF', '#F5FAFF', '#FFFFFF'];
+  const rowBackgrounds =
+    config.rowBackgrounds?.length
+      ? config.rowBackgrounds
+      : treeUI
+        ? DEFAULT_ROW_BACKGROUNDS
+        : [];
+  const regionDetailBackground =
+    config.regionDetailBackground ?? (treeUI ? '#FAFBFC' : undefined);
+
+  const resolveRowStyle = (
+    depth: number,
+    options?: { regionDetail?: boolean },
+  ): ETableRow['style'] | undefined => {
+    if (options?.regionDetail && regionDetailBackground) {
+      return { bg: regionDetailBackground };
+    }
+    if (!rowBackgrounds.length) {
+      return undefined;
+    }
+    const index = Math.min(Math.max(depth, 0), rowBackgrounds.length - 1);
+    const bg = rowBackgrounds[index];
+    return bg ? { bg } : undefined;
+  };
 
   const dimensionFields = config.dimensions.map((item) => item.field);
   const attributeField = config.attribute?.field;
@@ -307,13 +331,14 @@ export const flattenTreeData = (
   const emitAttribute = (
     attr: ETableTreeAttribute,
     path: Record<string, ETablePrimitive>,
-    options?: { clearCategory?: boolean },
+    options?: { clearCategory?: boolean; depth?: number },
   ): ETableRowGroup | null => {
     const hasDetails = Boolean(attr.children?.length);
     const collapsed = attr.collapsed ?? config.collapseAttributes ?? true;
     const displayLabel = treeUI
       ? formatTreeLabel(attr.label, 0, { expandable: hasDetails, collapsed })
       : attr.label;
+    const depth = options?.depth ?? 0;
 
     // Region 明细行不占用 Category 列，避免看起来像 Category 子项
     const rowPath = { ...path };
@@ -324,6 +349,7 @@ export const flattenTreeData = (
     rows.push({
       id: attr.id,
       data: buildData(rowPath, displayLabel, attr.values),
+      style: resolveRowStyle(depth, { regionDetail: options?.clearCategory }),
     });
     currentRow += 1;
 
@@ -341,6 +367,7 @@ export const flattenTreeData = (
           treeUI ? formatTreeLabel(detail.label, 1) : detail.label,
           detail.values,
         ),
+        style: resolveRowStyle(depth, { regionDetail: true }),
       });
       currentRow += 1;
     });
@@ -357,6 +384,7 @@ export const flattenTreeData = (
         row: headerRow,
         column: attributeColumn,
         collapsed,
+        kind: 'region',
         expandedText: formatTreeLabel(attr.label, 0, { expandable: true, collapsed: false }),
         collapsedText: formatTreeLabel(attr.label, 0, { expandable: true, collapsed: true }),
       });
@@ -412,6 +440,7 @@ export const flattenTreeData = (
             ...primary.values,
             ...node.values,
           }),
+          style: resolveRowStyle(depth),
         });
         currentRow += 1;
 
@@ -430,12 +459,16 @@ export const flattenTreeData = (
               formatTreeLabel(detail.label, 1),
               detail.values,
             ),
+            style: resolveRowStyle(depth, { regionDetail: true }),
           });
           currentRow += 1;
         });
 
         rest.forEach((attr) => {
-          const attrGroup = emitAttribute(attr, path, { clearCategory: true });
+          const attrGroup = emitAttribute(attr, path, {
+            clearCategory: true,
+            depth,
+          });
           if (attrGroup) {
             childGroups.push(attrGroup);
           }
@@ -456,6 +489,7 @@ export const flattenTreeData = (
               row: headerRow,
               column: attributeColumn,
               collapsed: regionCollapsed,
+              kind: 'region',
               expandedText: formatTreeLabel(primary.label, 0, {
                 expandable: true,
                 collapsed: false,
@@ -464,6 +498,15 @@ export const flattenTreeData = (
                 expandable: true,
                 collapsed: true,
               }),
+            });
+          }
+          // 中间维度列（如 Region=East）跨汇总行 + Region 明细行纵向合并
+          if (node.data) {
+            Object.entries(node.data).forEach(([key, value]) => {
+              if (key === labelField || !fieldColumnIndex.has(key)) {
+                return;
+              }
+              pushMerge(key, headerRow, 1 + detailCount, value);
             });
           }
         }
@@ -498,6 +541,7 @@ export const flattenTreeData = (
         rows.push({
           id: node.id,
           data: buildData(path, regionFromValues, values),
+          style: resolveRowStyle(depth),
         });
         currentRow += 1;
         return;
@@ -531,6 +575,7 @@ export const flattenTreeData = (
       rows.push({
         id: node.id,
         data: buildData(path, regionLabel, summaryValues),
+        style: resolveRowStyle(depth),
       });
       currentRow += 1;
 
@@ -553,11 +598,15 @@ export const flattenTreeData = (
               formatTreeLabel(detail.label, 1),
               detail.values,
             ),
+            style: resolveRowStyle(depth, { regionDetail: true }),
           });
           currentRow += 1;
         });
         restRegions.forEach((attr) => {
-          const attrGroup = emitAttribute(attr, path, { clearCategory: true });
+          const attrGroup = emitAttribute(attr, path, {
+            clearCategory: true,
+            depth,
+          });
           if (attrGroup) {
             regionNested.push(attrGroup);
           }
@@ -578,6 +627,7 @@ export const flattenTreeData = (
               row: summaryStart,
               column: attributeColumn,
               collapsed: regionCollapsed,
+              kind: 'region',
               expandedText: formatTreeLabel(primaryRegion.label, 0, {
                 expandable: true,
                 collapsed: false,
@@ -623,6 +673,7 @@ export const flattenTreeData = (
               row: summaryStart,
               column: labelColumn,
               collapsed,
+              kind: 'category',
               expandedText: formatTreeLabel(node.label, depth, {
                 expandable: true,
                 collapsed: false,
@@ -652,6 +703,17 @@ export const flattenTreeData = (
             }
           });
         }
+      }
+
+      // treeUI：中间维度列只跨「汇总 + Region 明细」，不吞进 Category 子行
+      if (treeUI && node.data && regionGroup) {
+        const regionSpan = 1 + regionGroup.count;
+        Object.entries(node.data).forEach(([key, value]) => {
+          if (key === labelField || !fieldColumnIndex.has(key)) {
+            return;
+          }
+          pushMerge(key, summaryStart, regionSpan, value);
+        });
       }
 
       // 顶层分组：包住该节点下全部明细，便于嵌套折叠

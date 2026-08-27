@@ -84,6 +84,11 @@ export interface ETableRow {
   data: Record<string, ETablePrimitive | ETableCell>;
   /** 当前行高度 */
   height?: number;
+  /** 行样式（会应用到该行全部单元格） */
+  style?: {
+    /** 背景色，如 #E8F3FF */
+    bg?: string;
+  };
 }
 
 /**
@@ -165,6 +170,11 @@ export interface ETableOptions {
   freezeColumns?: number;
   /** 是否自定义 Univer 原生列头 */
   customizeColumnHeader?: boolean;
+  /**
+   * 开启虚拟滚动渲染（默认 true）。
+   * Univer Canvas 仅绘制可视区单元格；大数据写入时分片 setValues，降低卡顿。
+   */
+  virtualScroll?: boolean;
 }
 
 /**
@@ -347,6 +357,14 @@ export interface ETableTreeConfig {
   /** 属性明细是否默认折叠（仅当属性带 children 时生效） */
   collapseAttributes?: boolean;
   /**
+   * 行背景色（按树深度）。
+   * 例如 ['#E8F3FF', '#F5F9FC']；超出部分循环使用最后一色。
+   * Region 明细行可用 regionDetailBackground。
+   */
+  rowBackgrounds?: string[];
+  /** Region 明细行（Category 为空）背景色 */
+  regionDetailBackground?: string;
+  /**
    * 列分组（列折叠）。
    * 用 field 声明；若已配置 measureGroups，会自动生成，无需再传。
    */
@@ -364,6 +382,11 @@ export interface ETableTreeToggleBinding {
   collapsed: boolean;
   expandedText: string;
   collapsedText: string;
+  /**
+   * category：分类树折叠；region：Region 属性折叠。
+   * 收起 category 时会联动收起同行的 region。
+   */
+  kind?: 'category' | 'region';
 }
 
 /**
@@ -489,8 +512,14 @@ export interface ETableProps {
   onViewDataTrace?: (cell: string) => void;
   /** 表格配置 */
   options?: ETableOptions;
-  /** Univer 初始化完成 */
-  onReady?: (params: { univerAPI: any; workbook: any; worksheet: any }) => void;
+  /** Univer 初始化完成（含渲染耗时） */
+  onReady?: (params: {
+    univerAPI: any;
+    workbook: any;
+    worksheet: any;
+    /** 表格初始化到数据渲染完成的耗时（毫秒） */
+    renderMs?: number;
+  }) => void;
 }
 
 /**
@@ -564,6 +593,10 @@ export interface ETableRef {
   openSearch(): boolean;
   /** 按关键字搜索并定位 */
   search(keyword: string): Promise<{ count: number; cell?: string }>;
+  /** 撤销上一次编辑 */
+  undo(): Promise<boolean>;
+  /** 重做上一次撤销 */
+  redo(): Promise<boolean>;
   /** 全部变更记录 */
   getTracks(): ETableCellChangeRecord[];
   /** 指定单元格历史 */

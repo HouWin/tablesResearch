@@ -210,61 +210,73 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
  * @param rows 数据
  * @param leafColumns 叶子列
  * @param startRow 数据开始行
+ * @param options.virtualScroll 分片写入，避免超大矩阵一次 setValues
  */
-export const renderData = (worksheet: UniverWorksheet, rows: ETableRow[] = [], leafColumns: ETableColumn[] = [], startRow: number) => {
-  /**
-   * 没有数据或者没有叶子列，
-   * 不执行任何操作。
-   */
+export const renderData = (
+  worksheet: UniverWorksheet,
+  rows: ETableRow[] = [],
+  leafColumns: ETableColumn[] = [],
+  startRow: number,
+  options?: { virtualScroll?: boolean; chunkSize?: number },
+) => {
   if (!worksheet || !rows.length || !leafColumns.length) {
     return;
   }
 
-  /**
-   * 防止传入非法起始行。
-   */
   if (startRow < 0) {
     return;
   }
 
-  /**
-   * -------------------------------------------------------
-   * 转换为二维数组
-   * -------------------------------------------------------
-   *
-   * Univer：
-   *
-   * range.setValues([
-   *   [...],
-   *   [...],
-   * ]);
-   *
-   * 因此先按照叶子列顺序生成二维数组。
-   */
-  const values = rows.map((row) => {
+  const virtualScroll = options?.virtualScroll !== false;
+  const chunkSize = Math.max(
+    500,
+    options?.chunkSize ?? (virtualScroll ? 2000 : rows.length),
+  );
+
+  const toRowValues = (row: ETableRow) => {
+    const bgStyle = row.style?.bg
+      ? {
+          bg: {
+            rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
+          },
+        }
+      : null;
+
     return leafColumns.map((column) => {
       const cell = row.data?.[column.id];
-      // 兼容带样式的单元格对象
       if (cell !== null && typeof cell === 'object') {
-        const styledCell = cell as { value?: unknown; style?: unknown };
-        if (styledCell.style) {
+        const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
+        if (styledCell.style || bgStyle) {
           return {
             v: styledCell.value ?? null,
-            s: styledCell.style,
+            s: {
+              ...(bgStyle || {}),
+              ...(styledCell.style || {}),
+              bg: (styledCell.style as any)?.bg || bgStyle?.bg,
+            },
           };
         }
         return styledCell.value ?? null;
       }
-      // undefined 统一转换成 null。
+      if (bgStyle) {
+        return {
+          v: cell ?? null,
+          s: bgStyle,
+        };
+      }
       return cell ?? null;
-    },
-    );
-  });
+    });
+  };
 
-  // 批量写入 不逐个单元格 setValue，避免大量 API 调用。
-  worksheet.getRange(startRow, 0, values.length, leafColumns.length).setValues(values);
+  // 分片写入：Canvas 可视区虚拟绘制；写入侧避免一次提交超大矩阵
+  for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    const slice = rows.slice(offset, offset + chunkSize);
+    const values = slice.map(toRowValues);
+    worksheet
+      .getRange(startRow + offset, 0, values.length, leafColumns.length)
+      .setValues(values);
+  }
 
-  //  设置单独行高
   rows.forEach((row, index) => {
     if (typeof row.height === 'number') {
       worksheet.setRowHeight(startRow + index, row.height);

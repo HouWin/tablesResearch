@@ -62,6 +62,10 @@ export interface ETableContextMenuContext {
   onDrillUp?: () => void;
   // 快速搜索
   onQuickSearch?: () => void;
+  // 撤销 / 回撤
+  onUndo?: () => void | Promise<void>;
+  // 重做
+  onRedo?: () => void | Promise<void>;
 }
 
 export interface ETableContextMenuItem {
@@ -627,6 +631,23 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
       onQuickSearch?.();
     },
   },
+  { type: 'separator' },
+  {
+    id: 'etable-undo',
+    title: '撤销（回撤）',
+    icon: 'UndoIcon',
+    action: ({ onUndo }) => {
+      onUndo?.();
+    },
+  },
+  {
+    id: 'etable-redo',
+    title: '重做',
+    icon: 'RedoIcon',
+    action: ({ onRedo }) => {
+      onRedo?.();
+    },
+  },
 ];
 
 /**
@@ -732,6 +753,8 @@ const createMenuContext = (
     onDrillDown?: ETableContextMenuContext['onDrillDown'];
     onDrillUp?: ETableContextMenuContext['onDrillUp'];
     onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
+    onUndo?: ETableContextMenuContext['onUndo'];
+    onRedo?: ETableContextMenuContext['onRedo'];
   },
 ): ETableContextMenuContext => {
   const current = getCurrentSelection(univerAPI, worksheet);
@@ -750,6 +773,8 @@ const createMenuContext = (
     onDrillDown: extras?.onDrillDown,
     onDrillUp: extras?.onDrillUp,
     onQuickSearch: extras?.onQuickSearch,
+    onUndo: extras?.onUndo,
+    onRedo: extras?.onRedo,
   };
 };
 
@@ -788,6 +813,8 @@ const registerMenu = (
     onDrillDown?: ETableContextMenuContext['onDrillDown'];
     onDrillUp?: ETableContextMenuContext['onDrillUp'];
     onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
+    onUndo?: ETableContextMenuContext['onUndo'];
+    onRedo?: ETableContextMenuContext['onRedo'];
   },
 ) => {
   const menu = univerAPI.createMenu({
@@ -838,6 +865,8 @@ const registerSubmenu = (
     onDrillDown?: ETableContextMenuContext['onDrillDown'];
     onDrillUp?: ETableContextMenuContext['onDrillUp'];
     onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
+    onUndo?: ETableContextMenuContext['onUndo'];
+    onRedo?: ETableContextMenuContext['onRedo'];
   },
 ) => {
   const root = univerAPI.createSubmenu({ id: submenu.id, title: submenu.title });
@@ -908,6 +937,8 @@ export const customizeContextMenu = (
     onDrillDown?: ETableContextMenuContext['onDrillDown'];
     onDrillUp?: ETableContextMenuContext['onDrillUp'];
     onQuickSearch?: ETableContextMenuContext['onQuickSearch'];
+    onUndo?: ETableContextMenuContext['onUndo'];
+    onRedo?: ETableContextMenuContext['onRedo'];
   },
 ) => {
   if (!univerAPI || !worksheet || !Array.isArray(items) || !items.length) {

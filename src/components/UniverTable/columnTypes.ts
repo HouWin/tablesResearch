@@ -4,6 +4,7 @@ import type { ETableColumn } from './types';
  * 将叶子列上的 type / options 应用到工作表：
  * - number：数字格式 + 小数校验
  * - select：下拉列表数据验证
+ * - date：日期格式 + 日期校验
  */
 export const applyColumnTypes = (
   univerAPI: any,
@@ -18,7 +19,7 @@ export const applyColumnTypes = (
 
   leafColumns.forEach((column, columnIndex) => {
     const type = column.type ?? 'text';
-    if (type === 'text' || type === 'date') {
+    if (type === 'text') {
       return;
     }
 
@@ -41,6 +42,30 @@ export const applyColumnTypes = (
                 allowBlank: true,
                 showErrorMessage: true,
                 error: '请输入数字',
+              })
+              .build();
+            range.setDataValidation?.(rule);
+          }
+        }
+        return;
+      }
+
+      if (type === 'date') {
+        const pattern = column.numberFormat || 'yyyy-mm-dd';
+        try {
+          range.setNumberFormat?.(pattern);
+        } catch {
+          // ignore format failure
+        }
+        if (typeof univerAPI.newDataValidation === 'function') {
+          const builder = univerAPI.newDataValidation();
+          if (typeof builder.requireDateBetween === 'function') {
+            const rule = builder
+              .requireDateBetween(new Date('1900-01-01'), new Date('2100-12-31'))
+              .setOptions({
+                allowBlank: true,
+                showErrorMessage: true,
+                error: '请输入有效日期',
               })
               .build();
             range.setDataValidation?.(rule);

@@ -17,7 +17,11 @@ import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
 import { setupCellHistory } from './cellHistory';
 import type { ETableCellHistoryApi } from './cellHistory';
-import { openQuickSearch, searchAndSelect } from './search';
+import {
+  constrainFindDialogToContainer,
+  openQuickSearch,
+  searchAndSelect,
+} from './search';
 import {
   customizeContextMenu,
   defaultContextMenuItems,
@@ -156,6 +160,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     freezeColumns,
     // 是否自定义 Univer 原生列头
     customizeColumnHeader = true,
+    // 虚拟滚动渲染（Canvas 可视区绘制 + 大数据分片写入）
+    virtualScroll = true,
     // 扩展选项：自定义右键菜单项（不传则使用默认的 defaultContextMenuItems）
     contextMenuItems = defaultContextMenuItems,
     // 扩展选项：是否启用自定义右键菜单
@@ -509,6 +515,30 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     async search(keyword: string) {
       return searchAndSelect(univerAPIRef.current, keyword);
     },
+    async undo() {
+      try {
+        const api = univerAPIRef.current;
+        if (!api?.undo) {
+          return false;
+        }
+        return Boolean(await api.undo());
+      } catch (error) {
+        console.warn('[ETable] undo failed', error);
+        return false;
+      }
+    },
+    async redo() {
+      try {
+        const api = univerAPIRef.current;
+        if (!api?.redo) {
+          return false;
+        }
+        return Boolean(await api.redo());
+      } catch (error) {
+        console.warn('[ETable] redo failed', error);
+        return false;
+      }
+    },
     getTracks() {
       return cellHistoryApiRef.current?.getTracks() || [];
     },
@@ -533,6 +563,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     if (univerAPIRef.current) {
       return;
     }
+    const renderStartedAt = performance.now();
     // 创建 Univer
     const { univerAPI } = createUniver({
       // 中文
@@ -558,6 +589,16 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           formulaBar: false,
           footer: false,
           menu: NATIVE_CONTEXT_MENU_HIDE_CONFIG,
+          // 虚拟滚动：启用纵向/横向滚动条；限制自动行高扫描量避免大数据卡顿
+          ...(virtualScroll
+            ? {
+                scrollConfig: {
+                  enableVertical: true,
+                  enableHorizontal: true,
+                },
+                maxAutoHeightCount: 200,
+              }
+            : {}),
         }),
         // Advanced
         UniverSheetsAdvancedPreset(),
@@ -573,8 +614,23 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     });
     // 保存 Univer API
     univerAPIRef.current = univerAPI;
-    // 创建 Workbook
-    const workbook = univerAPI.createWorkbook({ name });
+    // 创建 Workbook（按数据规模预置行列数，便于 Canvas 虚拟滚动骨架）
+    const { maxDepth: headerDepth } = buildHeaderLayout(columns);
+    const leafCount = flattenColumns(columns).length;
+    const sheetRowCount = Math.max(1000, headerDepth + rows.length + 10);
+    const sheetColCount = Math.max(20, leafCount + 2);
+    const workbook = univerAPI.createWorkbook({
+      name,
+      sheetOrder: ['etable-sheet'],
+      sheets: {
+        'etable-sheet': {
+          id: 'etable-sheet',
+          name: name || 'Sheet1',
+          rowCount: sheetRowCount,
+          columnCount: sheetColCount,
+        },
+      },
+    });
     workbookRef.current = workbook;
     // 获取 Worksheet
     const worksheet = workbook.getActiveSheet();
@@ -582,13 +638,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       return;
     }
     worksheetRef.current = worksheet;
-    // 0. 扩容：默认仅 1000×20，大数据写入前必须先扩大
-    const { maxDepth: headerDepth } = buildHeaderLayout(columns);
-    const leafCount = flattenColumns(columns).length;
+    // 0. 扩容兜底：防止版本差异未吃到 snapshot 行列数
     ensureSheetCapacity(
       worksheet,
-      headerDepth + rows.length + 10,
-      Math.max(leafCount + 2, 20),
+      sheetRowCount,
+      sheetColCount,
     );
     // 1. 网格线
     worksheet.setHiddenGridlines(!showGridLines);
@@ -623,8 +677,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderColumnWidths(worksheet, leafColumns, defaultColumnWidth);
     // 5. 设置表头行高
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
-    // 6. 渲染数据
-    renderData(worksheet, rows, leafColumns, maxDepth);
+    // 6. 渲染数据（虚拟滚动开启时分片写入）
+    renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
     // 6.5 列类型：Sales 数字 / Profit 下拉等
     applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length);
     // 7. 设置数据行高
@@ -730,7 +784,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     });
     cellHistoryApiRef.current = historyApi;
 
-    // 13.6 注册自定义右键菜单
+    // 13.6 查找对话框限制在表格容器内（Univer 默认挂 body + 按视口拖拽）
+    let disposeFindDialogConstraint: (() => void) | undefined;
+    if (containerRef.current) {
+      try {
+        disposeFindDialogConstraint = constrainFindDialogToContainer(
+          univerAPI,
+          containerRef.current,
+        );
+      } catch (error) {
+        console.warn('[Table] constrain find dialog failed', error);
+      }
+    }
+
+    // 13.7 注册自定义右键菜单
     let disposeCommentContextMenuGuard: (() => void) | undefined;
     const menuExtras = {
       onUploadAttachment: async (file: File, cell: string) => {
@@ -765,6 +832,22 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           message.warning('快速搜索不可用');
         }
       },
+      onUndo: async () => {
+        try {
+          const ok = await univerAPI?.undo?.();
+          message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
+        } catch {
+          message.warning('撤销失败');
+        }
+      },
+      onRedo: async () => {
+        try {
+          const ok = await univerAPI?.redo?.();
+          message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
+        } catch {
+          message.warning('重做失败');
+        }
+      },
     };
     if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
       try {
@@ -780,7 +863,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       }
     }
     // 14. 初始化完成
-    onReady?.({ univerAPI, workbook, worksheet });
+    const renderMs = Math.round(performance.now() - renderStartedAt);
+    onReady?.({ univerAPI, workbook, worksheet, renderMs });
 
     // 15. 销毁
     return () => {
@@ -804,6 +888,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         disposeCommentContextMenuGuard?.();
       } catch (error) {
         console.warn('[Table] dispose comment context menu guard failed', error);
+      }
+      try {
+        disposeFindDialogConstraint?.();
+      } catch (error) {
+        console.warn('[Table] dispose find dialog constraint failed', error);
       }
       try {
         univerAPI.dispose();
@@ -846,6 +935,22 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         },
         onQuickSearch: () => {
           openQuickSearch(univerAPI);
+        },
+        onUndo: async () => {
+          try {
+            const ok = await univerAPI?.undo?.();
+            message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
+          } catch {
+            message.warning('撤销失败');
+          }
+        },
+        onRedo: async () => {
+          try {
+            const ok = await univerAPI?.redo?.();
+            message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
+          } catch {
+            message.warning('重做失败');
+          }
         },
       });
     }
