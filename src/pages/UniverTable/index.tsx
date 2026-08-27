@@ -28,6 +28,8 @@ import {
   VerticalAlignBottomOutlined,
   UndoOutlined,
   RedoOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
@@ -535,6 +537,7 @@ const UniverTablePage = () => {
   const [breadcrumb, setBreadcrumb] = useState<string[]>([]);
   const [traceOpen, setTraceOpen] = useState(false);
   const [traceTree, setTraceTree] = useState<ETableDataTraceNode | null>(null);
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
 
   const isDemoTree = dataScale === 'tree';
   const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
@@ -678,6 +681,7 @@ const UniverTablePage = () => {
 
   const handleViewHistory = (cell: string) => {
     setFocusCell(cell);
+    setSidePanelOpen(true);
     message.info(`已切换到 ${cell} 的历史记录`);
   };
 
@@ -871,9 +875,34 @@ const UniverTablePage = () => {
         )}
       </Card>
 
-      <Row gutter={16} align="stretch">
-        <Col xs={24} xl={17}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'stretch',
+          gap: 0,
+          position: 'relative',
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0, transition: 'flex 0.28s ease' }}>
           <Card style={{ height: '100%' }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                marginBottom: 8,
+              }}
+            >
+              <Tooltip title={sidePanelOpen ? '隐藏数据追踪面板' : '显示数据追踪面板'}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={sidePanelOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+                  onClick={() => setSidePanelOpen((open) => !open)}
+                >
+                  {sidePanelOpen ? '隐藏面板' : '显示面板'}
+                </Button>
+              </Tooltip>
+            </div>
             <Alert
               message="树形交互说明"
               description={
@@ -939,16 +968,29 @@ const UniverTablePage = () => {
               </div>
             )}
           </Card>
-        </Col>
+        </div>
 
-        <Col xs={24} xl={7}>
+        <div
+          style={{
+            width: sidePanelOpen ? 320 : 0,
+            marginLeft: sidePanelOpen ? 16 : 0,
+            flexShrink: 0,
+            overflow: 'hidden',
+            transition: 'width 0.28s ease, margin-left 0.28s ease',
+          }}
+        >
           <div
             style={{
+              width: 320,
               height: '100%',
               minHeight: 640,
               display: 'flex',
               flexDirection: 'column',
               gap: 16,
+              opacity: sidePanelOpen ? 1 : 0,
+              transform: sidePanelOpen ? 'translateX(0)' : 'translateX(24px)',
+              transition: 'opacity 0.24s ease, transform 0.28s ease',
+              pointerEvents: sidePanelOpen ? 'auto' : 'none',
             }}
           >
             <Card
@@ -1017,8 +1059,8 @@ const UniverTablePage = () => {
               )}
             </Card>
           </div>
-        </Col>
-      </Row>
+        </div>
+      </div>
 
       <Card style={{ marginTop: 16 }} size="small">
         <Row gutter={[16, 16]}>
