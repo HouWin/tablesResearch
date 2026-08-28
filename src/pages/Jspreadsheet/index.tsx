@@ -268,7 +268,16 @@ function outlineEditableSeed(row: number, seed: number) {
   return [status, date] as const;
 }
 
-const OUTLINE_PROFIT_COL = 5;
+const OUTLINE_ATTRS = ['标准品', '促销品', '定制', '常备'] as const;
+
+function outlineAttrValue(row: number, seed: number, level: 'category' | 'sub' | 'state') {
+  if (level === 'state') return '';
+  if (level === 'category') return '品类';
+  return OUTLINE_ATTRS[(row + seed) % OUTLINE_ATTRS.length];
+}
+
+const OUTLINE_REGION_COL = 2;
+const OUTLINE_PROFIT_COL = 6;
 
 function buildOutlineFromCats(
   cats: OutlineCatInput[],
@@ -296,12 +305,20 @@ function buildOutlineFromCats(
 
     data[r] = (() => {
       const [status, orderDate] = outlineEditableSeed(r, seed);
-      return [cat.name, 'East', status, orderDate, catSales, catProfit];
+      return [
+        cat.name,
+        outlineAttrValue(r, seed, 'category'),
+        'East',
+        status,
+        orderDate,
+        catSales,
+        catProfit,
+      ];
     })();
     groupCells.push({ row: catStart, col: 0, label: cat.name, kind: 'category', indent: 0 });
     groupCells.push({
       row: catStart,
-      col: 1,
+      col: OUTLINE_REGION_COL,
       label: 'East',
       kind: 'region',
       indent: 0,
@@ -317,7 +334,7 @@ function buildOutlineFromCats(
       const st = catStates[si];
       data[r] = (() => {
         const [status, orderDate] = outlineEditableSeed(r, seed);
-        return ['', st.name, status, orderDate, st.sales, st.profit];
+        return ['', '', st.name, status, orderDate, st.sales, st.profit];
       })();
       stateDetailRows.add(r);
       markNegProfit(r, st.profit);
@@ -330,12 +347,20 @@ function buildOutlineFromCats(
       const subStart = r;
       data[r] = (() => {
         const [status, orderDate] = outlineEditableSeed(r, seed);
-        return [sub.name, 'East', status, orderDate, sub.sales, sub.profit];
+        return [
+          sub.name,
+          outlineAttrValue(r, seed, 'sub'),
+          'East',
+          status,
+          orderDate,
+          sub.sales,
+          sub.profit,
+        ];
       })();
       groupCells.push({ row: subStart, col: 0, label: sub.name, kind: 'leaf', indent: 1 });
       groupCells.push({
         row: subStart,
-        col: 1,
+        col: OUTLINE_REGION_COL,
         label: 'East',
         kind: 'region',
         indent: 0,
@@ -350,9 +375,9 @@ function buildOutlineFromCats(
       for (let si = 0; si < subStates.length; si += 1) {
         const st = subStates[si];
         data[r] = (() => {
-        const [status, orderDate] = outlineEditableSeed(r, seed);
-        return ['', st.name, status, orderDate, st.sales, st.profit];
-      })();
+          const [status, orderDate] = outlineEditableSeed(r, seed);
+          return ['', '', st.name, status, orderDate, st.sales, st.profit];
+        })();
         stateDetailRows.add(r);
         markNegProfit(r, st.profit);
         if (!liteMeta) subRegionCell.detailRows!.push(r);
@@ -1121,6 +1146,7 @@ function JspreadsheetPageInner() {
   const outlineColumns = useMemo(
     () => [
       { type: 'text', title: 'Category', width: 160, readOnly: true, align: 'left' as const },
+      { type: 'text', title: '属性值', width: 100, align: 'left' as const },
       { type: 'text', title: 'Region', width: 110, readOnly: true, align: 'left' as const },
       {
         type: 'dropdown',
@@ -1342,7 +1368,7 @@ function JspreadsheetPageInner() {
     const hiddenRows = new Set<number>();
     const rowSeqMap = new Map<number, number>();
     let rowSeqDirty = true;
-    const paintCols = new Set([0, 1, OUTLINE_PROFIT_COL]);
+    const paintCols = new Set([0, OUTLINE_REGION_COL, OUTLINE_PROFIT_COL]);
 
     const markRowSeqDirty = () => {
       rowSeqDirty = true;
@@ -1451,7 +1477,7 @@ function JspreadsheetPageInner() {
     ) => {
       if (!tableEl) return;
       for (let r = catRow; r <= catRow + span; r += 1) {
-        [0, 1, OUTLINE_PROFIT_COL].forEach((col) => {
+        [0, OUTLINE_REGION_COL, OUTLINE_PROFIT_COL].forEach((col) => {
           const cell = tableEl.querySelector(
             `td[data-x="${col}"][data-y="${r}"]`,
           ) as HTMLElement | null;
@@ -1548,14 +1574,16 @@ function JspreadsheetPageInner() {
       const headerRegion = regionByRow.get(catRow);
       if (headerRegion) {
         const headerRegionCell = table.querySelector(
-          `td[data-x="1"][data-y="${catRow}"]`,
+          `td[data-x="${OUTLINE_REGION_COL}"][data-y="${catRow}"]`,
         ) as HTMLElement | null;
         if (headerRegionCell) paintCell(ws, headerRegionCell, headerRegion);
       }
       if (!includeRegions) return;
       for (let r = catRow + 1; r <= catRow + span; r += 1) {
         if (!regionByRow.has(r)) continue;
-        const regionCell = table.querySelector(`td[data-x="1"][data-y="${r}"]`) as HTMLElement | null;
+        const regionCell = table.querySelector(
+          `td[data-x="${OUTLINE_REGION_COL}"][data-y="${r}"]`,
+        ) as HTMLElement | null;
         const regionMeta = regionByRow.get(r);
         if (regionCell && regionMeta) paintCell(ws, regionCell, regionMeta);
       }
@@ -1688,7 +1716,7 @@ function JspreadsheetPageInner() {
         cell.classList.add('jss-outline-state-fill');
         return;
       }
-      if (col !== 1) return;
+      if (col !== OUTLINE_REGION_COL) return;
       cell.classList.add('jss-outline-state-region');
       if (cell.querySelector('.jss-outline-label')) return;
       const text = (cell.textContent || '').trim();
@@ -1724,7 +1752,7 @@ function JspreadsheetPageInner() {
 
       cell.classList.add('readonly', 'jss-outline-group-cell');
       if (col === 0) cell.classList.add('jss-outline-category-col');
-      if (col === 1) cell.classList.add('jss-outline-region-col');
+      if (col === OUTLINE_REGION_COL) cell.classList.add('jss-outline-region-col');
       cell.style.paddingLeft = `${pad}px`;
 
       const existing = cell.querySelector('.jss-outline-toggle') as HTMLElement | null;
@@ -1787,7 +1815,7 @@ function JspreadsheetPageInner() {
               continue;
             }
             if (stateDetailRows.has(row)) {
-              if (col === 0 || col === 1) paintStateDetailCell(cell, col);
+              if (col === 0 || col === OUTLINE_REGION_COL) paintStateDetailCell(cell, col);
               if (col === OUTLINE_PROFIT_COL) paintProfitCell(cell, row);
             }
           }
@@ -2674,7 +2702,7 @@ function JspreadsheetPageInner() {
       <p className="jss-page__hint">
         「订单明细已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
         下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 / 大数据虚拟滚动 /
-        列宽拖动 / 自适应列宽。「透视源数据」：Category / Region 折叠；状态(下拉)、下单日期、Sales/Profit(数值) 可编辑；
+        列宽拖动 / 自适应列宽。「透视源数据」：Category / Region 折叠；属性值、状态(下拉)、下单日期、Sales/Profit 可编辑；
         「透视分析」读「透视底表」。
       </p>
 
@@ -2807,7 +2835,7 @@ function JspreadsheetPageInner() {
               pagination={false}
               oneditionstart={(_ws: any, _cell: any, x: any) => {
                 const col = Number(x);
-                if (col === 0 || col === 1) return false;
+                if (col === 0 || col === OUTLINE_REGION_COL) return false;
                 return true;
               }}
             />
