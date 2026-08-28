@@ -66,8 +66,46 @@ export const setupCellHistory = (
 ): ETableCellHistoryApi => {
   const maxRecords = options?.maxRecords ?? 200;
   const tracks: ETableCellChangeRecord[] = [];
+  const tracksByCell = new Map<string, ETableCellChangeRecord[]>();
   const disposables: Array<{ dispose?: () => void }> = [];
   const editing = new Map<string, string>();
+  let selectionRaf = 0;
+  let pendingSelection: { cell: string; row: number; column: number } | null = null;
+
+  const notifySelection = (row: number, column: number) => {
+    if (!options?.onSelectionChange) {
+      return;
+    }
+    pendingSelection = { cell: cellAddress(row, column), row, column };
+    if (selectionRaf) {
+      return;
+    }
+    selectionRaf = requestAnimationFrame(() => {
+      selectionRaf = 0;
+      if (pendingSelection) {
+        options.onSelectionChange?.(
+          pendingSelection.cell,
+          pendingSelection.row,
+          pendingSelection.column,
+        );
+        pendingSelection = null;
+      }
+    });
+  };
+
+  const removeFromCellIndex = (record: ETableCellChangeRecord) => {
+    const list = tracksByCell.get(record.cell);
+    if (!list) {
+      return;
+    }
+    const index = list.findIndex((item) => item.id === record.id);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+    if (!list.length) {
+      tracksByCell.delete(record.cell);
+    }
+  };
 
   const push = (
     row: number,
@@ -90,8 +128,14 @@ export const setupCellHistory = (
       source,
     };
     tracks.unshift(record);
+    const cellList = tracksByCell.get(record.cell) ?? [];
+    cellList.unshift(record);
+    tracksByCell.set(record.cell, cellList);
     if (tracks.length > maxRecords) {
-      tracks.length = maxRecords;
+      const dropped = tracks.pop();
+      if (dropped) {
+        removeFromCellIndex(dropped);
+      }
     }
     options?.onChange?.(record);
   };
@@ -153,7 +197,7 @@ export const setupCellHistory = (
         if (typeof row !== 'number' || typeof column !== 'number') {
           return;
         }
-        options?.onSelectionChange?.(cellAddress(row, column), row, column);
+        notifySelection(row, column);
       }),
     );
   } catch {
@@ -168,7 +212,7 @@ export const setupCellHistory = (
         if (typeof row !== 'number' || typeof column !== 'number') {
           return;
         }
-        options?.onSelectionChange?.(cellAddress(row, column), row, column);
+        notifySelection(row, column);
       }),
     );
   } catch {
@@ -177,6 +221,10 @@ export const setupCellHistory = (
 
   return {
     dispose: () => {
+      if (selectionRaf) {
+        cancelAnimationFrame(selectionRaf);
+        selectionRaf = 0;
+      }
       disposables.forEach((item) => {
         try {
           item.dispose?.();
@@ -186,9 +234,10 @@ export const setupCellHistory = (
       });
     },
     getTracks: () => [...tracks],
-    getCellHistory: (cell: string) => tracks.filter((item) => item.cell === cell),
+    getCellHistory: (cell: string) => tracksByCell.get(cell) ?? [],
     clear: () => {
       tracks.length = 0;
+      tracksByCell.clear();
     },
   };
 };

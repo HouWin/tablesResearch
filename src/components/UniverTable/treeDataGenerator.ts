@@ -29,6 +29,9 @@ const STATUS_OPTIONS = ['已核验', '待复核', '异常'] as const;
 /** 展平后超过该阈值时启用轻量树（叶子 1 行；品类行保留简化 Region 折叠） */
 export const LARGE_TREE_FLAT_ROW_THRESHOLD = 5000;
 
+/** 超过该阈值时数据/合并/折叠初始化走异步分片，避免主线程长时间阻塞 */
+export const ASYNC_RENDER_ROW_THRESHOLD = 1000;
+
 const NUMERIC_MEASURE_FIELDS = [
   'revenue',
   'productRevenue',

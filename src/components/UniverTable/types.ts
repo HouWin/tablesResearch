@@ -391,6 +391,11 @@ export interface ETableTreeConfig {
    * 每个叶子约 1 行，避免 1 万目标膨胀到数万行。
    */
   liteMode?: boolean;
+  /**
+   * 跳过单元格合并（大数据场景下数千次 merge 会严重拖慢首屏）。
+   * 通常与 liteMode 一起用于万行级演示。
+   */
+  skipMerges?: boolean;
 }
 
 /** 分组统计字段 */
@@ -574,6 +579,8 @@ export interface ETableProps {
     worksheet: any;
     /** 表格初始化到数据渲染完成的耗时（毫秒） */
     renderMs?: number;
+    /** 展平后的数据行数 */
+    rowCount?: number;
   }) => void;
 }
 

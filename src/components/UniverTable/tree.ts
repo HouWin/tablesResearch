@@ -313,7 +313,7 @@ export const flattenTreeData = (
     count: number,
     value: ETablePrimitive,
   ) => {
-    if (count <= 1) {
+    if (count <= 1 || config.skipMerges) {
       return;
     }
     // 大数据模式仍保留品类列纵向合并，跳过子品类等海量 merge
@@ -347,6 +347,14 @@ export const flattenTreeData = (
       Object.entries(values).forEach(([key, value]) => {
         // values 里常有 region:'华东'，不能覆盖 attributeLabel（▶/▼ 前缀）
         if (attributeField && key === attributeField) {
+          return;
+        }
+        if (config.liteMode) {
+          if (value !== null && typeof value === 'object' && 'value' in value) {
+            data[key] = (value as { value?: ETablePrimitive }).value ?? '';
+          } else {
+            data[key] = value as ETablePrimitive;
+          }
           return;
         }
         data[key] = styleMeasureCell(value) as ETablePrimitive | ETableCell;

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, } from 'react';
 import { createUniver, LocaleType, mergeLocales, } from '@univerjs/presets';
 import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
@@ -11,9 +11,10 @@ import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, re
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
-import { LARGE_TREE_FLAT_ROW_THRESHOLD } from './treeDataGenerator';
+import { ASYNC_RENDER_ROW_THRESHOLD, LARGE_TREE_FLAT_ROW_THRESHOLD } from './treeDataGenerator';
 import { setupTreeCellCollapse } from './treeCollapse';
 import type { ETableTreeCollapseApi } from './treeCollapse';
+import type { ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
 import { setupCellHistory } from './cellHistory';
@@ -130,17 +131,51 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   onViewDataTraceRef.current = onViewDataTrace;
 
   /**
-   * 优先 treeData，其次 groupData，否则使用外部 flat props。
+   * 树形/分组数据异步展平，避免万行级 flatten 阻塞 React 首帧（Loading 无法显示）。
    */
-  const flattened = useMemo(() => {
-    if (treeData && treeConfig) {
-      return flattenTreeData(treeData, treeConfig);
+  const needsFlatten = Boolean(
+    (treeData && treeConfig) || (groupData && groupConfig),
+  );
+  const [flattened, setFlattened] = useState<ETableFlattenResult | null>(null);
+  const [flattenPreparing, setFlattenPreparing] = useState(needsFlatten);
+
+  useEffect(() => {
+    if (!needsFlatten) {
+      setFlattened(null);
+      setFlattenPreparing(false);
+      return;
     }
-    if (groupData && groupConfig) {
-      return flattenGroupedData(groupData, groupConfig);
-    }
-    return null;
-  }, [treeData, treeConfig, groupData, groupConfig]);
+    let cancelled = false;
+    setFlattenPreparing(true);
+    setFlattened(null);
+
+    const timer = window.setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const result =
+          treeData && treeConfig
+            ? flattenTreeData(treeData, treeConfig)
+            : flattenGroupedData(groupData!, groupConfig!);
+        if (!cancelled) {
+          setFlattened(result);
+          setFlattenPreparing(false);
+        }
+      } catch (error) {
+        console.warn('[ETable] flatten failed', error);
+        if (!cancelled) {
+          setFlattenPreparing(false);
+        }
+      }
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [needsFlatten, treeData, treeConfig, groupData, groupConfig]);
+
   const columns = flattened?.columns ?? propsColumns;
   const rows = flattened?.rows ?? propsRows;
   const merges = flattened?.merges ?? propsMerges;
@@ -564,6 +599,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     if (!containerRef.current) {
       return;
     }
+    // 树形数据展平未完成
+    if (needsFlatten && (flattenPreparing || !flattened)) {
+      return;
+    }
     // 防止重复初始化
     if (univerAPIRef.current) {
       return;
@@ -683,6 +722,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     // 5. 设置表头行高
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
 
+    const isAsyncRender = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
     const isLargeData = rows.length >= LARGE_TREE_FLAT_ROW_THRESHOLD;
     let cancelled = false;
     let disposeTreeCollapse: (() => void) | undefined;
@@ -692,8 +732,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     let disposeCommentContextMenuGuard: (() => void) | undefined;
 
     const finishInit = async () => {
-      // 6. 渲染数据（大数据异步分片，避免长时间阻塞主线程）
-      if (isLargeData) {
+      // 6. 渲染数据（中等及以上数据量异步分片，避免长时间阻塞主线程）
+      if (isAsyncRender) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipRowBackgrounds: Boolean(treeConfig?.liteMode),
@@ -704,17 +744,24 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (cancelled) {
         return;
       }
+      const readonlyDataRows: number[] = [];
+      for (let index = 0; index < rows.length; index += 1) {
+        if (rows[index].readonly) {
+          readonlyDataRows.push(index);
+        }
+      }
       // 6.5 列类型：大数据跳过全列数据验证（极耗性能）
       applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
         skipValidation: isLargeData,
+        readonlyDataRows,
       });
-      // 7. 设置数据行高（大数据由 renderDataAsync 批量设置）
-      if (rows.length && !isLargeData) {
+      // 7. 设置数据行高（异步渲染路径由 renderDataAsync 批量设置）
+      if (rows.length && !isAsyncRender) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
       // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
       if (merges.length > 0) {
-        if (isLargeData) {
+        if (isAsyncRender) {
           await renderMergesAsync(worksheet, merges, maxDepth);
         } else {
           renderMerges(worksheet, merges, maxDepth);
@@ -732,12 +779,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (typeof freezeColumns === 'number') {
         worksheet.setFrozenColumns(freezeColumns);
       }
-      if (isLargeData) {
-        const renderMs = Math.round(performance.now() - renderStartedAt);
-        onReady?.({ univerAPI, workbook, worksheet, renderMs });
-      }
       // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
-      if (isLargeData) {
+      if (isAsyncRender) {
         await new Promise<void>((resolve) => {
           window.requestAnimationFrame(() => resolve());
         });
@@ -747,6 +790,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       }
       const collapseBatchSize =
         treeToggles.length >= 10_000 ? 500 : treeToggles.length >= 2000 ? 250 : 100;
+      let collapseReady: Promise<void> = Promise.resolve();
       if (treeUI && treeToggles.length) {
         const api = setupTreeCellCollapse(
           univerAPI,
@@ -755,7 +799,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           treeToggles,
           maxDepth,
           {
-            ...(isLargeData
+            ...(isAsyncRender
               ? {
                   batchedInit: true,
                   initBatchSize: collapseBatchSize,
@@ -766,6 +810,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           },
         );
         treeCollapseApiRef.current = api;
+        collapseReady = api.ready;
         disposeTreeCollapse = () => {
           api.dispose();
           treeCollapseApiRef.current = null;
@@ -775,9 +820,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         createRowOutlines(worksheet, rowGroups, maxDepth);
       }
       // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
-      const readonlyColumns = leafColumns
-        .map((column, index) => (column.editable === false ? index : -1))
-        .filter((index) => index >= 0);
+      const readonlyColumnSet = new Set(
+        leafColumns
+          .map((column, index) => (column.editable === false ? index : -1))
+          .filter((index) => index >= 0),
+      );
       // treeUI 默认锁定 dimensions + attribute 对应列
       if (treeUI && treeConfig) {
         const lockFields = new Set([
@@ -785,17 +832,12 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
         ]);
         leafColumns.forEach((column, index) => {
-          if (lockFields.has(column.id) && !readonlyColumns.includes(index)) {
-            readonlyColumns.push(index);
+          if (lockFields.has(column.id)) {
+            readonlyColumnSet.add(index);
           }
         });
       }
-      const readonlyDataRows: number[] = [];
-      for (let index = 0; index < rows.length; index += 1) {
-        if (rows[index].readonly) {
-          readonlyDataRows.push(index);
-        }
-      }
+      const readonlyColumns = [...readonlyColumnSet];
       disposeReadonly = setupReadonlyCells(univerAPI, {
         headerRowCount: maxDepth,
         readonlyColumns,
@@ -803,6 +845,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       });
       // 10. 列分组
       createColumnOutlines(worksheet, columnGroups);
+
+      await collapseReady;
+      if (cancelled) {
+        return;
+      }
 
       const setupSecondaryFeatures = () => {
         if (cancelled) {
@@ -923,7 +970,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
       };
 
-      if (isLargeData) {
+      if (isAsyncRender) {
         if (typeof requestIdleCallback === 'function') {
           requestIdleCallback(setupSecondaryFeatures, { timeout: 500 });
         } else {
@@ -933,11 +980,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         setupSecondaryFeatures();
       }
 
-      // 14. 初始化完成
-      if (!isLargeData) {
-        const renderMs = Math.round(performance.now() - renderStartedAt);
-        onReady?.({ univerAPI, workbook, worksheet, renderMs });
-      }
+      const renderMs = Math.round(performance.now() - renderStartedAt);
+      onReady?.({ univerAPI, workbook, worksheet, renderMs, rowCount: rows.length });
     };
 
     void finishInit();
@@ -980,7 +1024,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       workbookRef.current = null;
       worksheetRef.current = null;
     };
-  }, []);
+  }, [needsFlatten, flattenPreparing, flattened]);
 
   // 注册icon图标
   useEffect(() => {
@@ -1043,6 +1087,23 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         position: 'relative',
       }}
     >
+      {flattenPreparing && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(255,255,255,0.85)',
+            color: '#666',
+            fontSize: 13,
+          }}
+        >
+          展平数据中…
+        </div>
+      )}
       <div
         ref={containerRef}
         style={{ width: '100%', height: '100%', overflow: 'hidden' }}
