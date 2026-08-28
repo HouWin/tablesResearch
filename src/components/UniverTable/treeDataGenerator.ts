@@ -26,7 +26,7 @@ const LEAF_NAMES = [
 
 const STATUS_OPTIONS = ['已核验', '待复核', '异常'] as const;
 
-/** 展平后超过该阈值时启用轻量树（每叶子 1 行，无 Region 城市明细） */
+/** 展平后超过该阈值时启用轻量树（叶子 1 行；品类行保留简化 Region 折叠） */
 export const LARGE_TREE_FLAT_ROW_THRESHOLD = 5000;
 
 const NUMERIC_MEASURE_FIELDS = [
@@ -117,6 +117,25 @@ const aggregateLeafValues = (
   };
 };
 
+const regionAttributesLite = (
+  prefix: string,
+  seed: number,
+): ETableTreeAttribute[] => {
+  const mk = (offset: number) => makeLeafValues(seed * 10 + offset);
+  return [
+    {
+      id: `${prefix}-east`,
+      label: '华东',
+      collapsed: true,
+      values: mk(0),
+      children: [
+        { id: `${prefix}-shanghai`, label: '上海', values: mk(1) },
+        { id: `${prefix}-jiangsu`, label: '江苏', values: mk(2) },
+      ],
+    },
+  ];
+};
+
 const regionAttributesFast = (
   prefix: string,
   seed: number,
@@ -163,13 +182,16 @@ export const estimateTreeFlatRows = (
   leafPerCategory: number,
 ): number => 4 * categoryCount * (1 + leafPerCategory);
 
+const getLeafMeasureValues = (node: ETableTreeNode): Record<string, ETablePrimitive> =>
+  (node.attributes?.[0]?.values ?? node.values ?? {}) as Record<string, ETablePrimitive>;
+
 /**
- * 轻量树：每个 Category 1 行汇总 + N 行叶子，无 Region 城市明细。
+ * 轻量树：品类汇总 3 行（汇总 + 2 城市）+ 每个叶子 3 行（行本身 + 2 城市，折叠后隐藏）。
  */
 export const estimateLiteTreeFlatRows = (
   categoryCount: number,
   leafPerCategory: number,
-): number => categoryCount * (1 + leafPerCategory);
+): number => categoryCount * (3 + leafPerCategory * 3);
 
 /**
  * 根据目标展平行数规划 Category 数量与子项数量。
@@ -184,7 +206,7 @@ export const planScaledTree = (targetFlatRows: number) => {
     );
     const leafPerCategory = Math.max(
       1,
-      Math.floor(targetFlatRows / categoryCount) - 1,
+      Math.floor((targetFlatRows / categoryCount - 3) / 3),
     );
 
     return {
@@ -240,14 +262,16 @@ export const generateScaledTreeData = (
         for (; leafIndex < end; leafIndex += 1) {
           const globalLeaf = categoryIndex * leafPerCategory + leafIndex;
           const leafName = `${LEAF_NAMES[globalLeaf % LEAF_NAMES.length]} ${globalLeaf + 1}`;
-          const leafValues = makeLeafValues(globalLeaf + 1);
 
           if (useLite) {
             children[leafIndex] = {
               id: `leaf-${categoryIndex}-${leafIndex}`,
               label: leafName,
               data: { subcategory: '华东' },
-              values: leafValues,
+              attributes: regionAttributesLite(
+                `leaf-${categoryIndex}-${leafIndex}`,
+                globalLeaf + 1,
+              ),
             };
           } else {
             children[leafIndex] = {
@@ -277,9 +301,8 @@ export const generateScaledTreeData = (
             label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
             collapsed: categoryIndex > 0,
             data: { subcategory: '华东' },
-            values: aggregateLeafValues(
-              children.map((child) => (child.values ?? {}) as Record<string, ETablePrimitive>),
-            ),
+            attributes: regionAttributesLite(`cat-${categoryIndex}`, categoryIndex),
+            values: aggregateLeafValues(children.map(getLeafMeasureValues)),
             children,
           };
         } else {

@@ -30,12 +30,14 @@ import {
   RedoOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
 import { flattenTreeData } from '@/components/UniverTable/tree';
 import { generateScaledTreeData } from '@/components/UniverTable/treeDataGenerator';
 import type {
+  ETableCell,
   ETableCellChangeRecord,
   ETableColumn,
   ETableDataTraceNode,
@@ -151,18 +153,120 @@ const LEAF_MEASURES: ETableColumn[] = [
   },
 ];
 
-/** treeConfig.measures 用 field；与表头叶子列 id 对齐 */
-const MEASURE_FIELDS = LEAF_MEASURES.map(({ id, title, width, type, options, numberFormat }) => ({
-  field: id,
-  title,
-  width,
-  type,
-  options,
-  numberFormat,
-}));
+/** 可通过工具栏追加的扩展指标列 */
+const OPTIONAL_COLUMNS: ETableColumn[] = [
+  {
+    id: 'cost',
+    title: '成本',
+    width: 100,
+    type: 'number',
+    numberFormat: '¥#,##0',
+  },
+  {
+    id: 'profit',
+    title: '毛利',
+    width: 100,
+    type: 'number',
+    numberFormat: '¥#,##0',
+  },
+  {
+    id: 'margin',
+    title: '毛利率',
+    width: 96,
+    type: 'number',
+    numberFormat: '0.0%',
+  },
+  {
+    id: 'refundCount',
+    title: '退单数',
+    width: 92,
+    type: 'number',
+    numberFormat: '#,##0',
+  },
+  { id: 'remark', title: '备注', width: 120 },
+];
 
-/** 三层表头：主行层级 / 扩展行层级 / 核心经营指标 / 业务治理 */
-const headerColumns: ETableColumn[] = [
+const makeExtraColumnValue = (
+  column: ETableColumn,
+  seed: number,
+  rowValues?: Record<string, ETablePrimitive>,
+): ETablePrimitive => {
+  const revenue = Number(rowValues?.revenue ?? (seed * 97) % 500000 + 50000);
+  const orders = Number(rowValues?.orders ?? (seed * 13) % 800 + 50);
+  switch (column.id) {
+    case 'cost':
+      return Math.round(revenue * (0.55 + (seed % 10) / 100));
+    case 'profit':
+      return Math.round(revenue * (0.25 + (seed % 8) / 100));
+    case 'margin':
+      return Number((0.18 + (seed % 12) / 100).toFixed(3));
+    case 'refundCount':
+      return (seed * 3) % 40;
+    case 'remark':
+      return `备注-${(seed % 100) + 1}`;
+    default:
+      return column.type === 'number' ? seed % 1000 : '';
+  }
+};
+
+const enrichValues = (
+  values: Record<string, ETablePrimitive | ETableCell> | undefined,
+  columns: ETableColumn[],
+  seed: number,
+): Record<string, ETablePrimitive> => {
+  const next: Record<string, ETablePrimitive> = {};
+  Object.entries(values ?? {}).forEach(([key, value]) => {
+    if (value !== null && typeof value === 'object' && 'value' in value) {
+      next[key] = (value as { value?: ETablePrimitive }).value ?? '';
+      return;
+    }
+    next[key] = value as ETablePrimitive;
+  });
+  columns.forEach((column) => {
+    if (next[column.id] === undefined) {
+      next[column.id] = makeExtraColumnValue(column, seed, next);
+    }
+  });
+  return next;
+};
+
+const enrichTreeWithColumns = (
+  nodes: ETableTreeNode[],
+  columns: ETableColumn[],
+  seedBase = 1,
+): ETableTreeNode[] =>
+  nodes.map((node, index) => {
+    const seed = seedBase + index * 17;
+    return {
+      ...node,
+      values: enrichValues(node.values, columns, seed),
+      attributes: node.attributes?.map((attr, attrIndex) => ({
+        ...attr,
+        values: enrichValues(attr.values, columns, seed * 10 + attrIndex),
+        children: attr.children?.map((child, childIndex) => ({
+          ...child,
+          values: enrichValues(child.values, columns, seed * 100 + childIndex),
+        })),
+      })),
+      children: node.children
+        ? enrichTreeWithColumns(node.children, columns, seed * 1000)
+        : undefined,
+    };
+  });
+
+/** treeConfig.measures 用 field；与表头叶子列 id 对齐 */
+const toMeasureFields = (columns: ETableColumn[]) =>
+  columns.map(({ id, title, width, type, options, numberFormat }) => ({
+    field: id,
+    title,
+    width,
+    type,
+    options,
+    numberFormat,
+  }));
+
+/** 三层表头：主行层级 / 扩展行层级 / 核心经营指标 / 业务治理 / 扩展指标 */
+const buildHeaderColumns = (extraMeasures: ETableColumn[] = []): ETableColumn[] => [
   {
     id: 'main-hierarchy',
     title: '主行层级',
@@ -227,39 +331,62 @@ const headerColumns: ETableColumn[] = [
       },
     ],
   },
+  ...(extraMeasures.length
+    ? [
+        {
+          id: 'extra-metrics',
+          title: '扩展指标',
+          children: [
+            {
+              id: 'user-added',
+              title: '追加列',
+              children: extraMeasures,
+            },
+          ],
+        },
+      ]
+    : []),
 ];
 
 const HEADER_DEPTH = 3;
 const HIERARCHY_COLS = 3;
-const TOTAL_COLS = HIERARCHY_COLS + LEAF_MEASURES.length;
+const BASE_MEASURE_COUNT = LEAF_MEASURES.length;
 
-const treeConfig: ETableTreeConfig = {
-  treeUI: true,
-  labelMode: 'single',
-  collapseAttributes: true,
-  dimensions: [
-    { field: 'category', title: '品类', width: 180 },
-    { field: 'subcategory', title: '子品类', width: 120 },
-  ],
-  attribute: { field: 'region', title: '区域', width: 140 },
-  headerColumns,
-  measures: MEASURE_FIELDS,
-  rowBackgrounds: ['#E8F3FF', '#F5FAFF', '#FFFFFF'],
-  regionDetailBackground: '#FAFBFC',
-  groupStatistics: {
-    labelTemplate: '{label}',
-    showGrandTotal: true,
-    grandTotalLabel: '全部合计',
-    grandTotalBackground: '#FFF7E6',
-    fields: [
-      { field: 'revenue', method: 'sum', name: '净收入合计' },
-      { field: 'productRevenue', method: 'sum' },
-      { field: 'serviceRevenue', method: 'sum' },
-      { field: 'orders', method: 'sum' },
-      { field: 'onlineOrders', method: 'sum' },
-      { field: 'offlineOrders', method: 'sum' },
+const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig => {
+  const allMeasures = [...LEAF_MEASURES, ...extraMeasures];
+  const numericExtraFields = extraMeasures
+    .filter((item) => item.type === 'number')
+    .map((item) => ({ field: item.id, method: 'sum' as const }));
+
+  return {
+    treeUI: true,
+    labelMode: 'single',
+    collapseAttributes: true,
+    dimensions: [
+      { field: 'category', title: '品类', width: 180 },
+      { field: 'subcategory', title: '子品类', width: 120 },
     ],
-  },
+    attribute: { field: 'region', title: '区域', width: 140 },
+    headerColumns: buildHeaderColumns(extraMeasures),
+    measures: toMeasureFields(allMeasures),
+    rowBackgrounds: ['#E8F3FF', '#F5FAFF', '#FFFFFF'],
+    regionDetailBackground: '#FAFBFC',
+    groupStatistics: {
+      labelTemplate: '{label}',
+      showGrandTotal: true,
+      grandTotalLabel: '全部合计',
+      grandTotalBackground: '#FFF7E6',
+      fields: [
+        { field: 'revenue', method: 'sum', name: '净收入合计' },
+        { field: 'productRevenue', method: 'sum' },
+        { field: 'serviceRevenue', method: 'sum' },
+        { field: 'orders', method: 'sum' },
+        { field: 'onlineOrders', method: 'sum' },
+        { field: 'offlineOrders', method: 'sum' },
+        ...numericExtraFields,
+      ],
+    },
+  };
 };
 
 type Status = (typeof STATUS_OPTIONS)[number];
@@ -538,20 +665,38 @@ const UniverTablePage = () => {
   const [traceOpen, setTraceOpen] = useState(false);
   const [traceTree, setTraceTree] = useState<ETableDataTraceNode | null>(null);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [addedColumns, setAddedColumns] = useState<ETableColumn[]>([]);
+  const [addColumnKey, setAddColumnKey] = useState<string | undefined>();
 
   const isDemoTree = dataScale === 'tree';
   const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
-  const activeTreeData = isDemoTree ? treeData : scaledTreeData ?? [];
-  const activeTreeConfig = useMemo(
+  const activeTreeData = useMemo(() => {
+    const base = isDemoTree ? treeData : scaledTreeData ?? [];
+    if (!addedColumns.length) {
+      return base;
+    }
+    return enrichTreeWithColumns(base, addedColumns);
+  }, [isDemoTree, scaledTreeData, addedColumns]);
+  const activeTreeConfig = useMemo(() => {
+    const config = buildTreeConfig(addedColumns);
+    if (isDemoTree) {
+      return config;
+    }
+    return {
+      ...config,
+      liteMode: true,
+      groupStatistics: undefined,
+    };
+  }, [isDemoTree, addedColumns]);
+  const addableColumnOptions = useMemo(
     () =>
-      isDemoTree
-        ? treeConfig
-        : {
-            ...treeConfig,
-            liteMode: true,
-            groupStatistics: undefined,
-          },
-    [isDemoTree],
+      OPTIONAL_COLUMNS.filter(
+        (column) => !addedColumns.some((item) => item.id === column.id),
+      ).map((column) => ({
+        value: column.id,
+        label: column.title,
+      })),
+    [addedColumns],
   );
   const cellHistory = useMemo(
     () => tracks.filter((item) => item.cell === focusCell),
@@ -608,19 +753,36 @@ const UniverTablePage = () => {
     await loadScaledTree(dataScale);
   };
 
+  const handleAddColumn = (columnId: string) => {
+    const column = OPTIONAL_COLUMNS.find((item) => item.id === columnId);
+    if (!column) {
+      return;
+    }
+    if (addedColumns.some((item) => item.id === columnId)) {
+      message.info(`列「${column.title}」已存在`);
+      return;
+    }
+    setAddedColumns((prev) => [...prev, column]);
+    setTableKey((key) => key + 1);
+    setRenderMs(null);
+    setAddColumnKey(undefined);
+    message.success(`已添加列「${column.title}」`);
+  };
+
   const stats = useMemo(() => {
     const treeNodes = countNodes(activeTreeData);
     const sheetRows = isDemoTree
-      ? flattenTreeData(activeTreeData, treeConfig).rows.length
+      ? flattenTreeData(activeTreeData, activeTreeConfig).rows.length
       : flatRowCount;
+    const totalCols = HIERARCHY_COLS + BASE_MEASURE_COUNT + addedColumns.length;
     return {
       treeNodes,
       sheetRows,
-      totalCols: TOTAL_COLS,
-      totalCells: sheetRows * TOTAL_COLS,
+      totalCols,
+      totalCells: sheetRows * totalCols,
       modeLabel: isDemoTree ? '树形演示' : '树形大数据',
     };
-  }, [activeTreeData, flatRowCount, isDemoTree]);
+  }, [activeTreeData, activeTreeConfig, flatRowCount, isDemoTree, addedColumns.length]);
 
   const options = useMemo(
     () => ({
@@ -724,6 +886,22 @@ const UniverTablePage = () => {
           <Col>
             <Space wrap>
               <Select
+                placeholder="添加列"
+                style={{ width: 132 }}
+                value={addColumnKey}
+                allowClear
+                suffixIcon={<PlusOutlined />}
+                options={addableColumnOptions}
+                disabled={!addableColumnOptions.length}
+                onChange={(value) => {
+                  if (value) {
+                    handleAddColumn(String(value));
+                  } else {
+                    setAddColumnKey(undefined);
+                  }
+                }}
+              />
+              <Select
                 value={dataScale}
                 style={{ width: 140 }}
                 onChange={handleScaleChange}
@@ -785,107 +963,6 @@ const UniverTablePage = () => {
         </Row>
       </Card>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} lg={14}>
-            <Space wrap>
-              <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
-                <Button icon={<UndoOutlined />} onClick={handleUndo}>
-                  回撤
-                </Button>
-              </Tooltip>
-              <Tooltip title="重做（Ctrl/Cmd+Y / Ctrl+Shift+Z）">
-                <Button icon={<RedoOutlined />} onClick={handleRedo}>
-                  重做
-                </Button>
-              </Tooltip>
-              <Tooltip title="下钻：展开当前选中行组">
-                <Button
-                  icon={<VerticalAlignBottomOutlined />}
-                  onClick={handleDrillDown}
-                >
-                  下钻
-                </Button>
-              </Tooltip>
-              <Tooltip title="上钻：折叠当前选中行组">
-                <Button
-                  icon={<VerticalAlignTopOutlined />}
-                  onClick={handleDrillUp}
-                >
-                  上钻
-                </Button>
-              </Tooltip>
-              <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
-                展开行
-              </Button>
-              <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
-                折叠行
-              </Button>
-              <Input.Search
-                placeholder="快速搜索"
-                allowClear
-                style={{ width: 220 }}
-                value={searchKeyword}
-                onChange={(e) => setSearchKeyword(e.target.value)}
-                onSearch={handleQuickSearch}
-                enterButton={<SearchOutlined />}
-              />
-              <Button onClick={() => tableRef.current?.openSearch()}>
-                查找面板
-              </Button>
-            </Space>
-          </Col>
-          <Col xs={24} lg={10}>
-            <Space wrap>
-              <span>功能开关：</span>
-              <Switch
-                checked={gridLines}
-                onChange={setGridLines}
-                checkedChildren="网格线"
-                unCheckedChildren="网格线"
-              />
-              <Switch
-                checked={freezeHeader}
-                onChange={setFreezeHeader}
-                checkedChildren="冻结表头"
-                unCheckedChildren="冻结表头"
-              />
-              <Switch
-                checked={contextMenu}
-                onChange={setContextMenu}
-                checkedChildren="右键菜单"
-                unCheckedChildren="右键菜单"
-              />
-              <Switch
-                checked={virtualScroll}
-                onChange={(checked) => {
-                  setVirtualScroll(checked);
-                  setRenderMs(null);
-                  setTableKey((k) => k + 1);
-                }}
-                checkedChildren="虚拟滚动"
-                unCheckedChildren="虚拟滚动"
-              />
-            </Space>
-          </Col>
-        </Row>
-        {breadcrumb.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            <Breadcrumb
-              items={[
-                { title: '根' },
-                ...breadcrumb.map((item) => ({ title: item })),
-              ]}
-            />
-          </div>
-        )}
-        {loading && (
-          <div style={{ marginTop: 12 }}>
-            <Progress percent={progress} status="active" />
-          </div>
-        )}
-      </Card>
-
       <div
         style={{
           display: 'flex',
@@ -919,13 +996,120 @@ const UniverTablePage = () => {
               description={
                 isDemoTree
                   ? '品类列同列缩进折叠（▶/▼）；区域列可展开城市明细。三层表头保留；净收入为数字列，核验状态为下拉，更新日期为日期列。'
-                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。编辑指标会写入数据追踪；50万/100万行可能较慢。`
+                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。品类与子项行的区域列均可展开「华东→城市」；默认折叠。50万/100万行可能较慢。`
               }
               type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
               showIcon
               closable
               style={{ marginBottom: 16 }}
             />
+            <div
+              style={{
+                marginBottom: 12,
+                padding: '12px 0',
+                borderTop: '1px solid #f0f0f0',
+                borderBottom: '1px solid #f0f0f0',
+              }}
+            >
+              <Row gutter={[16, 12]} align="middle" justify="space-between" wrap>
+                <Col flex="1 1 auto" style={{ minWidth: 0 }}>
+                  <Space wrap>
+                    <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
+                      <Button icon={<UndoOutlined />} onClick={handleUndo}>
+                        回撤
+                      </Button>
+                    </Tooltip>
+                    <Tooltip title="重做（Ctrl/Cmd+Y / Ctrl+Shift+Z）">
+                      <Button icon={<RedoOutlined />} onClick={handleRedo}>
+                        重做
+                      </Button>
+                    </Tooltip>
+                    <Tooltip title="下钻：展开当前选中行组">
+                      <Button
+                        icon={<VerticalAlignBottomOutlined />}
+                        onClick={handleDrillDown}
+                      >
+                        下钻
+                      </Button>
+                    </Tooltip>
+                    <Tooltip title="上钻：折叠当前选中行组">
+                      <Button
+                        icon={<VerticalAlignTopOutlined />}
+                        onClick={handleDrillUp}
+                      >
+                        上钻
+                      </Button>
+                    </Tooltip>
+                    <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
+                      展开行
+                    </Button>
+                    <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
+                      折叠行
+                    </Button>
+                    <Input.Search
+                      placeholder="快速搜索"
+                      allowClear
+                      style={{ width: 220 }}
+                      value={searchKeyword}
+                      onChange={(e) => setSearchKeyword(e.target.value)}
+                      onSearch={handleQuickSearch}
+                      enterButton={<SearchOutlined />}
+                    />
+                    <Button onClick={() => tableRef.current?.openSearch()}>
+                      查找面板
+                    </Button>
+                  </Space>
+                </Col>
+                <Col flex="0 0 auto" style={{ textAlign: 'right' }}>
+                  <Space wrap style={{ justifyContent: 'flex-end' }}>
+                    <span>功能开关：</span>
+                    <Switch
+                      checked={gridLines}
+                      onChange={setGridLines}
+                      checkedChildren="网格线"
+                      unCheckedChildren="网格线"
+                    />
+                    <Switch
+                      checked={freezeHeader}
+                      onChange={setFreezeHeader}
+                      checkedChildren="冻结表头"
+                      unCheckedChildren="冻结表头"
+                    />
+                    <Switch
+                      checked={contextMenu}
+                      onChange={setContextMenu}
+                      checkedChildren="右键菜单"
+                      unCheckedChildren="右键菜单"
+                    />
+                    <Switch
+                      checked={virtualScroll}
+                      onChange={(checked) => {
+                        setVirtualScroll(checked);
+                        setRenderMs(null);
+                        setTableKey((k) => k + 1);
+                      }}
+                      checkedChildren="虚拟滚动"
+                      unCheckedChildren="虚拟滚动"
+                    />
+                  </Space>
+                </Col>
+              </Row>
+              {breadcrumb.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <Breadcrumb
+                    items={[
+                      { title: '根' },
+                      ...breadcrumb.map((item) => ({ title: item })),
+                    ]}
+                  />
+                </div>
+              )}
+              {loading && (
+                <div style={{ marginTop: 12 }}>
+                  <Progress percent={progress} status="active" />
+                </div>
+              )}
+            </div>
             {loading ? (
               <div
                 style={{
@@ -941,7 +1125,7 @@ const UniverTablePage = () => {
               <div style={{ height: 560, overflow: 'hidden' }}>
                 <ETable
                   ref={tableRef}
-                  key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}`}
+                  key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}-${addedColumns.map((item) => item.id).join(',')}`}
                   treeData={activeTreeData}
                   treeConfig={activeTreeConfig}
                   options={options}

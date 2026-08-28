@@ -694,7 +694,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     const finishInit = async () => {
       // 6. 渲染数据（大数据异步分片，避免长时间阻塞主线程）
       if (isLargeData) {
-        await renderDataAsync(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+        await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
+          virtualScroll,
+          skipRowBackgrounds: Boolean(treeConfig?.liteMode),
+          chunkSize: 800,
+        });
       } else {
         renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
       }
@@ -705,14 +709,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
         skipValidation: isLargeData,
       });
-      // 7. 设置数据行高
-      if (rows.length) {
+      // 7. 设置数据行高（大数据由 renderDataAsync 批量设置）
+      if (rows.length && !isLargeData) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
-      // 8. 自定义合并（row 相对于数据区，需加上表头深度）
-      renderMerges(worksheet, merges, maxDepth);
+      // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
+      if (merges.length > 0) {
+        renderMerges(worksheet, merges, maxDepth);
+      }
       if (cancelled) {
         return;
+      }
+      if (isLargeData) {
+        const renderMs = Math.round(performance.now() - renderStartedAt);
+        onReady?.({ univerAPI, workbook, worksheet, renderMs });
       }
       // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
       if (isLargeData) {
@@ -730,6 +740,13 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           rowGroups,
           treeToggles,
           maxDepth,
+          isLargeData
+            ? {
+                batchedInit: true,
+                initBatchSize: 100,
+                skipInitLabels: true,
+              }
+            : undefined,
         );
         treeCollapseApiRef.current = api;
         disposeTreeCollapse = () => {
@@ -898,8 +915,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
       }
       // 14. 初始化完成
-      const renderMs = Math.round(performance.now() - renderStartedAt);
-      onReady?.({ univerAPI, workbook, worksheet, renderMs });
+      if (!isLargeData) {
+        const renderMs = Math.round(performance.now() - renderStartedAt);
+        onReady?.({ univerAPI, workbook, worksheet, renderMs });
+      }
     };
 
     void finishInit();

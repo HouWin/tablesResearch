@@ -250,6 +250,9 @@ export const flattenTreeData = (
     depth: number,
     options?: { regionDetail?: boolean },
   ): ETableRow['style'] | undefined => {
+    if (config.liteMode) {
+      return undefined;
+    }
     if (options?.regionDetail && regionDetailBackground) {
       return { bg: regionDetailBackground };
     }
@@ -310,7 +313,7 @@ export const flattenTreeData = (
     count: number,
     value: ETablePrimitive,
   ) => {
-    if (count <= 1) {
+    if (config.liteMode || count <= 1) {
       return;
     }
     const column = fieldColumnIndex.get(field);
@@ -338,6 +341,10 @@ export const flattenTreeData = (
     }
     if (values) {
       Object.entries(values).forEach(([key, value]) => {
+        // values 里常有 region:'华东'，不能覆盖 attributeLabel（▶/▼ 前缀）
+        if (attributeField && key === attributeField) {
+          return;
+        }
         data[key] = styleMeasureCell(value) as ETablePrimitive | ETableCell;
       });
     }

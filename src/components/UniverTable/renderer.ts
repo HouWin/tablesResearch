@@ -251,15 +251,19 @@ export const renderData = (
 const buildRowValues = (
   rows: ETableRow[],
   leafColumns: ETableColumn[],
+  options?: { skipRowBackgrounds?: boolean },
 ) => {
+  const skipRowBackgrounds = options?.skipRowBackgrounds ?? false;
+
   const toRowValues = (row: ETableRow) => {
-    const bgStyle = row.style?.bg
-      ? {
-          bg: {
-            rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
-          },
-        }
-      : null;
+    const bgStyle =
+      !skipRowBackgrounds && row.style?.bg
+        ? {
+            bg: {
+              rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
+            },
+          }
+        : null;
 
     return leafColumns.map((column) => {
       const cell = row.data?.[column.id];
@@ -298,7 +302,11 @@ export const renderDataAsync = async (
   rows: ETableRow[] = [],
   leafColumns: ETableColumn[] = [],
   startRow: number,
-  options?: { virtualScroll?: boolean; chunkSize?: number },
+  options?: {
+    virtualScroll?: boolean;
+    chunkSize?: number;
+    skipRowBackgrounds?: boolean;
+  },
 ): Promise<void> => {
   if (!worksheet || !rows.length || !leafColumns.length || startRow < 0) {
     return;
@@ -306,14 +314,15 @@ export const renderDataAsync = async (
 
   const virtualScroll = options?.virtualScroll !== false;
   const chunkSize = Math.max(
-    500,
-    options?.chunkSize ?? (virtualScroll ? 1500 : rows.length),
+    400,
+    options?.chunkSize ?? (virtualScroll ? 800 : rows.length),
   );
-  const yieldBetweenChunks = rows.length > 3000;
+  const yieldBetweenChunks = rows.length > 2000;
+  const valueOptions = { skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000 };
 
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
     const slice = rows.slice(offset, offset + chunkSize);
-    const values = buildRowValues(slice, leafColumns);
+    const values = buildRowValues(slice, leafColumns, valueOptions);
     worksheet
       .getRange(startRow + offset, 0, values.length, leafColumns.length)
       .setValues(values);
@@ -323,6 +332,16 @@ export const renderDataAsync = async (
         window.setTimeout(resolve, 0);
       });
     }
+  }
+
+  const hasCustomHeights = rows.some((row) => typeof row.height === 'number');
+  if (!hasCustomHeights && rows.length > 0) {
+    try {
+      worksheet.setRowHeights(startRow, rows.length, 30);
+    } catch {
+      // ignore batch height failure
+    }
+    return;
   }
 
   rows.forEach((row, index) => {
