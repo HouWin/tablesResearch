@@ -52,7 +52,7 @@ export interface GridOptions {
   infiniteInitialRowCount?: number
   groupDefaultExpanded?: number
   groupDisplayType?: string
-  groupIncludeFooter?: boolean
+  groupTotalRow?: 'top' | 'bottom' // 替代已废弃的 groupIncludeFooter
   suppressAggFuncInHeader?: boolean
   enableCellTextSelection?: boolean
   copyHeadersToClipboard?: boolean
