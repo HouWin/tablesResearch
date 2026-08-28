@@ -302,7 +302,7 @@ export const generateScaledTreeData = (
           treeData[categoryIndex] = {
             id: `cat-${categoryIndex}`,
             label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
-            collapsed: categoryIndex > 0,
+            collapsed: true,
             data: { subcategory: '华东' },
             attributes: regionAttributesLite(`cat-${categoryIndex}`, categoryIndex),
             values: aggregateLeafValues(children.map(getLeafMeasureValues)),
@@ -312,7 +312,7 @@ export const generateScaledTreeData = (
           treeData[categoryIndex] = {
             id: `cat-${categoryIndex}`,
             label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
-            collapsed: categoryIndex > 0,
+            collapsed: true,
             data: { subcategory: '华东' },
             attributes: regionAttributesFast(`cat-${categoryIndex}`, categoryIndex),
             children,

@@ -225,6 +225,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
+  const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
 
   const buildDataTrace = (cell?: string): ETableDataTraceNode | null => {
     const worksheet = worksheetRef.current;
@@ -596,6 +597,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     getDataTrace(cell?: string) {
       return buildDataTrace(cell);
     },
+    getVirtualRenderStats() {
+      return virtualLoaderRef.current?.getStats() ?? null;
+    },
   }), []);
 
   // 初始化 Univer
@@ -741,17 +745,19 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     const finishInit = async () => {
       // 6. 渲染数据（懒虚拟 / 异步分片 / 全量）
       if (useLazyVirtual) {
-        if (rows.length) {
-          renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
-        }
         virtualLoader = createVirtualDataLoader({
           univerAPI,
           worksheet,
           rows,
           leafColumns,
           dataStartRow: maxDepth,
+          defaultRowHeight,
         });
-        disposeVirtualLoader = virtualLoader?.dispose;
+        virtualLoaderRef.current = virtualLoader;
+        disposeVirtualLoader = () => {
+          virtualLoaderRef.current = null;
+          virtualLoader?.dispose();
+        };
         renderData(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipWrite: true,
@@ -784,8 +790,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (rows.length && !isAsyncRender && !useLazyVirtual) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
-      // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
-      if (merges.length > 0) {
+      // 8. 自定义合并（lite 大数据：首屏跳过，Region 展开时按索引懒合并）
+      const lazyLiteMerges = Boolean(treeConfig?.liteMode) && isLargeData;
+      if (merges.length > 0 && !lazyLiteMerges) {
         if (isAsyncRender) {
           await renderMergesAsync(worksheet, merges, maxDepth);
         } else {
@@ -832,6 +839,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
                 }
               : {}),
             merges,
+            ensureDataRows: virtualLoader
+              ? (startRow, endRow) => {
+                  virtualLoader!.ensureRows(startRow, endRow);
+                }
+              : undefined,
           },
         );
         treeCollapseApiRef.current = api;
@@ -1006,7 +1018,14 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       }
 
       const renderMs = Math.round(performance.now() - renderStartedAt);
-      onReady?.({ univerAPI, workbook, worksheet, renderMs, rowCount: rows.length });
+      onReady?.({
+        univerAPI,
+        workbook,
+        worksheet,
+        renderMs,
+        rowCount: rows.length,
+        virtualRender: virtualLoader?.getStats() ?? null,
+      });
     };
 
     void finishInit();

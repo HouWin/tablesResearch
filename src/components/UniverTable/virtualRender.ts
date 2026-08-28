@@ -7,10 +7,21 @@ export const VIRTUAL_LAZY_THRESHOLD = 5000;
 export const VIRTUAL_PAGE_SIZE = 2000;
 /** 首次预写入页数（含视口缓冲） */
 export const VIRTUAL_INITIAL_PAGES = 2;
-/** 滚动时向后预取页数 */
-export const VIRTUAL_PREFETCH_PAGES = 1;
+/** 滚动时向后预取行数（按视口行数，而非整页） */
+export const VIRTUAL_PREFETCH_ROWS = 80;
 /** 估算可视行数（高度未知时的兜底） */
 const ESTIMATED_VIEWPORT_ROWS = 40;
+
+export type VirtualRenderStats = {
+  enabled: boolean;
+  totalRows: number;
+  pageSize: number;
+  totalPages: number;
+  loadedPages: number;
+  /** 已写入的大致行数（按页估算） */
+  loadedRowsEstimate: number;
+  loadedPageIndexes: number[];
+};
 
 type UniverWorksheet = any;
 
@@ -21,6 +32,7 @@ export type VirtualDataLoader = {
   ensureRows: (startRow: number, endRow: number) => void;
   /** 根据当前滚动位置加载可视区 + 预取 */
   loadVisible: () => void;
+  getStats: () => VirtualRenderStats;
   dispose: () => void;
 };
 
@@ -69,9 +81,11 @@ export const createVirtualDataLoader = (params: {
   rows: ETableRow[];
   leafColumns: ETableColumn[];
   dataStartRow: number;
+  defaultRowHeight?: number;
   pageSize?: number;
   initialPages?: number;
-  prefetchPages?: number;
+  prefetchRows?: number;
+  onPageLoaded?: (stats: VirtualRenderStats) => void;
 }): VirtualDataLoader | null => {
   const {
     univerAPI,
@@ -79,9 +93,11 @@ export const createVirtualDataLoader = (params: {
     rows,
     leafColumns,
     dataStartRow,
+    defaultRowHeight = 28,
     pageSize = VIRTUAL_PAGE_SIZE,
     initialPages = VIRTUAL_INITIAL_PAGES,
-    prefetchPages = VIRTUAL_PREFETCH_PAGES,
+    prefetchRows = VIRTUAL_PREFETCH_ROWS,
+    onPageLoaded,
   } = params;
 
   if (!worksheet || !rows.length || !leafColumns.length) {
@@ -92,6 +108,24 @@ export const createVirtualDataLoader = (params: {
   const maxPage = Math.ceil(rows.length / pageSize) - 1;
   let disposed = false;
   let rafId = 0;
+
+  const getStats = (): VirtualRenderStats => {
+    const indexes = [...loadedPages].sort((a, b) => a - b);
+    let loadedRowsEstimate = 0;
+    indexes.forEach((pageIndex) => {
+      const offset = pageIndex * pageSize;
+      loadedRowsEstimate += Math.min(pageSize, rows.length - offset);
+    });
+    return {
+      enabled: true,
+      totalRows: rows.length,
+      pageSize,
+      totalPages: maxPage + 1,
+      loadedPages: loadedPages.size,
+      loadedRowsEstimate,
+      loadedPageIndexes: indexes,
+    };
+  };
 
   const writePage = (pageIndex: number) => {
     if (disposed || pageIndex < 0 || pageIndex > maxPage || loadedPages.has(pageIndex)) {
@@ -106,16 +140,22 @@ export const createVirtualDataLoader = (params: {
     const sheetRow = dataStartRow + offset;
     worksheet.getRange(sheetRow, 0, values.length, leafColumns.length).setValues(values);
 
+    if (defaultRowHeight > 0) {
+      worksheet.setRowHeights(sheetRow, values.length, defaultRowHeight);
+    }
     for (let i = 0; i < slice.length; i += 1) {
       const h = slice[i]?.height;
-      if (typeof h === 'number' && h > 0) {
+      if (typeof h === 'number' && h > 0 && h !== defaultRowHeight) {
         worksheet.setRowHeight(sheetRow + i, h);
       }
     }
 
-    // 列类型按页应用，避免对百万空行一次性挂校验
-    applyColumnTypes(univerAPI, worksheet, leafColumns, sheetRow, values.length);
+    // 列类型按页应用；大数据跳过校验，避免滚动时挂验证拖慢主线程
+    applyColumnTypes(univerAPI, worksheet, leafColumns, sheetRow, values.length, {
+      skipValidation: true,
+    });
     loadedPages.add(pageIndex);
+    onPageLoaded?.(getStats());
   };
 
   const ensureRows = (startRow: number, endRow: number) => {
@@ -141,7 +181,7 @@ export const createVirtualDataLoader = (params: {
       // ignore
     }
     const viewEnd = viewStart + ESTIMATED_VIEWPORT_ROWS;
-    const prefetchEnd = viewEnd + prefetchPages * pageSize;
+    const prefetchEnd = viewEnd + prefetchRows;
     ensureRows(viewStart, prefetchEnd);
   };
 
@@ -187,10 +227,18 @@ export const createVirtualDataLoader = (params: {
     // ignore
   }
 
+  if (import.meta.env.DEV) {
+    console.info(
+      '[ETable] virtual render enabled',
+      getStats(),
+    );
+  }
+
   return {
     loadedPages,
     ensureRows,
     loadVisible,
+    getStats,
     dispose: () => {
       disposed = true;
       if (rafId) {

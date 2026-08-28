@@ -582,6 +582,24 @@ export const renderMergesAsync = async (
 /**
  * hideRows / unhideRow 会破坏跨行 merge，展开后按数据行区间重新合并。
  */
+export const buildMergeIndexByAnchorRow = (
+  merges: ETableMerge[],
+): Map<number, ETableMerge[]> => {
+  const index = new Map<number, ETableMerge[]>();
+  merges.forEach((merge) => {
+    if (merge.rowSpan <= 1) {
+      return;
+    }
+    const list = index.get(merge.row) ?? [];
+    list.push(merge);
+    index.set(merge.row, list);
+  });
+  return index;
+};
+
+/**
+ * hideRows / unhideRow 会破坏跨行 merge，展开后按数据行区间重新合并。
+ */
 export const reapplyMergesForRowSpan = (
   worksheet: UniverWorksheet,
   merges: ETableMerge[],
