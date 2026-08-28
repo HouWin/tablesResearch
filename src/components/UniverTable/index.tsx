@@ -739,8 +739,6 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     let disposeCommentContextMenuGuard: (() => void) | undefined;
 
     const finishInit = async () => {
-      // 6. 渲染数据（中等及以上数据量异步分片，避免长时间阻塞主线程）
-      if (isAsyncRender) {
       // 6. 渲染数据（懒虚拟 / 异步分片 / 全量）
       if (useLazyVirtual) {
         if (rows.length) {
@@ -758,7 +756,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           virtualScroll,
           skipWrite: true,
         });
-      } else if (isLargeData) {
+      } else if (isAsyncRender) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipRowBackgrounds: Boolean(treeConfig?.liteMode),
@@ -775,21 +773,15 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           readonlyDataRows.push(index);
         }
       }
-      // 6.5 列类型：大数据跳过全列数据验证（极耗性能）
-      applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
-        skipValidation: isLargeData,
-        readonlyDataRows,
-      });
-      // 7. 设置数据行高（异步渲染路径由 renderDataAsync 批量设置）
-      if (rows.length && !isAsyncRender) {
-      // 6.5 列类型：懒虚拟与大数据路径跳过或延后
+      // 6.5 列类型：懒虚拟按页写入；其余路径一次性应用
       if (!useLazyVirtual) {
         applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
           skipValidation: isLargeData,
+          readonlyDataRows,
         });
       }
-      // 7. 设置数据行高（大数据与懒虚拟已单独处理）
-      if (rows.length && !isLargeData && !useLazyVirtual) {
+      // 7. 设置数据行高（异步 / 懒虚拟路径已单独处理）
+      if (rows.length && !isAsyncRender && !useLazyVirtual) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
       // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
