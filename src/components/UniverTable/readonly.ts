@@ -1,5 +1,5 @@
 /**
- * 禁止编辑指定区域（表头、树形维度列等）。
+ * 禁止编辑指定区域（表头、树形维度列、汇总行等）。
  *
  * 通过 BeforeSheetEditStart 取消进入编辑，不影响程序化 setValue（折叠图标切换仍可用）。
  */
@@ -10,6 +10,11 @@ export const setupReadonlyCells = (
     headerRowCount: number;
     /** 不可编辑的列索引（0-based） */
     readonlyColumns: number[];
+    /**
+     * 不可编辑的数据行索引（相对数据区域，不含表头，0-based）。
+     * 用于分组汇总行、总计行等。
+     */
+    readonlyDataRows?: number[];
     /** 数据总行数（含表头）；用于判断是否在表内 */
     totalRows?: number;
     totalColumns?: number;
@@ -20,6 +25,7 @@ export const setupReadonlyCells = (
   }
 
   const readonlyColSet = new Set(options.readonlyColumns);
+  const readonlyDataRowSet = new Set(options.readonlyDataRows ?? []);
   const headerRowCount = Math.max(0, options.headerRowCount);
 
   const isReadonly = (row: number, column: number) => {
@@ -27,6 +33,10 @@ export const setupReadonlyCells = (
       return false;
     }
     if (row < headerRowCount) {
+      return true;
+    }
+    const dataRow = row - headerRowCount;
+    if (readonlyDataRowSet.has(dataRow)) {
       return true;
     }
     return readonlyColSet.has(column);

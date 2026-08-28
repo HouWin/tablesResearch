@@ -725,6 +725,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     const disposeReadonly = setupReadonlyCells(univerAPI, {
       headerRowCount: maxDepth,
       readonlyColumns,
+      readonlyDataRows: rows
+        .map((row, index) => (row.readonly ? index : -1))
+        .filter((index) => index >= 0),
     });
     // 10. 列分组
     createColumnOutlines(worksheet, columnGroups);

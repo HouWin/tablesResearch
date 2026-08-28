@@ -1,28 +1,30 @@
-import type { ETableTreeAttribute, ETableTreeNode } from './types';
+import type { ETablePrimitive, ETableTreeAttribute, ETableTreeNode } from './types';
 
 const CATEGORY_NAMES = [
-  'Furniture',
-  'Office Supplies',
-  'Technology',
-  'Electronics',
-  'Apparel',
-  'Food',
-  'Health',
-  'Sports',
+  '家具',
+  '办公用品',
+  '科技',
+  '电子',
+  '服饰',
+  '食品',
+  '健康',
+  '运动',
 ] as const;
 
 const LEAF_NAMES = [
-  'Bookcases',
-  'Chairs',
-  'Furnishings',
-  'Tables',
-  'Binders',
-  'Paper',
-  'Phones',
-  'Machines',
-  'Accessories',
-  'Storage',
+  '书柜',
+  '座椅',
+  '收纳',
+  '桌子',
+  '装订',
+  '纸品',
+  '手机',
+  '设备',
+  '配件',
+  '仓储',
 ] as const;
+
+const STATUS_OPTIONS = ['已核验', '待复核', '异常'] as const;
 
 /** 大数据场景用轻量格式，避免百万次 toLocaleString */
 const moneyFast = (n: number) => n;
@@ -44,62 +46,71 @@ export const toDemoDate = (seed: number): string => {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 };
 
+const makeLeafValues = (seed: number): Record<string, ETablePrimitive> => {
+  const revenue = moneyFast((seed * 97) % 500000 + 50000);
+  const orders = (seed * 13) % 800 + 50;
+  const productRevenue = Math.round(revenue * 0.78);
+  const onlineOrders = Math.round(orders * 0.63);
+  const status = STATUS_OPTIONS[seed % STATUS_OPTIONS.length];
+  return {
+    revenue,
+    productRevenue,
+    serviceRevenue: revenue - productRevenue,
+    orders,
+    onlineOrders,
+    offlineOrders: orders - onlineOrders,
+    avgOrder: Math.round(revenue / Math.max(orders, 1)),
+    completion: Number((0.85 + (seed % 15) / 100).toFixed(3)),
+    owner: `负责人${(seed % 20) + 1}`,
+    status,
+    verified: status === '已核验' ? '是' : '否',
+    updatedAt: toDemoDate(seed),
+    attachment: '+ 上传',
+    adjustmentFactor: Number((0.8 + (orders % 31) / 100).toFixed(2)),
+  };
+};
+
 const regionAttributesFast = (
   prefix: string,
   seed: number,
 ): ETableTreeAttribute[] => {
-  const base = seed * 97;
-  const mk = (offset: number): [number, number] => {
-    const sales = (base + offset * 53) % 100000 + 1000;
-    const profit = ((base + offset * 31) % 40000) - 8000;
-    return [sales, profit];
-  };
-  const [east, central, west, south] = [mk(0), mk(1), mk(2), mk(3)];
-
+  const mk = (offset: number) => makeLeafValues(seed * 10 + offset);
   return [
     {
       id: `${prefix}-east`,
-      label: 'East',
+      label: '华东',
       collapsed: true,
-      values: {
-        sales: moneyFast(east[0]),
-        profit: toProfitLevel(east[1]),
-        date: toDemoDate(seed * 10),
-      },
+      values: mk(0),
+      children: [
+        { id: `${prefix}-shanghai`, label: '上海', values: mk(1) },
+        { id: `${prefix}-jiangsu`, label: '江苏', values: mk(2) },
+      ],
     },
     {
       id: `${prefix}-central`,
-      label: 'Central',
-      values: {
-        sales: moneyFast(central[0]),
-        profit: toProfitLevel(central[1]),
-        date: toDemoDate(seed * 10 + 1),
-      },
-    },
-    {
-      id: `${prefix}-west`,
-      label: 'West',
-      values: {
-        sales: moneyFast(west[0]),
-        profit: toProfitLevel(west[1]),
-        date: toDemoDate(seed * 10 + 2),
-      },
+      label: '华中',
+      values: mk(3),
+      children: [
+        { id: `${prefix}-hubei`, label: '湖北', values: mk(4) },
+        { id: `${prefix}-henan`, label: '河南', values: mk(5) },
+      ],
     },
     {
       id: `${prefix}-south`,
-      label: 'South',
-      values: {
-        sales: moneyFast(south[0]),
-        profit: toProfitLevel(south[1]),
-        date: toDemoDate(seed * 10 + 3),
-      },
+      label: '华南',
+      values: mk(6),
+    },
+    {
+      id: `${prefix}-north`,
+      label: '华北',
+      values: mk(7),
     },
   ];
 };
 
 /**
  * 估算展平后的工作表行数。
- * 每个带 Region 的节点：1 行汇总 + 3 行 Region 明细 = 4 行。
+ * 每个带 Region 的节点：1 行汇总 + 约 3 行 Region 明细 ≈ 4 行。
  */
 export const estimateTreeFlatRows = (
   categoryCount: number,
@@ -127,7 +138,7 @@ export const planScaledTree = (targetFlatRows: number) => {
 };
 
 /**
- * 分片生成大规模树形演示数据（Category → 子项，每行带 Region 折叠）。
+ * 分片生成大规模树形演示数据（品类 → 子项，每行带区域折叠）。
  */
 export const generateScaledTreeData = (
   targetFlatRows: number,
@@ -152,11 +163,12 @@ export const generateScaledTreeData = (
         const end = Math.min(leafIndex + chunkSize, leafPerCategory);
         for (; leafIndex < end; leafIndex += 1) {
           const globalLeaf = categoryIndex * leafPerCategory + leafIndex;
+          const leafName = `${LEAF_NAMES[globalLeaf % LEAF_NAMES.length]} ${globalLeaf + 1}`;
           children[leafIndex] = {
             id: `leaf-${categoryIndex}-${leafIndex}`,
-            label: `${LEAF_NAMES[globalLeaf % LEAF_NAMES.length]} ${globalLeaf + 1}`,
-            data: { region: 'East' },
-            attributes: regionAttributesFast(
+            label: leafName,
+            data: { subcategory: '华东' },
+          attributes: regionAttributesFast(
               `leaf-${categoryIndex}-${leafIndex}`,
               globalLeaf + 1,
             ),
@@ -176,7 +188,7 @@ export const generateScaledTreeData = (
           id: `cat-${categoryIndex}`,
           label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
           collapsed: categoryIndex > 0,
-          data: { region: 'East' },
+          data: { subcategory: '华东' },
           attributes: regionAttributesFast(`cat-${categoryIndex}`, categoryIndex),
           children,
         };

@@ -84,6 +84,11 @@ export interface ETableRow {
   data: Record<string, ETablePrimitive | ETableCell>;
   /** 当前行高度 */
   height?: number;
+  /**
+   * 是否整行只读（如分组汇总行、总计行）。
+   * 为 true 时禁止进入单元格编辑。
+   */
+  readonly?: boolean;
   /** 行样式（会应用到该行全部单元格） */
   style?: {
     /** 背景色，如 #E8F3FF */
@@ -314,6 +319,12 @@ export interface ETableTreeConfig {
   dimensions: Array<{ field: string; title: string; width?: number }>;
   /** 属性列（可选；行内属性展开。与 measureGroups 列维度互斥场景下不要混用） */
   attribute?: { field: string; title: string; width?: number };
+  /**
+   * 自定义多级表头（完整列树）。
+   * 设置后优先使用，不再由 dimensions / measures / measureGroups 自动生成表头；
+   * 展平逻辑仍读取 dimensions / attribute / measures。
+   */
+  headerColumns?: ETableColumn[];
   /** 指标列（扁平；若配置了 measureGroups 则忽略） */
   measures?: Array<{
     field: string;

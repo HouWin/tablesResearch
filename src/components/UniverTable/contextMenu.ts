@@ -8,10 +8,10 @@ import {
 import { message } from 'antd';
 import { of } from 'rxjs';
 import { ICommandService } from '@univerjs/core';
-import { AddCommentCommand } from '@univerjs/thread-comment';
 import { SetActiveCommentOperation } from '@univerjs/thread-comment-ui';
 import { IMenuManagerService } from '@univerjs/ui';
 import { SheetsThreadCommentPopupService } from '@univerjs/sheets-thread-comment-ui';
+// Note 弹层通过 command 打开，避免额外依赖解析问题
 
 /**
  * ETable 自定义右键菜单
@@ -163,6 +163,7 @@ export const NATIVE_CONTEXT_MENU_HIDE_CONFIG: Record<string, { hidden: true }> =
   'sheets.command.insert-note': { hidden: true },
   'sheets.command.delete-note': { hidden: true },
   'sheets.command.toggle-note': { hidden: true },
+  'sheet.operation.add-note-popup': { hidden: true },
   'data-validation.operation.open-data-validation-panel': { hidden: true },
   'data-validation.command.add-rule': { hidden: true },
   'sheet.command.add-data-validation': { hidden: true },
@@ -326,9 +327,9 @@ const getUniverInjector = (univerAPI: any) =>
   univerAPI?._injector;
 
 /**
- * 修复：有批注单元格首次右键时，hover 临时弹层与 clickOutside 抢占，导致菜单不出现。
+ * 修复：有批注/评论单元格首次右键时，hover 临时弹层与 clickOutside 抢占，导致菜单不出现。
  *
- * 1. 右键 capture 阶段先关闭批注弹层
+ * 1. 右键 capture 阶段先关闭批注 / 评论弹层
  * 2. 抑制 debounce hover 触发的 temp 弹层
  */
 export const setupCommentContextMenuGuard = (
@@ -410,17 +411,38 @@ export const setupCommentContextMenuGuard = (
 };
 
 /**
- * 打开单元格批注弹层（立即显示，无需再 hover）。
- *
- * 注意：
- * 1. 不要传 temp: true，否则 SheetsThreadCommentHoverController
- *    在鼠标移到无批注单元格时会直接 hidePopup。
- * 2. 延迟打开，避免右键菜单关闭时的 clickOutside 立刻把弹层关掉。
- * 3. trigger: 'context-menu' 用于自动聚焦输入框。
- * 4. 保存批注后自动关闭弹层，避免下次右键被 clickOutside 拦截。
+ * 读取单元格 Note 文本。附件角标也会占用 Note（以 📎 开头），不算用户批注。
  */
-const openCommentPopup = (context: ETableContextMenuContext) => {
-  const { univerAPI, range, worksheet } = context;
+const getNoteText = (range: any): string => {
+  if (!range?.getNote) {
+    return '';
+  }
+  try {
+    const note = range.getNote();
+    if (typeof note === 'string') {
+      return note;
+    }
+    if (note && typeof note.note === 'string') {
+      return note.note;
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+};
+
+/** 单元格是否已有用户批注（Note，每格仅一条） */
+const hasUserNote = (range: any): boolean => {
+  const text = getNoteText(range).trim();
+  return Boolean(text) && !text.startsWith('📎');
+};
+
+/**
+ * 打开单元格批注弹层（Univer Note：每格只能一条，可编辑已有内容）。
+ * 与 Thread Comment（评论，可多条回复）不同。
+ */
+const openNotePopup = (context: ETableContextMenuContext) => {
+  const { univerAPI, range } = context;
   if (!range) {
     message.warning('请先选中要批注的单元格');
     return false;
@@ -432,71 +454,40 @@ const openCommentPopup = (context: ETableContextMenuContext) => {
     // ignore
   }
 
-  const row = range.getRow?.() ?? 0;
-  const col = range.getColumn?.() ?? 0;
-
   const show = () => {
     try {
-      const injector = getUniverInjector(univerAPI);
-      const workbook = univerAPI?.getActiveWorkbook?.();
-      const sheet = workbook?.getActiveSheet?.() || worksheet;
-      const unitId = workbook?.getId?.();
-      const subUnitId = sheet?.getSheetId?.();
+      // Univer Note UI：sheet.operation.add-note-popup
+      // 已有 note 时打开编辑；无 note 时创建空批注（每格仅一条）
+      const ok = univerAPI?.executeCommand?.('sheet.operation.add-note-popup', {
+        trigger: 'context-menu',
+      });
+      if (ok) {
+        return true;
+      }
+    } catch (error) {
+      console.warn('[ETable] show note popup command failed', error);
+    }
 
-      if (injector && unitId && subUnitId) {
-        const popupService = injector.get(SheetsThreadCommentPopupService);
-        const commandService = injector.get(ICommandService);
-        const cellRef = numberToColumnName(col) + String(row + 1);
-        let commandListener: { dispose: () => void } | null = null;
-
-        const disposeCommandListener = () => {
-          commandListener?.dispose();
-          commandListener = null;
-        };
-
-        popupService.showPopup({
-          unitId,
-          subUnitId,
-          row,
-          col,
-          trigger: 'context-menu',
-        }, disposeCommandListener);
-
-        commandListener = commandService.onCommandExecuted((commandInfo) => {
-          if (commandInfo.id !== AddCommentCommand.id) {
-            return;
-          }
-          const params = commandInfo.params as {
-            unitId?: string;
-            subUnitId?: string;
-            comment?: { ref?: string };
-          };
-          if (
-            params?.unitId !== unitId ||
-            params?.subUnitId !== subUnitId ||
-            params?.comment?.ref !== cellRef
-          ) {
-            return;
-          }
-          // 批注保存后弹层仍开着，首次右键会先触发 clickOutside 关闭弹层
-          window.setTimeout(() => popupService.hidePopup(), 0);
+    // Facade 兜底：创建/更新 note 并显示
+    try {
+      if (typeof range.createOrUpdateNote === 'function') {
+        const existing = getNoteText(range);
+        range.createOrUpdateNote({
+          note: existing.startsWith('📎') ? '' : existing,
+          width: 160,
+          height: 100,
+          show: true,
         });
         return true;
       }
     } catch (error) {
-      console.warn('[ETable] show comment popup via service failed', error);
+      console.warn('[ETable] createOrUpdateNote failed', error);
     }
 
-    try {
-      return Boolean(univerAPI?.executeCommand?.('sheet.operation.show-comment-modal'));
-    } catch (error) {
-      console.warn('[ETable] show comment modal command failed', error);
-      message.error('打开批注失败');
-      return false;
-    }
+    message.error('打开批注失败');
+    return false;
   };
 
-  // 等右键菜单卸载后再弹，防止 clickOutside 误关
   window.setTimeout(show, 50);
   return true;
 };
@@ -513,28 +504,39 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
   { id: 'etable-paste', title: '粘贴数据', icon: 'PasteIcon', action: pasteSelection },
   { type: 'separator', },
   {
-    id: 'etable-add-comment',
+    id: 'etable-add-note',
     title: '新增批注',
     icon: 'AddCommentIcon',
     action: async (context) => {
-      openCommentPopup(context);
+      openNotePopup(context);
     },
+    // Note 每格只能一条：已有用户批注时隐藏「新增」
+    hidden: ({ range }) => hasUserNote(range),
   },
   {
-    id: 'etable-delete-comment', title: '删除批注', icon: 'DeleteCommentIcon', action: async ({ range }) => {
-      if (!range) { return; }
-      const comment = range.getComment();
-      if (!comment) {
+    id: 'etable-edit-note',
+    title: '编辑批注',
+    icon: 'AddCommentIcon',
+    action: async (context) => {
+      openNotePopup(context);
+    },
+    hidden: ({ range }) => !hasUserNote(range),
+  },
+  {
+    id: 'etable-delete-note',
+    title: '删除批注',
+    icon: 'DeleteCommentIcon',
+    action: async ({ range }) => {
+      if (!range?.deleteNote) {
         return;
       }
-      await comment.deleteAsync();
-    },
-    hidden: ({ range }) => {
-      if (!range) {
-        return true;
+      if (!hasUserNote(range)) {
+        return;
       }
-      return !range.getComment();
+      range.deleteNote();
+      message.success('已删除批注');
     },
+    hidden: ({ range }) => !hasUserNote(range),
   },
   { type: 'separator' },
   {

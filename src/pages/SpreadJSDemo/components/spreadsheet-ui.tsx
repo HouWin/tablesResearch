@@ -1,6 +1,13 @@
-"use client";
-
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import {
   CheckCircle2,
   ChevronLeft,
@@ -12,7 +19,7 @@ import {
   Search,
   TableProperties,
   X,
-} from "lucide-react";
+} from 'lucide-react';
 import {
   COLUMNS,
   FEATURES,
@@ -21,42 +28,146 @@ import {
   type DataMode,
   type SelectionStats,
   type ToastState,
-} from "../spreadsheet/model";
+} from '../spreadsheet/model';
 
-export function DemoHeader({ ready, onOpenFeatures }: { ready: boolean; onOpenFeatures: () => void }) {
+type DemoStatus = 'loading' | 'ready' | 'error';
+
+function useAnchoredPopover(anchorRef: RefObject<HTMLElement>) {
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const popover = popoverRef.current;
+    if (!anchor || !popover) return;
+
+    let animationFrame = 0;
+    const updatePosition = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        const anchorRect = anchor.getBoundingClientRect();
+        const popoverRect = popover.getBoundingClientRect();
+        const margin = 12;
+        const gap = 6;
+        const maxLeft = Math.max(
+          margin,
+          window.innerWidth - popoverRect.width - margin,
+        );
+        const left = Math.min(Math.max(anchorRect.left, margin), maxLeft);
+        const spaceBelow = window.innerHeight - anchorRect.bottom - margin;
+        const top =
+          spaceBelow >= popoverRect.height
+            ? anchorRect.bottom + gap
+            : Math.max(margin, anchorRect.top - popoverRect.height - gap);
+        setStyle({ left, top, visibility: 'visible' });
+      });
+    };
+
+    updatePosition();
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(updatePosition);
+    resizeObserver?.observe(anchor);
+    resizeObserver?.observe(popover);
+    window.addEventListener('resize', updatePosition);
+    document.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updatePosition);
+      document.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchorRef]);
+
+  return { popoverRef, style };
+}
+
+export function DemoHeader({
+  status,
+  onOpenFeatures,
+}: {
+  status: DemoStatus;
+  onOpenFeatures: () => void;
+}) {
+  const statusLabel =
+    status === 'ready'
+      ? '已就绪'
+      : status === 'error'
+      ? '初始化失败'
+      : '初始化…';
+
   return (
     <header className="demo-header">
       <div className="title-lockup">
-        <div className="logo-mark" aria-hidden="true">S</div>
+        <div className="logo-mark" aria-hidden="true">
+          S
+        </div>
         <div>
           <div className="eyebrow">SpreadJS 19.1 · 功能验收 Demo</div>
           <h1>经营数据表</h1>
         </div>
       </div>
       <div className="header-meta">
-        <span className="meta-pill"><TableProperties size={13} />电子表格内核</span>
-        <span className="meta-pill warning"><Info size={13} />评估许可 · localhost</span>
-        <button className="feature-count" type="button" aria-haspopup="dialog" onClick={onOpenFeatures}><CheckCircle2 size={14} />{FEATURES.length} 项能力</button>
-        <span className="ready-state" role="status" aria-live="polite"><i />{ready ? "已就绪" : "初始化…"}</span>
+        <span className="meta-pill">
+          <TableProperties size={13} />
+          电子表格内核
+        </span>
+        <span className="meta-pill warning">
+          <Info size={13} />
+          评估许可 · localhost
+        </span>
+        <button
+          className="feature-count"
+          type="button"
+          aria-haspopup="dialog"
+          onClick={onOpenFeatures}
+        >
+          <CheckCircle2 size={14} />
+          <span>{FEATURES.length} 项能力</span>
+        </button>
+        <span
+          className={`ready-state ${status === 'error' ? 'is-error' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          <i />
+          {statusLabel}
+        </span>
       </div>
     </header>
   );
 }
 
-export function SearchPopover({ query, result, onQueryChange, onSearch }: {
+export function SearchPopover({
+  anchorRef,
+  query,
+  result,
+  onQueryChange,
+  onSearch,
+}: {
+  anchorRef: RefObject<HTMLElement>;
   query: string;
   result: string;
   onQueryChange: (query: string) => void;
   onSearch: (direction: 1 | -1) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const { popoverRef, style } = useAnchoredPopover(anchorRef);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   return (
-    <div id="sheet-search-popover" className="toolbar-popover search-popover" role="search" aria-label="当前数据集搜索">
+    <div
+      ref={popoverRef}
+      style={style}
+      id="sheet-search-popover"
+      className="toolbar-popover search-popover"
+      role="search"
+      aria-label="当前数据集搜索"
+    >
       <label htmlFor="sheet-search">当前数据集搜索</label>
       <div className="search-input-row">
         <Search size={15} />
@@ -67,29 +178,81 @@ export function SearchPopover({ query, result, onQueryChange, onSearch }: {
           aria-describedby="sheet-search-result"
           onChange={(event) => onQueryChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter") onSearch(event.shiftKey ? -1 : 1);
+            if (event.key === 'Enter') onSearch(event.shiftKey ? -1 : 1);
           }}
           placeholder="搜索任意单元格内容…"
         />
-        <button type="button" onClick={() => onSearch(-1)} aria-label="上一个匹配"><ChevronLeft size={15} /></button>
-        <button type="button" onClick={() => onSearch(1)} aria-label="下一个匹配"><ChevronRight size={15} /></button>
+        <button
+          type="button"
+          disabled={!query.trim()}
+          onClick={() => onSearch(-1)}
+          aria-label="上一个匹配"
+        >
+          <ChevronLeft size={15} />
+        </button>
+        <button
+          type="button"
+          disabled={!query.trim()}
+          onClick={() => onSearch(1)}
+          aria-label="下一个匹配"
+        >
+          <ChevronRight size={15} />
+        </button>
       </div>
-      <small id="sheet-search-result" aria-live="polite">{result}</small>
+      <small id="sheet-search-result" aria-live="polite">
+        {result}
+      </small>
     </div>
   );
 }
 
-export function ColumnVisibilityPopover({ visibility, onToggle }: {
+export function ColumnVisibilityPopover({
+  anchorRef,
+  visibility,
+  onToggle,
+  onShowAll,
+}: {
+  anchorRef: RefObject<HTMLElement>;
   visibility: boolean[];
   onToggle: (column: number, visible: boolean) => void;
+  onShowAll: () => void;
 }) {
+  const { popoverRef, style } = useAnchoredPopover(anchorRef);
+  const visibleCount = visibility.filter(Boolean).length;
+
   return (
-    <div id="column-visibility-popover" className="toolbar-popover column-popover" role="region" aria-label="显示或隐藏列">
-      <div className="popover-title"><span>显示 / 隐藏列</span><small>{visibility.filter(Boolean).length}/{COLUMNS.length}</small></div>
+    <div
+      ref={popoverRef}
+      style={style}
+      id="column-visibility-popover"
+      className="toolbar-popover column-popover"
+      role="region"
+      aria-label="显示或隐藏列"
+    >
+      <div className="popover-title">
+        <span>显示 / 隐藏列</span>
+        <div>
+          <small>
+            {visibleCount}/{COLUMNS.length}
+          </small>
+          <button
+            type="button"
+            disabled={visibleCount === COLUMNS.length}
+            onClick={onShowAll}
+          >
+            全部显示
+          </button>
+        </div>
+      </div>
       <div className="column-list">
         {COLUMNS.map((column, index) => (
           <label key={column.field}>
-            <input type="checkbox" checked={visibility[index]} disabled={index < HIERARCHY_COLUMN_COUNT} onChange={(event) => onToggle(index, event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={visibility[index]}
+              disabled={index < HIERARCHY_COLUMN_COUNT}
+              onChange={(event) => onToggle(index, event.target.checked)}
+            />
             {visibility[index] ? <Eye size={13} /> : <EyeOff size={13} />}
             <span>{column.label}</span>
             {index < HIERARCHY_COLUMN_COUNT ? <small>固定</small> : null}
@@ -100,7 +263,11 @@ export function ColumnVisibilityPopover({ visibility, onToggle }: {
   );
 }
 
-export function SheetStatusBar({ selectionStats, dataMode, datasetLabel }: {
+export function SheetStatusBar({
+  selectionStats,
+  dataMode,
+  datasetLabel,
+}: {
   selectionStats: SelectionStats;
   dataMode: DataMode;
   datasetLabel: string;
@@ -108,40 +275,91 @@ export function SheetStatusBar({ selectionStats, dataMode, datasetLabel }: {
   return (
     <footer className="sheet-statusbar">
       <div className="selection-summary">
-        <span>选区 <b>{selectionStats.cells.toLocaleString("zh-CN")}</b> 格</span>
-        <span>数字 <b>{selectionStats.numeric.toLocaleString("zh-CN")}</b></span>
-        <span>求和 <b>{selectionStats.numeric ? formatStatistic(selectionStats.sum, selectionStats.numericDisplay) : "—"}</b></span>
-        <span>平均 <b>{selectionStats.numeric ? formatStatistic(selectionStats.average, selectionStats.numericDisplay) : "—"}</b></span>
+        <span>
+          选区 <b>{selectionStats.cells.toLocaleString('zh-CN')}</b> 格
+        </span>
+        <span>
+          数字 <b>{selectionStats.numeric.toLocaleString('zh-CN')}</b>
+        </span>
+        <span>
+          求和{' '}
+          <b>
+            {selectionStats.numeric
+              ? formatStatistic(
+                  selectionStats.sum,
+                  selectionStats.numericDisplay,
+                )
+              : '—'}
+          </b>
+        </span>
+        <span>
+          平均{' '}
+          <b>
+            {selectionStats.numeric
+              ? formatStatistic(
+                  selectionStats.average,
+                  selectionStats.numericDisplay,
+                )
+              : '—'}
+          </b>
+        </span>
       </div>
-      <div className="dataset-summary"><span>{dataMode === "stress" ? "压力数据" : "业务样例"}</span><b>{datasetLabel}</b></div>
+      <div className="dataset-summary">
+        <span>{dataMode === 'stress' ? '压力数据' : '业务样例'}</span>
+        <b>{datasetLabel}</b>
+      </div>
     </footer>
   );
 }
 
 export function ToastMessage({ toast }: { toast: ToastState }) {
   return (
-    <div className={`toast ${toast.tone === "error" ? "toast-error" : ""}`} role={toast.tone === "error" ? "alert" : "status"}>
-      {toast.tone === "error" ? <CircleAlert size={16} /> : <CheckCircle2 size={15} />}
+    <div
+      className={`toast ${toast.tone === 'error' ? 'toast-error' : ''}`}
+      role={toast.tone === 'error' ? 'alert' : 'status'}
+    >
+      {toast.tone === 'error' ? (
+        <CircleAlert size={16} />
+      ) : (
+        <CheckCircle2 size={15} />
+      )}
       <span>{toast.message}</span>
     </div>
   );
 }
 
-export function Drawer({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {
+export function Drawer({
+  title,
+  subtitle,
+  onClose,
+  initialFocusRef,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  onClose: () => void;
+  initialFocusRef?: RefObject<HTMLElement>;
+  children: ReactNode;
+}) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
 
   useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     const drawer = drawerRef.current;
-    closeButtonRef.current?.focus();
+    (initialFocusRef?.current ?? closeButtonRef.current)?.focus();
 
     const keepFocusInside = (event: KeyboardEvent) => {
-      if (event.key !== "Tab" || !drawer) return;
-      const focusable = [...drawer.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-      )];
+      if (event.key !== 'Tab' || !drawer) return;
+      const focusable = [
+        ...drawer.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ];
       const first = focusable[0];
       const last = focusable.at(-1);
       if (!first || !last) return;
@@ -154,23 +372,43 @@ export function Drawer({ title, subtitle, onClose, children }: { title: string; 
       }
     };
 
-    drawer?.addEventListener("keydown", keepFocusInside);
+    drawer?.addEventListener('keydown', keepFocusInside);
     return () => {
-      drawer?.removeEventListener("keydown", keepFocusInside);
+      drawer?.removeEventListener('keydown', keepFocusInside);
       previousFocus?.focus();
     };
   }, []);
 
   return (
     <>
-      <button className="drawer-scrim" type="button" tabIndex={-1} aria-label="关闭侧边面板" onClick={onClose} />
-      <aside ref={drawerRef} className="inspector-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <button
+        className="drawer-scrim"
+        type="button"
+        tabIndex={-1}
+        aria-label="关闭侧边面板"
+        onClick={onClose}
+      />
+      <aside
+        ref={drawerRef}
+        className="inspector-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
         <header className="drawer-header">
           <div>
             <span>{subtitle}</span>
             <h2 id={titleId}>{title}</h2>
           </div>
-          <button ref={closeButtonRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+          <button
+            ref={closeButtonRef}
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <X size={17} />
+          </button>
         </header>
         <div className="drawer-body">{children}</div>
       </aside>
