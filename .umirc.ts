@@ -46,6 +46,11 @@ export default defineConfig({
       component: './AGGrid',
     },
     {
+      name: 'AntV S2',
+      path: '/antv-s2',
+      component: './AntvS2',
+    },
+    {
       name: 'Handsontable',
       path: '/handsontable',
       routes: [
