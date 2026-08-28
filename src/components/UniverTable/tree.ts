@@ -246,6 +246,9 @@ export const flattenTreeData = (
   const regionDetailBackground =
     config.regionDetailBackground ?? (treeUI ? '#FAFBFC' : undefined);
 
+  const isNodeCollapsed = (node: ETableTreeNode) =>
+    node.collapsed ?? config.defaultCollapsed ?? true;
+
   const resolveRowStyle = (
     depth: number,
     options?: { regionDetail?: boolean },
@@ -313,11 +316,15 @@ export const flattenTreeData = (
     count: number,
     value: ETablePrimitive,
   ) => {
-    if (count <= 1 || config.skipMerges) {
+    if (count <= 1) {
       return;
     }
-    // 大数据模式仍保留品类列纵向合并，跳过子品类等海量 merge
-    if (config.liteMode && field !== dimensionFields[0]) {
+    const isHierarchyDimension =
+      dimensionFields.includes(field) && field !== attributeField;
+    // lite 大数据：仍生成品类/子品类 Region 块内小范围纵向合并（与树形演示一致）
+    const liteHierarchyMerge =
+      config.liteMode && isHierarchyDimension && count <= 16;
+    if (config.skipMerges && !liteHierarchyMerge) {
       return;
     }
     const column = fieldColumnIndex.get(field);
@@ -375,16 +382,16 @@ export const flattenTreeData = (
       : attr.label;
     const depth = options?.depth ?? 0;
 
-    // Region 明细行不占用 Category 列，避免看起来像 Category 子项
-    const rowPath = { ...path };
+    const detailPath = { ...path };
     if (treeUI && options?.clearCategory && dimensionFields[0]) {
-      rowPath[dimensionFields[0]] = '';
+      detailPath[dimensionFields[0]] = '';
     }
 
+    // 次级 Region 汇总行保留品类/子品类，仅城市明细行清空品类列
     rows.push({
       id: attr.id,
-      data: buildData(rowPath, displayLabel, attr.values),
-      style: resolveRowStyle(depth, { regionDetail: options?.clearCategory }),
+      data: buildData(path, displayLabel, attr.values),
+      style: resolveRowStyle(depth),
     });
     currentRow += 1;
 
@@ -398,7 +405,7 @@ export const flattenTreeData = (
       rows.push({
         id: detail.id,
         data: buildData(
-          rowPath,
+          detailPath,
           treeUI ? formatTreeLabel(detail.label, 1) : detail.label,
           detail.values,
         ),
@@ -425,12 +432,37 @@ export const flattenTreeData = (
       });
     }
 
+    if (treeUI) {
+      pushDimensionMerges(headerRow, 1 + detailCount, path);
+    }
+
     return {
       id: groupId,
       startRow: detailStart,
       count: detailCount,
       collapsed,
     };
+  };
+
+  /** 品类 / 子品类等维度列：Region 汇总 + 城市明细纵向合并并居中 */
+  const pushDimensionMerges = (
+    startRow: number,
+    span: number,
+    rowPath: Record<string, ETablePrimitive>,
+  ) => {
+    if (span <= 1) {
+      return;
+    }
+    dimensionFields.forEach((field) => {
+      if (field === attributeField) {
+        return;
+      }
+      const value = rowPath[field];
+      if (value === undefined || value === '') {
+        return;
+      }
+      pushMerge(field, startRow, span, value as ETablePrimitive);
+    });
   };
 
   const walk = (
@@ -445,7 +477,7 @@ export const flattenTreeData = (
       const path: Record<string, ETablePrimitive> = { ...parentPath };
       const hasChildren = Boolean(node.children?.length);
       const hasAttributes = Boolean(node.attributes?.length);
-      const collapsed = Boolean(node.collapsed);
+      const collapsed = isNodeCollapsed(node);
 
       // treeUI：叶子节点 Region 写在 values[attributeField] 或 attributes[0] 同行展示
       if (treeUI && !hasChildren && hasAttributes) {
@@ -506,6 +538,8 @@ export const flattenTreeData = (
           currentRow += 1;
         });
 
+        const primaryDetailCount = primary.children?.length ?? 0;
+
         rest.forEach((attr) => {
           const attrGroup = emitAttribute(attr, path, {
             clearCategory: true,
@@ -516,12 +550,11 @@ export const flattenTreeData = (
           }
         });
 
-        const detailCount = currentRow - detailStart;
-        if (detailCount > 0) {
+        if (primaryDetailCount > 0) {
           groups.push({
             id: node.id,
             startRow: detailStart,
-            count: detailCount,
+            count: primaryDetailCount,
             collapsed: regionCollapsed,
             children: childGroups.length ? childGroups : undefined,
           });
@@ -542,24 +575,12 @@ export const flattenTreeData = (
               }),
             });
           }
-          // 中间维度列（如 Region=East）跨汇总行 + Region 明细行纵向合并
-          if (node.data) {
-            Object.entries(node.data).forEach(([key, value]) => {
-              if (key === labelField || !fieldColumnIndex.has(key)) {
-                return;
-              }
-              pushMerge(key, headerRow, 1 + detailCount, value);
-            });
-          }
-          // 品类列跨叶子汇总行 + Region 明细行
-          if (treeUI && labelField && path[labelField]) {
-            pushMerge(
-              labelField,
-              headerRow,
-              1 + detailCount,
-              path[labelField] as ETablePrimitive,
-            );
-          }
+        }
+
+        // 每个 Region 块内合并品类/子品类（汇总行 + 城市明细），不跨多个 Region
+        const mergeSpan = primaryDetailCount > 0 ? 1 + primaryDetailCount : 0;
+        if (mergeSpan > 1) {
+          pushDimensionMerges(headerRow, mergeSpan, path);
         }
         return;
       }
@@ -672,13 +693,13 @@ export const flattenTreeData = (
             regionNested.push(attrGroup);
           }
         });
-        const regionCount = currentRow - regionDetailStart;
-        if (regionCount > 0) {
+        const primaryRegionCount = primaryRegion.children?.length ?? 0;
+        if (primaryRegionCount > 0) {
           const regionGroupId = `${node.id}-regions`;
           regionGroup = {
             id: regionGroupId,
             startRow: regionDetailStart,
-            count: regionCount,
+            count: primaryRegionCount,
             collapsed: regionCollapsed,
             children: regionNested.length ? regionNested : undefined,
           };
@@ -724,7 +745,7 @@ export const flattenTreeData = (
             id: node.id,
             startRow: categoryDetailStart,
             count: categoryCount,
-            collapsed: node.collapsed,
+            collapsed: isNodeCollapsed(node),
             children: nested.length ? nested : undefined,
           };
           childGroups.push(categoryGroup);
@@ -820,7 +841,7 @@ export const flattenTreeData = (
             id: node.id,
             startRow: summaryStart + 1,
             count: detailCount,
-            collapsed: node.collapsed,
+            collapsed: isNodeCollapsed(node),
             children: childGroups,
           });
         }

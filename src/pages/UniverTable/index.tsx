@@ -361,6 +361,7 @@ const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig =
     treeUI: true,
     labelMode: 'single',
     collapseAttributes: true,
+    defaultCollapsed: true,
     dimensions: [
       { field: 'category', title: '品类', width: 180 },
       { field: 'subcategory', title: '子品类', width: 120 },
@@ -502,7 +503,6 @@ const furnitureBookcases: ETableTreeNode = {
         makeCity('bookcases-henan', '河南', 1_006_600, 206, 0.899, '徐昕', '待复核', '2026-08-20'),
       ],
       '赵敏',
-      false,
     ),
   ],
 };
@@ -528,7 +528,6 @@ const furnitureChairs: ETableTreeNode = {
         makeCity('chairs-fujian', '福建', 1_527_800, 322, 0.881, '罗蔚', '已核验', '2026-08-20'),
       ],
       '苏然',
-      false,
     ),
   ],
 };
@@ -554,7 +553,6 @@ const officePaper: ETableTreeNode = {
         makeCity('paper-tianjin', '天津', 906_600, 256, 0.889, '徐昕', '待复核', '2026-08-20'),
       ],
       '赵敏',
-      false,
     ),
   ],
 };
@@ -580,7 +578,6 @@ const officeStorage: ETableTreeNode = {
         makeCity('storage-xiamen', '厦门', 1_227_800, 302, 0.871, '罗蔚', '已核验', '2026-08-20'),
       ],
       '苏然',
-      false,
     ),
   ],
 };
@@ -589,7 +586,7 @@ const treeData: ETableTreeNode[] = withSubcategoryDim([
   {
     id: 'furniture',
     label: '家具',
-    collapsed: false,
+    collapsed: true,
     attributes: [
       makeRegionAttr(
         'furniture-east',
@@ -687,6 +684,7 @@ const UniverTablePage = () => {
       ...config,
       liteMode: true,
       skipMerges: true,
+      defaultCollapsed: true,
       groupStatistics: undefined,
     };
   }, [isDemoTree, addedColumns]);

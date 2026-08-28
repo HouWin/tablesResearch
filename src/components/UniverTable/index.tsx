@@ -784,7 +784,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (rows.length && !isAsyncRender && !useLazyVirtual) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
-      // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
+      // 8. 自定义合并（lite 仅写入品类/子品类 Region 块小范围合并）
       if (merges.length > 0) {
         if (isAsyncRender) {
           await renderMergesAsync(worksheet, merges, maxDepth);
@@ -832,6 +832,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
                 }
               : {}),
             merges,
+            ensureDataRows: virtualLoader
+              ? (startRow, endRow) => {
+                  virtualLoader!.ensureRows(startRow, endRow);
+                }
+              : undefined,
           },
         );
         treeCollapseApiRef.current = api;
