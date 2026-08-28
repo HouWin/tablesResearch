@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, } from 'react';
 import { createUniver, LocaleType, mergeLocales, } from '@univerjs/presets';
 import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
@@ -7,10 +7,11 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
-import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderHeader, renderMerges, renderRowHeights } from './renderer';
+import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderRowHeights } from './renderer';
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
+import { LARGE_TREE_FLAT_ROW_THRESHOLD } from './treeDataGenerator';
 import { setupTreeCellCollapse } from './treeCollapse';
 import type { ETableTreeCollapseApi } from './treeCollapse';
 import { setupReadonlyCells } from './readonly';
@@ -131,11 +132,15 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   /**
    * 优先 treeData，其次 groupData，否则使用外部 flat props。
    */
-  const flattened = treeData && treeConfig
-    ? flattenTreeData(treeData, treeConfig)
-    : groupData && groupConfig
-      ? flattenGroupedData(groupData, groupConfig)
-      : null;
+  const flattened = useMemo(() => {
+    if (treeData && treeConfig) {
+      return flattenTreeData(treeData, treeConfig);
+    }
+    if (groupData && groupConfig) {
+      return flattenGroupedData(groupData, groupConfig);
+    }
+    return null;
+  }, [treeData, treeConfig, groupData, groupConfig]);
   const columns = flattened?.columns ?? propsColumns;
   const rows = flattened?.rows ?? propsRows;
   const merges = flattened?.merges ?? propsMerges;
@@ -677,200 +682,231 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderColumnWidths(worksheet, leafColumns, defaultColumnWidth);
     // 5. 设置表头行高
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
-    // 6. 渲染数据（虚拟滚动开启时分片写入）
-    renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
-    // 6.5 列类型：Sales 数字 / Profit 下拉等
-    applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length);
-    // 7. 设置数据行高
-    if (rows.length) {
-      renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
-    }
-    // 8. 自定义合并（row 相对于数据区，需加上表头深度）
-    renderMerges(worksheet, merges, maxDepth);
-    // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
+
+    const isLargeData = rows.length >= LARGE_TREE_FLAT_ROW_THRESHOLD;
+    let cancelled = false;
     let disposeTreeCollapse: (() => void) | undefined;
-    if (treeUI && treeToggles.length) {
-      const api = setupTreeCellCollapse(
-        univerAPI,
-        worksheet,
-        rowGroups,
-        treeToggles,
-        maxDepth,
-      );
-      treeCollapseApiRef.current = api;
-      disposeTreeCollapse = () => {
-        api.dispose();
-        treeCollapseApiRef.current = null;
-      };
-    } else {
-      treeCollapseApiRef.current = null;
-      createRowOutlines(worksheet, rowGroups, maxDepth);
-    }
-    // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
-    const readonlyColumns = leafColumns
-      .map((column, index) => (column.editable === false ? index : -1))
-      .filter((index) => index >= 0);
-    // treeUI 默认锁定 dimensions + attribute 对应列
-    if (treeUI && treeConfig) {
-      const lockFields = new Set([
-        ...treeConfig.dimensions.map((item) => item.field),
-        ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
-      ]);
-      leafColumns.forEach((column, index) => {
-        if (lockFields.has(column.id) && !readonlyColumns.includes(index)) {
-          readonlyColumns.push(index);
-        }
-      });
-    }
-    const disposeReadonly = setupReadonlyCells(univerAPI, {
-      headerRowCount: maxDepth,
-      readonlyColumns,
-      readonlyDataRows: rows
-        .map((row, index) => (row.readonly ? index : -1))
-        .filter((index) => index >= 0),
-    });
-    // 10. 列分组
-    createColumnOutlines(worksheet, columnGroups);
-    // 11. 冻结行
-    if (typeof freezeRows === 'number') {
-      worksheet.setFrozenRows(freezeRows);
-    } else if (
-      maxDepth > 0
-    ) {
-      worksheet.setFrozenRows(maxDepth);
-    }
-    // 12. 冻结列
-    if (typeof freezeColumns === 'number') {
-      worksheet.setFrozenColumns(freezeColumns);
-    }
-    // 13. 初始化批注
-    if (comments.length) {
-      Promise.all(comments.map(async (comment: any) => {
-        try {
-          const { cell, content, userId = 'current-user', dateTime, id, threadId } = comment;
-          // 没有单元格或者内容  直接跳过
-          if (!cell || !content) {
-            return;
-          }
-          // 创建富文本
-          const richText = univerAPI.newRichText().insertText(content);
-          // 创建批注
-          let builder = univerAPI.newTheadComment().setContent(richText).setPersonId(userId).setDateTime(dateTime ? new Date(dateTime) : new Date());
-          // 设置批注 ID
-          if (id) {
-            builder = builder.setId(id);
-          }
-          // 设置 Thread ID
-          if (threadId) {
-            builder = builder.setThreadId(threadId);
-          }
-          // 获取单元格
-          const range = worksheet.getRange(cell);
-          // 添加批注
-          await range.addCommentAsync(builder);
-        } catch (error) {
-          console.warn('[Table] add comment failed', error);
-        }
-      }));
-    }
-    // 13.4 初始化附件
-    try {
-      applyInitialAttachments(worksheet, attachments);
-    } catch (error) {
-      console.warn('[Table] apply attachments failed', error);
-    }
-    // 13.5 单元格历史 / 数据追踪
-    const historyApi = setupCellHistory(univerAPI, worksheet, {
-      onChange: (record) => onCellChangeRef.current?.(record),
-      onSelectionChange: (cell, row, column) =>
-        onSelectionChangeRef.current?.(cell, row, column),
-    });
-    cellHistoryApiRef.current = historyApi;
-
-    // 13.6 查找对话框限制在表格容器内（Univer 默认挂 body + 按视口拖拽）
+    let disposeReadonly: (() => void) | undefined;
+    let historyApi: ReturnType<typeof setupCellHistory> | null = null;
     let disposeFindDialogConstraint: (() => void) | undefined;
-    if (containerRef.current) {
-      try {
-        disposeFindDialogConstraint = constrainFindDialogToContainer(
-          univerAPI,
-          containerRef.current,
-        );
-      } catch (error) {
-        console.warn('[Table] constrain find dialog failed', error);
-      }
-    }
-
-    // 13.7 注册自定义右键菜单
     let disposeCommentContextMenuGuard: (() => void) | undefined;
-    const menuExtras = {
-      onUploadAttachment: async (file: File, cell: string) => {
-        if (onUploadAttachmentRef.current) {
-          return onUploadAttachmentRef.current(file, cell);
-        }
-        return defaultUploadAttachment(file);
-      },
-      onAttachmentsChange: (cell: string, files: ETableAttachmentFile[]) => {
-        onAttachmentsChangeRef.current?.(cell, files);
-      },
-      onViewCellHistory: (cell: string) => {
-        onViewCellHistoryRef.current?.(cell);
-      },
-      onViewDataTrace: (cell: string) => {
-        onViewDataTraceRef.current?.(cell);
-      },
-      onDrillDown: () => {
-        const ok = treeCollapseApiRef.current?.drillDown();
-        if (!ok) {
-          message.info('当前行无可下钻分组');
-        }
-      },
-      onDrillUp: () => {
-        const ok = treeCollapseApiRef.current?.drillUp();
-        if (!ok) {
-          message.info('当前行无可上钻分组');
-        }
-      },
-      onQuickSearch: () => {
-        if (!openQuickSearch(univerAPI)) {
-          message.warning('快速搜索不可用');
-        }
-      },
-      onUndo: async () => {
-        try {
-          const ok = await univerAPI?.undo?.();
-          message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
-        } catch {
-          message.warning('撤销失败');
-        }
-      },
-      onRedo: async () => {
-        try {
-          const ok = await univerAPI?.redo?.();
-          message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
-        } catch {
-          message.warning('重做失败');
-        }
-      },
-    };
-    if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
+
+    const finishInit = async () => {
+      // 6. 渲染数据（大数据异步分片，避免长时间阻塞主线程）
+      if (isLargeData) {
+        await renderDataAsync(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+      } else {
+        renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+      }
+      if (cancelled) {
+        return;
+      }
+      // 6.5 列类型：大数据跳过全列数据验证（极耗性能）
+      applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
+        skipValidation: isLargeData,
+      });
+      // 7. 设置数据行高
+      if (rows.length) {
+        renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
+      }
+      // 8. 自定义合并（row 相对于数据区，需加上表头深度）
+      renderMerges(worksheet, merges, maxDepth);
+      if (cancelled) {
+        return;
+      }
+      // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
+      if (isLargeData) {
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      }
+      if (cancelled) {
+        return;
+      }
+      if (treeUI && treeToggles.length) {
+        const api = setupTreeCellCollapse(
+          univerAPI,
+          worksheet,
+          rowGroups,
+          treeToggles,
+          maxDepth,
+        );
+        treeCollapseApiRef.current = api;
+        disposeTreeCollapse = () => {
+          api.dispose();
+          treeCollapseApiRef.current = null;
+        };
+      } else {
+        treeCollapseApiRef.current = null;
+        createRowOutlines(worksheet, rowGroups, maxDepth);
+      }
+      // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
+      const readonlyColumns = leafColumns
+        .map((column, index) => (column.editable === false ? index : -1))
+        .filter((index) => index >= 0);
+      // treeUI 默认锁定 dimensions + attribute 对应列
+      if (treeUI && treeConfig) {
+        const lockFields = new Set([
+          ...treeConfig.dimensions.map((item) => item.field),
+          ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
+        ]);
+        leafColumns.forEach((column, index) => {
+          if (lockFields.has(column.id) && !readonlyColumns.includes(index)) {
+            readonlyColumns.push(index);
+          }
+        });
+      }
+      disposeReadonly = setupReadonlyCells(univerAPI, {
+        headerRowCount: maxDepth,
+        readonlyColumns,
+        readonlyDataRows: rows
+          .map((row, index) => (row.readonly ? index : -1))
+          .filter((index) => index >= 0),
+      });
+      // 10. 列分组
+      createColumnOutlines(worksheet, columnGroups);
+      // 11. 冻结行
+      if (typeof freezeRows === 'number') {
+        worksheet.setFrozenRows(freezeRows);
+      } else if (
+        maxDepth > 0
+      ) {
+        worksheet.setFrozenRows(maxDepth);
+      }
+      // 12. 冻结列
+      if (typeof freezeColumns === 'number') {
+        worksheet.setFrozenColumns(freezeColumns);
+      }
+      // 13. 初始化批注
+      if (comments.length) {
+        Promise.all(comments.map(async (comment: any) => {
+          try {
+            const { cell, content, userId = 'current-user', dateTime, id, threadId } = comment;
+            // 没有单元格或者内容  直接跳过
+            if (!cell || !content) {
+              return;
+            }
+            // 创建富文本
+            const richText = univerAPI.newRichText().insertText(content);
+            // 创建批注
+            let builder = univerAPI.newTheadComment().setContent(richText).setPersonId(userId).setDateTime(dateTime ? new Date(dateTime) : new Date());
+            // 设置批注 ID
+            if (id) {
+              builder = builder.setId(id);
+            }
+            // 设置 Thread ID
+            if (threadId) {
+              builder = builder.setThreadId(threadId);
+            }
+            // 获取单元格
+            const range = worksheet.getRange(cell);
+            // 添加批注
+            await range.addCommentAsync(builder);
+          } catch (error) {
+            console.warn('[Table] add comment failed', error);
+          }
+        }));
+      }
+      // 13.4 初始化附件
       try {
-        customizeContextMenu(univerAPI, worksheet, contextMenuItems, menuExtras);
-        if (containerRef.current) {
-          disposeCommentContextMenuGuard = setupCommentContextMenuGuard(
+        applyInitialAttachments(worksheet, attachments);
+      } catch (error) {
+        console.warn('[Table] apply attachments failed', error);
+      }
+      // 13.5 单元格历史 / 数据追踪
+      historyApi = setupCellHistory(univerAPI, worksheet, {
+        onChange: (record) => onCellChangeRef.current?.(record),
+        onSelectionChange: (cell, row, column) =>
+          onSelectionChangeRef.current?.(cell, row, column),
+      });
+      cellHistoryApiRef.current = historyApi;
+
+      // 13.6 查找对话框限制在表格容器内（Univer 默认挂 body + 按视口拖拽）
+      if (containerRef.current) {
+        try {
+          disposeFindDialogConstraint = constrainFindDialogToContainer(
             univerAPI,
             containerRef.current,
           );
+        } catch (error) {
+          console.warn('[Table] constrain find dialog failed', error);
         }
-      } catch (error) {
-        console.warn('[Table] register context menu failed', error);
       }
-    }
-    // 14. 初始化完成
-    const renderMs = Math.round(performance.now() - renderStartedAt);
-    onReady?.({ univerAPI, workbook, worksheet, renderMs });
+
+      // 13.7 注册自定义右键菜单
+      const menuExtras = {
+        onUploadAttachment: async (file: File, cell: string) => {
+          if (onUploadAttachmentRef.current) {
+            return onUploadAttachmentRef.current(file, cell);
+          }
+          return defaultUploadAttachment(file);
+        },
+        onAttachmentsChange: (cell: string, files: ETableAttachmentFile[]) => {
+          onAttachmentsChangeRef.current?.(cell, files);
+        },
+        onViewCellHistory: (cell: string) => {
+          onViewCellHistoryRef.current?.(cell);
+        },
+        onViewDataTrace: (cell: string) => {
+          onViewDataTraceRef.current?.(cell);
+        },
+        onDrillDown: () => {
+          const ok = treeCollapseApiRef.current?.drillDown();
+          if (!ok) {
+            message.info('当前行无可下钻分组');
+          }
+        },
+        onDrillUp: () => {
+          const ok = treeCollapseApiRef.current?.drillUp();
+          if (!ok) {
+            message.info('当前行无可上钻分组');
+          }
+        },
+        onQuickSearch: () => {
+          if (!openQuickSearch(univerAPI)) {
+            message.warning('快速搜索不可用');
+          }
+        },
+        onUndo: async () => {
+          try {
+            const ok = await univerAPI?.undo?.();
+            message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
+          } catch {
+            message.warning('撤销失败');
+          }
+        },
+        onRedo: async () => {
+          try {
+            const ok = await univerAPI?.redo?.();
+            message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
+          } catch {
+            message.warning('重做失败');
+          }
+        },
+      };
+      if (enableContextMenu && contextMenuItems && contextMenuItems.length) {
+        try {
+          customizeContextMenu(univerAPI, worksheet, contextMenuItems, menuExtras);
+          if (containerRef.current) {
+            disposeCommentContextMenuGuard = setupCommentContextMenuGuard(
+              univerAPI,
+              containerRef.current,
+            );
+          }
+        } catch (error) {
+          console.warn('[Table] register context menu failed', error);
+        }
+      }
+      // 14. 初始化完成
+      const renderMs = Math.round(performance.now() - renderStartedAt);
+      onReady?.({ univerAPI, workbook, worksheet, renderMs });
+    };
+
+    void finishInit();
 
     // 15. 销毁
     return () => {
+      cancelled = true;
       try {
         disposeReadonly?.();
       } catch (error) {
@@ -882,7 +918,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         console.warn('[Table] dispose tree collapse failed', error);
       }
       try {
-        historyApi.dispose();
+        historyApi?.dispose();
         cellHistoryApiRef.current = null;
       } catch (error) {
         console.warn('[Table] dispose cell history failed', error);

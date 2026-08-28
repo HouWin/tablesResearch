@@ -26,6 +26,21 @@ const LEAF_NAMES = [
 
 const STATUS_OPTIONS = ['已核验', '待复核', '异常'] as const;
 
+/** 展平后超过该阈值时启用轻量树（每叶子 1 行，无 Region 城市明细） */
+export const LARGE_TREE_FLAT_ROW_THRESHOLD = 5000;
+
+const NUMERIC_MEASURE_FIELDS = [
+  'revenue',
+  'productRevenue',
+  'serviceRevenue',
+  'orders',
+  'onlineOrders',
+  'offlineOrders',
+  'avgOrder',
+  'completion',
+  'adjustmentFactor',
+] as const;
+
 /** 大数据场景用轻量格式，避免百万次 toLocaleString */
 const moneyFast = (n: number) => n;
 
@@ -53,6 +68,7 @@ const makeLeafValues = (seed: number): Record<string, ETablePrimitive> => {
   const onlineOrders = Math.round(orders * 0.63);
   const status = STATUS_OPTIONS[seed % STATUS_OPTIONS.length];
   return {
+    region: '华东',
     revenue,
     productRevenue,
     serviceRevenue: revenue - productRevenue,
@@ -67,6 +83,37 @@ const makeLeafValues = (seed: number): Record<string, ETablePrimitive> => {
     updatedAt: toDemoDate(seed),
     attachment: '+ 上传',
     adjustmentFactor: Number((0.8 + (orders % 31) / 100).toFixed(2)),
+  };
+};
+
+const aggregateLeafValues = (
+  valuesList: Array<Record<string, ETablePrimitive>>,
+): Record<string, ETablePrimitive> => {
+  const totals: Record<string, number> = {};
+  NUMERIC_MEASURE_FIELDS.forEach((field) => {
+    totals[field] = 0;
+  });
+
+  valuesList.forEach((values) => {
+    NUMERIC_MEASURE_FIELDS.forEach((field) => {
+      const value = values[field];
+      if (typeof value === 'number') {
+        totals[field] += value;
+      }
+    });
+  });
+
+  const orders = totals.orders || 1;
+  totals.avgOrder = Math.round(totals.revenue / orders);
+
+  return {
+    region: '华东',
+    ...totals,
+    owner: '—',
+    status: '已核验',
+    verified: '—',
+    updatedAt: '—',
+    attachment: '',
   };
 };
 
@@ -109,8 +156,7 @@ const regionAttributesFast = (
 };
 
 /**
- * 估算展平后的工作表行数。
- * 每个带 Region 的节点：1 行汇总 + 约 3 行 Region 明细 ≈ 4 行。
+ * 估算展平后的工作表行数（含 Region 明细的完整树）。
  */
 export const estimateTreeFlatRows = (
   categoryCount: number,
@@ -118,9 +164,37 @@ export const estimateTreeFlatRows = (
 ): number => 4 * categoryCount * (1 + leafPerCategory);
 
 /**
+ * 轻量树：每个 Category 1 行汇总 + N 行叶子，无 Region 城市明细。
+ */
+export const estimateLiteTreeFlatRows = (
+  categoryCount: number,
+  leafPerCategory: number,
+): number => categoryCount * (1 + leafPerCategory);
+
+/**
  * 根据目标展平行数规划 Category 数量与子项数量。
  */
 export const planScaledTree = (targetFlatRows: number) => {
+  const useLite = targetFlatRows >= LARGE_TREE_FLAT_ROW_THRESHOLD;
+
+  if (useLite) {
+    const categoryCount = Math.min(
+      100,
+      Math.max(5, Math.round(Math.sqrt(targetFlatRows / 50))),
+    );
+    const leafPerCategory = Math.max(
+      1,
+      Math.floor(targetFlatRows / categoryCount) - 1,
+    );
+
+    return {
+      categoryCount,
+      leafPerCategory,
+      flatRowCount: estimateLiteTreeFlatRows(categoryCount, leafPerCategory),
+      useLite: true as const,
+    };
+  }
+
   const categoryCount = Math.min(
     100,
     Math.max(3, Math.round(Math.sqrt(targetFlatRows / 40))),
@@ -134,18 +208,20 @@ export const planScaledTree = (targetFlatRows: number) => {
     categoryCount,
     leafPerCategory,
     flatRowCount: estimateTreeFlatRows(categoryCount, leafPerCategory),
+    useLite: false as const,
   };
 };
 
 /**
- * 分片生成大规模树形演示数据（品类 → 子项，每行带区域折叠）。
+ * 分片生成大规模树形演示数据（品类 → 子项）。
+ * 目标 ≥5000 行时使用轻量结构，避免 Region 明细导致行数膨胀 5～8 倍。
  */
 export const generateScaledTreeData = (
   targetFlatRows: number,
   onProgress?: (percent: number) => void,
 ): Promise<{ treeData: ETableTreeNode[]; flatRowCount: number }> =>
   new Promise((resolve) => {
-    const { categoryCount, leafPerCategory, flatRowCount } =
+    const { categoryCount, leafPerCategory, flatRowCount, useLite } =
       planScaledTree(targetFlatRows);
     const treeData: ETableTreeNode[] = new Array(categoryCount);
     let categoryIndex = 0;
@@ -164,15 +240,26 @@ export const generateScaledTreeData = (
         for (; leafIndex < end; leafIndex += 1) {
           const globalLeaf = categoryIndex * leafPerCategory + leafIndex;
           const leafName = `${LEAF_NAMES[globalLeaf % LEAF_NAMES.length]} ${globalLeaf + 1}`;
-          children[leafIndex] = {
-            id: `leaf-${categoryIndex}-${leafIndex}`,
-            label: leafName,
-            data: { subcategory: '华东' },
-          attributes: regionAttributesFast(
-              `leaf-${categoryIndex}-${leafIndex}`,
-              globalLeaf + 1,
-            ),
-          };
+          const leafValues = makeLeafValues(globalLeaf + 1);
+
+          if (useLite) {
+            children[leafIndex] = {
+              id: `leaf-${categoryIndex}-${leafIndex}`,
+              label: leafName,
+              data: { subcategory: '华东' },
+              values: leafValues,
+            };
+          } else {
+            children[leafIndex] = {
+              id: `leaf-${categoryIndex}-${leafIndex}`,
+              label: leafName,
+              data: { subcategory: '华东' },
+              attributes: regionAttributesFast(
+                `leaf-${categoryIndex}-${leafIndex}`,
+                globalLeaf + 1,
+              ),
+            };
+          }
         }
 
         const categoryProgress =
@@ -184,14 +271,28 @@ export const generateScaledTreeData = (
           return;
         }
 
-        treeData[categoryIndex] = {
-          id: `cat-${categoryIndex}`,
-          label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
-          collapsed: categoryIndex > 0,
-          data: { subcategory: '华东' },
-          attributes: regionAttributesFast(`cat-${categoryIndex}`, categoryIndex),
-          children,
-        };
+        if (useLite) {
+          treeData[categoryIndex] = {
+            id: `cat-${categoryIndex}`,
+            label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
+            collapsed: categoryIndex > 0,
+            data: { subcategory: '华东' },
+            values: aggregateLeafValues(
+              children.map((child) => (child.values ?? {}) as Record<string, ETablePrimitive>),
+            ),
+            children,
+          };
+        } else {
+          treeData[categoryIndex] = {
+            id: `cat-${categoryIndex}`,
+            label: `${CATEGORY_NAMES[categoryIndex % CATEGORY_NAMES.length]} ${categoryIndex + 1}`,
+            collapsed: categoryIndex > 0,
+            data: { subcategory: '华东' },
+            attributes: regionAttributesFast(`cat-${categoryIndex}`, categoryIndex),
+            children,
+          };
+        }
+
         categoryIndex += 1;
 
         if (categoryIndex < categoryCount) {

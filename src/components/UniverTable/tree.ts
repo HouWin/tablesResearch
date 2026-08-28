@@ -222,7 +222,10 @@ export const flattenTreeData = (
 ): ETableFlattenResult => {
   const stats = config.groupStatistics;
   const preparedTree =
-    stats && stats.enabled !== false && stats.fields?.length
+    !config.liteMode &&
+    stats &&
+    stats.enabled !== false &&
+    stats.fields?.length
       ? applyGroupStatistics(treeData, stats, config)
       : treeData;
 
@@ -779,6 +782,7 @@ export const flattenTreeData = (
 
   // 总计行
   if (
+    !config.liteMode &&
     stats &&
     stats.enabled !== false &&
     stats.showGrandTotal &&

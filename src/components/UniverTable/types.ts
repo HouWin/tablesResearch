@@ -386,6 +386,11 @@ export interface ETableTreeConfig {
    * labelTemplate: '{label} 小计'
    */
   groupStatistics?: ETableGroupStatistics;
+  /**
+   * 大数据轻量模式：跳过分组统计与 Region 多层展平，配合 generateScaledTreeData 使用。
+   * 每个叶子约 1 行，避免 1 万目标膨胀到数万行。
+   */
+  liteMode?: boolean;
 }
 
 /** 分组统计字段 */
