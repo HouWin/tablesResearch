@@ -12,7 +12,6 @@ import {
   COLUMN_GROUPS,
   COLUMN_HEADER_GROUPS,
   COLUMN_HEADER_SECTIONS,
-  ATTACHMENT_COLUMN,
   AVG_ORDER_COLUMN,
   COMPLETION_COLUMN,
   DECIMAL_COLUMN,
@@ -49,6 +48,7 @@ import {
   viewRowCellValue,
   viewRowValues,
   type AggregateMode,
+  type CellAttachment,
   type DataMode,
   type DrillView,
   type HistoryItem,
@@ -102,8 +102,25 @@ export type SpreadsheetActions = {
   openPanel: (panel: Exclude<PanelName, null>) => void;
   saveComment: (content: string) => void;
   deleteComment: () => void;
-  focusAttachment: () => void;
+  addAttachments: (files: File[]) => void;
+  removeAttachment: (attachmentId: string) => void;
 };
+
+export const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
+export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_CELL = 10;
+const ATTACHMENT_EXTENSION_PATTERN =
+  /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
+const ATTACHMENT_ICON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6548c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
+)}`;
+
+function isAcceptedAttachment(file: File) {
+  return (
+    file.type.startsWith('image/') ||
+    ATTACHMENT_EXTENSION_PATTERN.test(file.name)
+  );
+}
 
 export function useSpreadsheetController() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -150,6 +167,7 @@ export function useSpreadsheetController() {
       ],
     ]),
   );
+  const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
 
   const [ready, setReady] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
@@ -167,6 +185,9 @@ export function useSpreadsheetController() {
   const [commentDraft, setCommentDraft] = useState('');
   const [persistedComment, setPersistedComment] = useState('');
   const [commentExists, setCommentExists] = useState(false);
+  const [selectedAttachments, setSelectedAttachments] = useState<
+    CellAttachment[]
+  >([]);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -188,6 +209,17 @@ export function useSpreadsheetController() {
   useEffect(() => {
     panelRef.current = panel;
   }, [panel]);
+
+  useEffect(
+    () => () => {
+      attachmentsRef.current.forEach((attachments) =>
+        attachments.forEach((attachment) =>
+          URL.revokeObjectURL(attachment.objectUrl),
+        ),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!panel && !searchOpen && !columnMenuOpen) return;
@@ -241,6 +273,7 @@ export function useSpreadsheetController() {
     const loadedStressPages = new Set<number>();
     const loadedStressRows = new Set<number>();
     let validationFlashTimer = 0;
+    const renderedAttachmentCells = new Set<string>();
     let validationFlashCell: {
       row: number;
       col: number;
@@ -296,12 +329,16 @@ export function useSpreadsheetController() {
       statusCellType.items(['已核验', '待复核', '异常']);
       statusCellType.editable(false);
       const verifiedCellType = new GC.Spread.Sheets.CellTypes.CheckBox();
-      const attachmentCellType = new GC.Spread.Sheets.CellTypes.FileUpload();
-      attachmentCellType.accept('image/*,.pdf,.doc,.docx,.xlsx');
-      attachmentCellType.maxSize(5 * 1024 * 1024);
-      attachmentCellType.isClearEnabled(true);
-      attachmentCellType.isPreviewEnabled(true);
-      attachmentCellType.isDownloadEnabled(true);
+      const datePickerCellButton: import('@grapecity-software/spread-sheets').Spread.Sheets.ICellButton =
+        {
+          imageType: GC.Spread.Sheets.ButtonImageType.dropdown,
+          command: 'openDateTimePicker',
+          position: GC.Spread.Sheets.ButtonPosition.right,
+          visibility: GC.Spread.Sheets.ButtonVisibility.always,
+          useButtonStyle: false,
+          buttonBackColor: 'transparent',
+          width: 18,
+        };
       const decimalValidator =
         GC.Spread.Sheets.DataValidation.createNumberValidator(
           GC.Spread.Sheets.ConditionalFormatting.ComparisonOperators.between,
@@ -336,6 +373,10 @@ export function useSpreadsheetController() {
         setSelected(cell);
         if (panelRef.current === 'history')
           setSelectedHistory(historyRef.current.get(cell.key) ?? []);
+        if (panelRef.current === 'attachment')
+          setSelectedAttachments([
+            ...(attachmentsRef.current.get(cell.key) ?? []),
+          ]);
       };
 
       const calculateSelection = (
@@ -405,6 +446,16 @@ export function useSpreadsheetController() {
         } catch {
           /* no comments */
         }
+        renderedAttachmentCells.forEach((coordinate) => {
+          const [row, col] = coordinate.split(':').map(Number);
+          if (row >= oldRows || col >= oldCols) return;
+          const cell = sheet.getCell(row, col);
+          cell.cellButtons(
+            col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [],
+          );
+          cell.tag(null);
+        });
+        renderedAttachmentCells.clear();
       };
 
       const applyStableComments = () => {
@@ -414,6 +465,56 @@ export function useSpreadsheetController() {
               stableCellKey(row.id, column.field),
             );
             if (text) sheet.comments.add(rowIndex, colIndex, text);
+          });
+        });
+      };
+
+      const refreshAttachmentIndicator = (row: number, col: number) => {
+        const node = activeRows[row];
+        const column = COLUMNS[col];
+        if (!node || !column || row < 0 || col < 0) return;
+        const coordinate = `${row}:${col}`;
+        const key = stableCellKey(node.id, column.field);
+        const count = attachmentsRef.current.get(key)?.length ?? 0;
+        const cell = sheet.getCell(row, col);
+        const buttons = col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [];
+        if (count) {
+          buttons.push({
+            imageType: GC.Spread.Sheets.ButtonImageType.custom,
+            imageSrc: ATTACHMENT_ICON,
+            imageSize: { width: 13, height: 13 },
+            caption: count > 1 ? String(count) : undefined,
+            command: (_sheet, buttonRow, buttonCol) => {
+              _sheet.setActiveCell(buttonRow, buttonCol);
+              _sheet.setSelection(buttonRow, buttonCol, 1, 1);
+              updateSelected(buttonRow, buttonCol);
+              calculateSelection(
+                _sheet,
+                new GC.Spread.Sheets.Range(buttonRow, buttonCol, 1, 1),
+              );
+              openPanelForSelection('attachment');
+            },
+            position: GC.Spread.Sheets.ButtonPosition.right,
+            visibility: GC.Spread.Sheets.ButtonVisibility.always,
+            useButtonStyle: true,
+            buttonBackColor: '#f3efff',
+            hoverBackColor: '#e6defd',
+            width: count > 1 ? 34 : 25,
+          });
+          cell.tag({ kind: 'cell-attachments', key, count });
+          renderedAttachmentCells.add(coordinate);
+        } else {
+          cell.tag(null);
+          renderedAttachmentCells.delete(coordinate);
+        }
+        cell.cellButtons(buttons);
+      };
+
+      const applyStableAttachmentIndicators = () => {
+        activeRows.forEach((row, rowIndex) => {
+          COLUMNS.forEach((column, colIndex) => {
+            if (attachmentsRef.current.has(stableCellKey(row.id, column.field)))
+              refreshAttachmentIndicator(rowIndex, colIndex);
           });
         });
       };
@@ -465,17 +566,7 @@ export function useSpreadsheetController() {
           rowCount,
           1,
         );
-        updatedAtRange.cellButtons([
-          {
-            imageType: GC.Spread.Sheets.ButtonImageType.dropdown,
-            command: 'openDateTimePicker',
-            position: GC.Spread.Sheets.ButtonPosition.right,
-            visibility: GC.Spread.Sheets.ButtonVisibility.always,
-            useButtonStyle: false,
-            buttonBackColor: 'transparent',
-            width: 18,
-          },
-        ]);
+        updatedAtRange.cellButtons([datePickerCellButton]);
         updatedAtRange.dropDowns([
           {
             type: GC.Spread.Sheets.DropDownType.dateTimePicker,
@@ -486,10 +577,6 @@ export function useSpreadsheetController() {
             },
           },
         ]);
-
-        sheet
-          .getRange(startRow, ATTACHMENT_COLUMN, rowCount, 1)
-          .cellType(attachmentCellType);
         sheet.setDataValidator(
           startRow,
           DECIMAL_COLUMN,
@@ -906,6 +993,7 @@ export function useSpreadsheetController() {
           sheet.showColumnOutline(true);
           if (!stress) {
             applyStableComments();
+            applyStableAttachmentIndicators();
             styleStatusCells(0, rowCount);
           }
 
@@ -954,6 +1042,10 @@ export function useSpreadsheetController() {
             setPersistedComment(existingComment ?? '');
             setCommentExists(Boolean(existingComment));
           }
+          if (nextPanel === 'attachment')
+            setSelectedAttachments([
+              ...(attachmentsRef.current.get(key) ?? []),
+            ]);
           if (nextPanel === 'history')
             setSelectedHistory(historyRef.current.get(key) ?? []);
         }
@@ -1452,23 +1544,91 @@ export function useSpreadsheetController() {
           setCommentExists(false);
           notify('批注已删除');
         },
-        focusAttachment: () => {
+        addAttachments: (files) => {
           const row = sheet.getActiveRowIndex();
-          sheet.setActiveCell(row, ATTACHMENT_COLUMN);
-          sheet.setSelection(row, ATTACHMENT_COLUMN, 1, 1);
-          sheet.showCell(
-            row,
-            ATTACHMENT_COLUMN,
-            GC.Spread.Sheets.VerticalPosition.center,
-            GC.Spread.Sheets.HorizontalPosition.center,
+          const col = sheet.getActiveColumnIndex();
+          const node = activeRows[row];
+          const column = COLUMNS[col];
+          if (!node || !column || !files.length) return;
+          const key = stableCellKey(node.id, column.field);
+          const current = attachmentsRef.current.get(key) ?? [];
+          const availableSlots = Math.max(
+            MAX_ATTACHMENTS_PER_CELL - current.length,
+            0,
           );
-          updateSelected(row, ATTACHMENT_COLUMN);
-          calculateSelection(
-            sheet,
-            new GC.Spread.Sheets.Range(row, ATTACHMENT_COLUMN, 1, 1),
+          const accepted: File[] = [];
+          let rejected = 0;
+          files.forEach((file) => {
+            const duplicate = current.some(
+              (attachment) =>
+                attachment.name === file.name &&
+                attachment.size === file.size &&
+                attachment.lastModified === file.lastModified,
+            );
+            if (
+              !isAcceptedAttachment(file) ||
+              file.size > MAX_ATTACHMENT_SIZE ||
+              duplicate ||
+              accepted.length >= availableSlots
+            ) {
+              rejected += 1;
+              return;
+            }
+            accepted.push(file);
+          });
+          if (!accepted.length) {
+            notify(
+              availableSlots
+                ? '未添加：请检查文件类型、5 MB 大小限制或是否重复'
+                : `每个单元格最多添加 ${MAX_ATTACHMENTS_PER_CELL} 个附件`,
+              'error',
+            );
+            return;
+          }
+          const created = accepted.map<CellAttachment>((file) => ({
+            id: crypto.randomUUID(),
+            name: file.name,
+            size: file.size,
+            mimeType: file.type || 'application/octet-stream',
+            objectUrl: URL.createObjectURL(file),
+            createdAt: Date.now(),
+            lastModified: file.lastModified,
+          }));
+          const next = [...current, ...created];
+          attachmentsRef.current.set(key, next);
+          setSelectedAttachments([...next]);
+          refreshAttachmentIndicator(row, col);
+          spread.repaint();
+          notify(
+            rejected
+              ? `已添加 ${created.length} 个附件，跳过 ${rejected} 个无效或重复文件`
+              : `已为 ${columnName(col)}${row + 1} 添加 ${
+                  created.length
+                } 个附件`,
           );
-          setPanel(null);
-          notify('已定位到附件单元格，点击上传按钮选择文件');
+        },
+        removeAttachment: (attachmentId) => {
+          const row = sheet.getActiveRowIndex();
+          const col = sheet.getActiveColumnIndex();
+          const node = activeRows[row];
+          const column = COLUMNS[col];
+          if (!node || !column) return;
+          const key = stableCellKey(node.id, column.field);
+          const current = attachmentsRef.current.get(key) ?? [];
+          const removed = current.find(
+            (attachment) => attachment.id === attachmentId,
+          );
+          if (!removed) return;
+          URL.revokeObjectURL(removed.objectUrl);
+          const next = current.filter(
+            (attachment) => attachment.id !== attachmentId,
+          );
+          if (next.length) attachmentsRef.current.set(key, next);
+          else attachmentsRef.current.delete(key);
+          setSelectedAttachments([...next]);
+          refreshAttachmentIndicator(row, col);
+          spread.repaint();
+          notify(`已删除附件「${removed.name}」`);
         },
       };
 
@@ -1781,6 +1941,7 @@ export function useSpreadsheetController() {
     commentExists,
     commentDirty,
     setCommentDraft,
+    selectedAttachments,
     selectedHistory,
     searchOpen,
     setSearchOpen,

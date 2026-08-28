@@ -38,9 +38,18 @@ export type BusinessNode = {
   status: Status;
   verified: boolean;
   updatedAt: Date;
-  attachment: string | null;
   adjustmentFactor: number;
   children?: BusinessNode[];
+};
+
+export type CellAttachment = {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  objectUrl: string;
+  createdAt: number;
+  lastModified: number;
 };
 
 export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
@@ -129,7 +138,6 @@ export const COLUMNS: ColumnDefinition[] = [
   { field: 'status', label: '核验状态', width: 96 },
   { field: 'verified', label: '已核验', width: 82 },
   { field: 'updatedAt', label: '更新日期', width: 104 },
-  { field: 'attachment', label: '附件', width: 162 },
   { field: 'adjustmentFactor', label: '调整系数', width: 96 },
 ];
 
@@ -137,16 +145,15 @@ export const COLUMN_GROUPS = [
   { summaryCol: 4, detailStart: 5, detailCount: 7 },
   { summaryCol: 4, detailStart: 5, detailCount: 2 },
   { summaryCol: 7, detailStart: 8, detailCount: 3 },
-  { summaryCol: 12, detailStart: 13, detailCount: 5 },
+  { summaryCol: 12, detailStart: 13, detailCount: 4 },
   { summaryCol: 12, detailStart: 13, detailCount: 2 },
-  { summaryCol: 15, detailStart: 16, detailCount: 2 },
 ] as const;
 
 export const COLUMN_HEADER_SECTIONS = [
   { label: '主行层级', startCol: 0, colCount: 2 },
   { label: '扩展行层级', startCol: 2, colCount: 2 },
   { label: '核心经营指标', startCol: 4, colCount: 8 },
-  { label: '业务治理', startCol: 12, colCount: 6 },
+  { label: '业务治理', startCol: 12, colCount: 5 },
 ] as const;
 
 export const COLUMN_HEADER_GROUPS = [
@@ -156,7 +163,7 @@ export const COLUMN_HEADER_GROUPS = [
   { label: '订单指标', startCol: 7, colCount: 4 },
   { label: '目标管理', startCol: 11, colCount: 1 },
   { label: '责任与核验', startCol: 12, colCount: 3 },
-  { label: '记录信息', startCol: 15, colCount: 3 },
+  { label: '记录信息', startCol: 15, colCount: 2 },
 ] as const;
 
 export const PRIMARY_CATEGORY_COLUMN = 0;
@@ -176,8 +183,7 @@ export const OWNER_COLUMN = 12;
 export const STATUS_COLUMN = 13;
 export const VERIFIED_COLUMN = 14;
 export const UPDATED_AT_COLUMN = 15;
-export const ATTACHMENT_COLUMN = 16;
-export const DECIMAL_COLUMN = 17;
+export const DECIMAL_COLUMN = 16;
 export const DRILLABLE_METRIC_COLUMNS = new Set([
   REVENUE_COLUMN,
   PRODUCT_REVENUE_COLUMN,
@@ -191,9 +197,7 @@ export const DRILLABLE_METRIC_COLUMNS = new Set([
 export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
-export const STRESS_TEXT_SEARCH_COLUMNS = new Set([
-  0, 1, 2, 3, 12, 13, 14, 15, 16,
-]);
+export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 3, 12, 13, 14, 15]);
 
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
@@ -201,10 +205,10 @@ export const FEATURES = [
   ['撤销 / 重做', '原生'],
   ['批量复制', '原生矩形选区'],
   ['多列折叠', '汇总列常驻的原生 Outline'],
-  ['多行折叠', 'rowTree + extensionRows 双树'],
+  ['多行折叠', '双列独立状态投影'],
   ['多层列表头', '三层 ColumnHeader + 两级原生 Outline'],
   ['自定义右键', '原生扩展菜单'],
-  ['单元格类型', '下拉 / 日期 / 数字 / 复选 / 附件'],
+  ['单元格类型', '下拉 / 日期 / 数字 / 复选'],
   ['持续维护', 'SpreadJS 19.1'],
   ['是否收费', '商业许可'],
   ['电子表格', '是'],
@@ -213,8 +217,8 @@ export const FEATURES = [
   ['数据追踪', '业务扩展'],
   ['快速搜索', '表内定位'],
   ['显示 / 隐藏列', '原生'],
-  ['单元格附件', '原生 FileUpload'],
-  ['大数据', '10 万行 × 18 列'],
+  ['单元格附件', '稳定 ID 元数据 + CellButton'],
+  ['大数据', '10 万行 × 17 列'],
   ['列宽拖动', '原生'],
   ['自适应内容宽度', '双击边界 / 工具栏'],
 ] as const;
@@ -261,7 +265,6 @@ function makeNode(
     status,
     verified: status === '已核验',
     updatedAt: new Date(`${updatedAt}T00:00:00`),
-    attachment: null,
     adjustmentFactor: Number((0.8 + (orders % 31) / 100).toFixed(2)),
     children,
   };
@@ -916,9 +919,6 @@ export function updateBusinessNode(
       if (!Number.isNaN(nextDate.getTime())) node.updatedAt = nextDate;
       break;
     }
-    case 'attachment':
-      node.attachment = typeof value === 'string' ? value : null;
-      break;
     default:
       if (typeof value === 'number' && Number.isFinite(value))
         node[field] = value;
