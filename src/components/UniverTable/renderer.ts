@@ -242,20 +242,26 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
  * @param leafColumns 叶子列
  * @param startRow 数据开始行
  * @param options.virtualScroll 分片写入，避免超大矩阵一次 setValues
+ * @returns 实际写入的行数（全量模式 = rows.length；视口懒加载时由 loader 另行写入）
  */
 export const renderData = (
   worksheet: UniverWorksheet,
   rows: ETableRow[] = [],
   leafColumns: ETableColumn[] = [],
   startRow: number,
-  options?: { virtualScroll?: boolean; chunkSize?: number },
-) => {
+  options?: { virtualScroll?: boolean; chunkSize?: number; skipWrite?: boolean },
+): number => {
   if (!worksheet || !rows.length || !leafColumns.length) {
-    return;
+    return 0;
   }
 
   if (startRow < 0) {
-    return;
+    return 0;
+  }
+
+  // 视口懒加载模式：骨架已扩容，数据由 virtualRender 按页写入
+  if (options?.skipWrite) {
+    return 0;
   }
 
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
@@ -432,6 +438,8 @@ export const renderDataAsync = async (
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
+
+  return rows.length;
 };
 
 /**

@@ -17,6 +17,11 @@ import type { ETableTreeCollapseApi } from './treeCollapse';
 import type { ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
+import {
+  createVirtualDataLoader,
+  VIRTUAL_LAZY_THRESHOLD,
+} from './virtualRender';
+import type { VirtualDataLoader } from './virtualRender';
 import { setupCellHistory } from './cellHistory';
 import type { ETableCellHistoryApi } from './cellHistory';
 import {
@@ -200,7 +205,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     freezeColumns,
     // 是否自定义 Univer 原生列头
     customizeColumnHeader = true,
-    // 虚拟滚动渲染（Canvas 可视区绘制 + 大数据分片写入）
+    // 虚拟滚动：Canvas 可视区绘制；大数据视口按页懒写入
     virtualScroll = true,
     // 扩展选项：自定义右键菜单项（不传则使用默认的 defaultContextMenuItems）
     contextMenuItems = defaultContextMenuItems,
@@ -721,10 +726,12 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderColumnWidths(worksheet, leafColumns, defaultColumnWidth);
     // 5. 设置表头行高
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
-
     const isAsyncRender = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
     const isLargeData = rows.length >= LARGE_TREE_FLAT_ROW_THRESHOLD;
+    const useLazyVirtual = virtualScroll && rows.length >= VIRTUAL_LAZY_THRESHOLD;
     let cancelled = false;
+    let disposeVirtualLoader: (() => void) | undefined;
+    let virtualLoader: VirtualDataLoader | null = null;
     let disposeTreeCollapse: (() => void) | undefined;
     let disposeReadonly: (() => void) | undefined;
     let historyApi: ReturnType<typeof setupCellHistory> | null = null;
@@ -734,6 +741,24 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     const finishInit = async () => {
       // 6. 渲染数据（中等及以上数据量异步分片，避免长时间阻塞主线程）
       if (isAsyncRender) {
+      // 6. 渲染数据（懒虚拟 / 异步分片 / 全量）
+      if (useLazyVirtual) {
+        if (rows.length) {
+          renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
+        }
+        virtualLoader = createVirtualDataLoader({
+          univerAPI,
+          worksheet,
+          rows,
+          leafColumns,
+          dataStartRow: maxDepth,
+        });
+        disposeVirtualLoader = virtualLoader?.dispose;
+        renderData(worksheet, rows, leafColumns, maxDepth, {
+          virtualScroll,
+          skipWrite: true,
+        });
+      } else if (isLargeData) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipRowBackgrounds: Boolean(treeConfig?.liteMode),
@@ -757,6 +782,14 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       });
       // 7. 设置数据行高（异步渲染路径由 renderDataAsync 批量设置）
       if (rows.length && !isAsyncRender) {
+      // 6.5 列类型：懒虚拟与大数据路径跳过或延后
+      if (!useLazyVirtual) {
+        applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
+          skipValidation: isLargeData,
+        });
+      }
+      // 7. 设置数据行高（大数据与懒虚拟已单独处理）
+      if (rows.length && !isLargeData && !useLazyVirtual) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
       // 8. 自定义合并（liteMode 展平时已跳过 merge 定义）
@@ -989,6 +1022,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     // 15. 销毁
     return () => {
       cancelled = true;
+      try {
+        disposeVirtualLoader?.();
+      } catch (error) {
+        console.warn('[Table] dispose virtual loader failed', error);
+      }
       try {
         disposeReadonly?.();
       } catch (error) {

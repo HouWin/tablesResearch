@@ -27,6 +27,7 @@ import {
   STRESS_TEXT_SEARCH_COLUMNS,
   UPDATED_AT_COLUMN,
   VERIFIED_COLUMN,
+  canDrillNode,
   columnName,
   findBusinessNode,
   flatRowsForView,
@@ -111,9 +112,26 @@ export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_CELL = 10;
 const ATTACHMENT_EXTENSION_PATTERN =
   /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
-const ATTACHMENT_ICON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6548c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
-)}`;
+// A solid-color rounded badge with a white paperclip glyph (and an optional
+// count bubble) baked directly into the icon. A bare 13px outline icon on a
+// near-white button background had almost no contrast and just looked like
+// an empty little box, so the badge now carries its own color regardless of
+// the surrounding cell/theme colors.
+function attachmentIconDataUrl(count: number) {
+  const badge =
+    count > 1
+      ? `<circle cx="18.5" cy="5.5" r="5.5" fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+         <text x="18.5" y="6.2" text-anchor="middle" dominant-baseline="middle" font-size="7.5" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${
+           count > 9 ? '9+' : count
+         }</text>`
+      : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <rect x="1" y="1" width="22" height="22" rx="6" fill="#6548c8"/>
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(3,3) scale(0.62)"/>
+    ${badge}
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
 
 function isAcceptedAttachment(file: File) {
   return (
@@ -481,9 +499,8 @@ export function useSpreadsheetController() {
         if (count) {
           buttons.push({
             imageType: GC.Spread.Sheets.ButtonImageType.custom,
-            imageSrc: ATTACHMENT_ICON,
-            imageSize: { width: 13, height: 13 },
-            caption: count > 1 ? String(count) : undefined,
+            imageSrc: attachmentIconDataUrl(count),
+            imageSize: { width: 20, height: 20 },
             command: (_sheet, buttonRow, buttonCol) => {
               _sheet.setActiveCell(buttonRow, buttonCol);
               _sheet.setSelection(buttonRow, buttonCol, 1, 1);
@@ -497,9 +514,9 @@ export function useSpreadsheetController() {
             position: GC.Spread.Sheets.ButtonPosition.right,
             visibility: GC.Spread.Sheets.ButtonVisibility.always,
             useButtonStyle: true,
-            buttonBackColor: '#f3efff',
+            buttonBackColor: 'transparent',
             hoverBackColor: '#e6defd',
-            width: count > 1 ? 34 : 25,
+            width: 24,
           });
           cell.tag({ kind: 'cell-attachments', key, count });
           renderedAttachmentCells.add(coordinate);
@@ -937,9 +954,24 @@ export function useSpreadsheetController() {
 
           COLUMN_HEADER_SECTIONS.forEach(
             ({ label, startCol, colCount: sectionColumnCount }) => {
+              // Sections without a real second-level breakdown (e.g. the
+              // hierarchy columns) span both group rows so the header reads
+              // as a single label instead of leaving row 1 blank.
+              const hasSubGroups = COLUMN_HEADER_GROUPS.some(
+                (group) =>
+                  group.startCol >= startCol &&
+                  group.startCol < startCol + sectionColumnCount,
+              );
+              const rowSpan = hasSubGroups ? 1 : 2;
               sheet.setValue(0, startCol, label, headerArea);
-              if (sectionColumnCount > 1)
-                sheet.addSpan(0, startCol, 1, sectionColumnCount, headerArea);
+              if (sectionColumnCount > 1 || rowSpan > 1)
+                sheet.addSpan(
+                  0,
+                  startCol,
+                  rowSpan,
+                  sectionColumnCount,
+                  headerArea,
+                );
             },
           );
           COLUMNS.forEach((column, col) =>
@@ -952,6 +984,7 @@ export function useSpreadsheetController() {
             .backColor('#f4f6fa')
             .foreColor('#344054')
             .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
+            .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .font('600 12px Arial, PingFang SC');
           sheet
             .getRange(1, 0, 1, colCount, headerArea)
@@ -1699,6 +1732,25 @@ export function useSpreadsheetController() {
           workArea: 'viewport',
         },
       );
+      // Grey out "下钻到下一层" when the right-clicked row has no lower
+      // level to drill into, so choosing it can never surface an error
+      // toast — mirrors the disabled state already used by the toolbar
+      // "下钻所选行" button.
+      spread.contextMenu.onOpenMenu = (
+        _menuData: unknown,
+        itemsDataForShown: { name?: string; disable?: boolean; title?: string }[],
+      ) => {
+        const drillItem = itemsDataForShown.find(
+          (item) => item.name === 'business-drill',
+        );
+        if (drillItem) {
+          const node = activeRows[sheet.getActiveRowIndex()];
+          const drillable = canDrillNode(node);
+          drillItem.disable = !drillable;
+          drillItem.title = drillable ? undefined : '当前行没有下级数据';
+        }
+        return false;
+      };
 
       sheet.bind(
         GC.Spread.Sheets.Events.EnterCell,
@@ -1731,6 +1783,10 @@ export function useSpreadsheetController() {
           if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
           const node = activeRows[args.row];
           if (!node || !DRILLABLE_METRIC_COLUMNS.has(args.col)) return;
+          // Exploratory double-clicks on leaf-level rows are common and
+          // shouldn't interrupt the user with an error toast — silently
+          // do nothing when there is nothing to drill into.
+          if (!canDrillNode(node)) return;
           drillRow(args.row);
         },
       );
