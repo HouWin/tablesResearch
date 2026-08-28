@@ -57,16 +57,42 @@ export type DrillView = readonly DrillPathItem[];
 
 export type HierarchyRole = 'category' | 'subcategory' | 'region' | 'detail';
 export type HierarchyField =
-  | 'categoryHierarchy'
-  | 'subcategoryHierarchy'
-  | 'regionHierarchy'
-  | 'detailHierarchy';
+  | 'productHierarchy'
+  | 'productAttribute'
+  | 'regionHierarchy';
 export type BusinessField = Exclude<
   keyof BusinessNode,
   'id' | 'children' | 'hierarchyRole'
 >;
 export type ColumnField = BusinessField | HierarchyField;
-export type ViewRow = BusinessNode & { level: number; hasChildren?: boolean };
+export type ViewRow = BusinessNode & {
+  level: number;
+  hasChildren?: boolean;
+  productId: string;
+  productLabel: string;
+  productAttribute: string;
+  productDepth: 0 | 1;
+  productIsGroup: boolean;
+  productExpanded: boolean;
+  productBlockStart: boolean;
+  productRowSpan: number;
+  regionId: string;
+  regionLabel: string;
+  regionDepth: 0 | 1;
+  regionIsGroup: boolean;
+  regionExpanded: boolean;
+  sourceNodeIds: readonly string[];
+};
+
+export type OutlineDimension = 'product' | 'region';
+export type ExtensionExpansionState = ReadonlyMap<string, ReadonlySet<string>>;
+export type OutlineSnapshot = {
+  productExpanded: number;
+  productTotal: number;
+  regionExpanded: number;
+  regionTotal: number;
+  rowCount: number;
+};
 
 export type SelectedCell = {
   row: number;
@@ -106,12 +132,6 @@ export type ColumnDefinition = {
   width: number;
 };
 
-export type RowOutlineGroup = {
-  summaryRow: number;
-  detailStart: number;
-  detailCount: number;
-};
-
 export const AGGREGATE_MODES = [
   'SUM',
   'AVG',
@@ -122,10 +142,9 @@ export const AGGREGATE_MODES = [
 ] as const satisfies readonly AggregateMode[];
 
 export const COLUMNS: ColumnDefinition[] = [
-  { field: 'categoryHierarchy', label: '品类', width: 126 },
-  { field: 'subcategoryHierarchy', label: '子品类', width: 142 },
-  { field: 'regionHierarchy', label: '区域', width: 126 },
-  { field: 'detailHierarchy', label: '城市 / 门店', width: 166 },
+  { field: 'productHierarchy', label: '第一列 · 产品树', width: 178 },
+  { field: 'productAttribute', label: '第二列 · 产品属性', width: 144 },
+  { field: 'regionHierarchy', label: '第三列 · 区域树', width: 168 },
   { field: 'revenue', label: '净收入', width: 112 },
   { field: 'productRevenue', label: '商品收入', width: 108 },
   { field: 'serviceRevenue', label: '服务收入', width: 108 },
@@ -142,50 +161,48 @@ export const COLUMNS: ColumnDefinition[] = [
 ];
 
 export const COLUMN_GROUPS = [
-  { summaryCol: 4, detailStart: 5, detailCount: 7 },
-  { summaryCol: 4, detailStart: 5, detailCount: 2 },
-  { summaryCol: 7, detailStart: 8, detailCount: 3 },
-  { summaryCol: 12, detailStart: 13, detailCount: 4 },
-  { summaryCol: 12, detailStart: 13, detailCount: 2 },
+  { summaryCol: 3, detailStart: 4, detailCount: 7 },
+  { summaryCol: 3, detailStart: 4, detailCount: 2 },
+  { summaryCol: 6, detailStart: 7, detailCount: 3 },
+  { summaryCol: 11, detailStart: 12, detailCount: 4 },
+  { summaryCol: 11, detailStart: 12, detailCount: 2 },
 ] as const;
 
 export const COLUMN_HEADER_SECTIONS = [
-  { label: '主行层级', startCol: 0, colCount: 2 },
-  { label: '扩展行层级', startCol: 2, colCount: 2 },
-  { label: '核心经营指标', startCol: 4, colCount: 8 },
-  { label: '业务治理', startCol: 12, colCount: 5 },
+  { label: '业务维度', startCol: 0, colCount: 3 },
+  { label: '核心经营指标', startCol: 3, colCount: 8 },
+  { label: '业务治理', startCol: 11, colCount: 5 },
 ] as const;
 
-// 层级列（品类/子品类/区域/城市门店）没有真实的二级细分，
+// 业务维度列（产品树/产品属性/区域树）没有真实的二级表头细分，
 // 因此不在此处列出——渲染时会让 COLUMN_HEADER_SECTIONS 的对应
 // 表头纵向合并两行，避免出现内部代码名（rowTree / extensionRows）
 // 这类开发调试信息展示给业务用户。
 export const COLUMN_HEADER_GROUPS = [
-  { label: '收入指标', startCol: 4, colCount: 3 },
-  { label: '订单指标', startCol: 7, colCount: 4 },
-  { label: '目标管理', startCol: 11, colCount: 1 },
-  { label: '责任与核验', startCol: 12, colCount: 3 },
-  { label: '记录信息', startCol: 15, colCount: 2 },
+  { label: '收入指标', startCol: 3, colCount: 3 },
+  { label: '订单指标', startCol: 6, colCount: 4 },
+  { label: '目标管理', startCol: 10, colCount: 1 },
+  { label: '责任与核验', startCol: 11, colCount: 3 },
+  { label: '记录信息', startCol: 14, colCount: 2 },
 ] as const;
 
-export const PRIMARY_CATEGORY_COLUMN = 0;
-export const PRIMARY_SUBCATEGORY_COLUMN = 1;
-export const EXTENSION_REGION_COLUMN = 2;
-export const EXTENSION_DETAIL_COLUMN = 3;
-export const HIERARCHY_COLUMN_COUNT = 4;
-export const REVENUE_COLUMN = 4;
-export const PRODUCT_REVENUE_COLUMN = 5;
-export const SERVICE_REVENUE_COLUMN = 6;
-export const ORDERS_COLUMN = 7;
-export const ONLINE_ORDERS_COLUMN = 8;
-export const OFFLINE_ORDERS_COLUMN = 9;
-export const AVG_ORDER_COLUMN = 10;
-export const COMPLETION_COLUMN = 11;
-export const OWNER_COLUMN = 12;
-export const STATUS_COLUMN = 13;
-export const VERIFIED_COLUMN = 14;
-export const UPDATED_AT_COLUMN = 15;
-export const DECIMAL_COLUMN = 16;
+export const PRODUCT_HIERARCHY_COLUMN = 0;
+export const PRODUCT_ATTRIBUTE_COLUMN = 1;
+export const REGION_HIERARCHY_COLUMN = 2;
+export const HIERARCHY_COLUMN_COUNT = 3;
+export const REVENUE_COLUMN = 3;
+export const PRODUCT_REVENUE_COLUMN = 4;
+export const SERVICE_REVENUE_COLUMN = 5;
+export const ORDERS_COLUMN = 6;
+export const ONLINE_ORDERS_COLUMN = 7;
+export const OFFLINE_ORDERS_COLUMN = 8;
+export const AVG_ORDER_COLUMN = 9;
+export const COMPLETION_COLUMN = 10;
+export const OWNER_COLUMN = 11;
+export const STATUS_COLUMN = 12;
+export const VERIFIED_COLUMN = 13;
+export const UPDATED_AT_COLUMN = 14;
+export const DECIMAL_COLUMN = 15;
 export const DRILLABLE_METRIC_COLUMNS = new Set([
   REVENUE_COLUMN,
   PRODUCT_REVENUE_COLUMN,
@@ -199,7 +216,7 @@ export const DRILLABLE_METRIC_COLUMNS = new Set([
 export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
-export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 3, 12, 13, 14, 15]);
+export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 11, 12, 13, 14]);
 
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
@@ -220,7 +237,7 @@ export const FEATURES = [
   ['快速搜索', '表内定位'],
   ['显示 / 隐藏列', '原生'],
   ['单元格附件', '稳定 ID 元数据 + CellButton'],
-  ['大数据', '10 万行 × 17 列'],
+  ['大数据', '10 万行 × 16 列'],
   ['列宽拖动', '原生'],
   ['自适应内容宽度', '双击边界 / 工具栏'],
 ] as const;
@@ -576,6 +593,141 @@ const officeStorage = makeGroup(
   '罗蔚',
 );
 
+const technologyMobile = makeGroup(
+  'technology-mobile',
+  '移动终端',
+  'subcategory',
+  [
+    makeRegion(
+      'mobile-east',
+      '华东',
+      [
+        makeNode(
+          'mobile-shanghai',
+          '上海',
+          'detail',
+          4_862_000,
+          1_034,
+          1.036,
+          '杨晨',
+          '已核验',
+          '2026-08-21',
+        ),
+        makeNode(
+          'mobile-zhejiang',
+          '浙江',
+          'detail',
+          3_924_000,
+          846,
+          0.987,
+          '吴哲',
+          '已核验',
+          '2026-08-21',
+        ),
+      ],
+      '周宁',
+    ),
+    makeRegion(
+      'mobile-north',
+      '华北',
+      [
+        makeNode(
+          'mobile-beijing',
+          '北京',
+          'detail',
+          5_126_000,
+          1_120,
+          1.018,
+          '孙毅',
+          '待复核',
+          '2026-08-21',
+        ),
+        makeNode(
+          'mobile-tianjin',
+          '天津',
+          'detail',
+          2_648_000,
+          620,
+          0.946,
+          '徐昕',
+          '已核验',
+          '2026-08-20',
+        ),
+      ],
+      '赵敏',
+    ),
+  ],
+  '程澈',
+);
+
+const technologyEquipment = makeGroup(
+  'technology-equipment',
+  '办公设备',
+  'subcategory',
+  [
+    makeRegion(
+      'equipment-south',
+      '华南',
+      [
+        makeNode(
+          'equipment-shenzhen',
+          '深圳',
+          'detail',
+          6_286_000,
+          1_050,
+          1.052,
+          '黄清',
+          '已核验',
+          '2026-08-21',
+        ),
+        makeNode(
+          'equipment-guangzhou',
+          '广州',
+          'detail',
+          4_928_000,
+          910,
+          0.994,
+          '罗蔚',
+          '待复核',
+          '2026-08-21',
+        ),
+      ],
+      '苏然',
+    ),
+    makeRegion(
+      'equipment-central',
+      '华中',
+      [
+        makeNode(
+          'equipment-wuhan',
+          '武汉',
+          'detail',
+          3_824_000,
+          770,
+          0.968,
+          '韩睿',
+          '已核验',
+          '2026-08-20',
+        ),
+        makeNode(
+          'equipment-zhengzhou',
+          '郑州',
+          'detail',
+          2_946_000,
+          640,
+          0.927,
+          '陈叶',
+          '异常',
+          '2026-08-20',
+        ),
+      ],
+      '赵敏',
+    ),
+  ],
+  '程澈',
+  '待复核',
+);
+
 export const BUSINESS_DATA = [
   makeGroup(
     'furniture',
@@ -592,18 +744,48 @@ export const BUSINESS_DATA = [
     '罗蔚',
     '待复核',
   ),
+  makeGroup(
+    'technology',
+    '技术产品',
+    'category',
+    [technologyMobile, technologyEquipment],
+    '程澈',
+    '待复核',
+  ),
 ];
 
-export function flattenTree(nodes: BusinessNode[], level = 0): ViewRow[] {
-  return nodes.flatMap((node) => [
-    { ...node, level, hasChildren: Boolean(node.children?.length) },
-    ...flattenTree(node.children ?? [], level + 1),
-  ]);
-}
+export const INITIAL_PRODUCT_EXPANDED = ['furniture'] as const;
 
-export const INITIAL_DATASET_LABEL = `${
-  flattenTree(BUSINESS_DATA).length
-} 行 × ${COLUMNS.length} 列`;
+const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
+  furniture: '家居耐用品',
+  'furniture-bookcases': '收纳家具',
+  'furniture-chairs': '坐具',
+  'office-supplies': '日常办公耗材',
+  'office-paper': '纸制品',
+  'office-storage': '收纳用品',
+  technology: '数码与硬件',
+  'technology-mobile': '移动终端',
+  'technology-equipment': '商用硬件',
+};
+
+type VisibleProductNode = {
+  node: BusinessNode;
+  id: string;
+  label: string;
+  attribute: string;
+  depth: 0 | 1;
+  isGroup: boolean;
+  expanded: boolean;
+};
+
+type RegionProjectionNode = {
+  id: string;
+  label: string;
+  depth: 0 | 1;
+  isGroup: boolean;
+  expanded: boolean;
+  sourceNodes: readonly BusinessNode[];
+};
 
 export function findBusinessNode(
   nodes: BusinessNode[],
@@ -634,11 +816,311 @@ export function pathForView(view: DrillView) {
   return ['全部业务', ...view.map((item) => item.name)];
 }
 
-export function canDrillNode(node: BusinessNode | ViewRow | null | undefined) {
-  return Boolean(
-    node?.children?.length ||
-      (node && 'hasChildren' in node && node.hasChildren),
+function productRootsForView(view: DrillView) {
+  return rootsForView(view).filter(
+    (node) =>
+      node.hierarchyRole === 'category' || node.hierarchyRole === 'subcategory',
   );
+}
+
+function productAttributeFor(node: BusinessNode) {
+  return PRODUCT_ATTRIBUTES[node.id] ?? `${node.name}业务线`;
+}
+
+function getVisibleProducts(
+  view: DrillView,
+  expandedIds: ReadonlySet<string>,
+): VisibleProductNode[] {
+  return productRootsForView(view).flatMap((root) => {
+    const children = (root.children ?? []).filter(
+      (child) => child.hierarchyRole === 'subcategory',
+    );
+    const isGroup = children.length > 0;
+    const expanded = isGroup && expandedIds.has(root.id);
+    const rootNode: VisibleProductNode = {
+      node: root,
+      id: root.id,
+      label: root.name,
+      attribute: productAttributeFor(root),
+      depth: 0,
+      isGroup,
+      expanded,
+    };
+    if (!expanded) return [rootNode];
+    return [
+      rootNode,
+      ...children.map(
+        (child): VisibleProductNode => ({
+          node: child,
+          id: child.id,
+          label: child.name,
+          attribute: productAttributeFor(child),
+          depth: 1,
+          isGroup: false,
+          expanded: false,
+        }),
+      ),
+    ];
+  });
+}
+
+function productRegionSources(product: BusinessNode) {
+  const productNodes =
+    product.hierarchyRole === 'category'
+      ? (product.children ?? []).filter(
+          (child) => child.hierarchyRole === 'subcategory',
+        )
+      : [product];
+  return productNodes.flatMap((node) =>
+    (node.children ?? []).filter((child) => child.hierarchyRole === 'region'),
+  );
+}
+
+const REGION_KEYS: Readonly<Record<string, string>> = {
+  华东: 'east',
+  华中: 'central',
+  华南: 'south',
+  华北: 'north',
+};
+
+function normalizedTreeKey(label: string) {
+  return (
+    REGION_KEYS[label] ??
+    label
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^\p{Letter}\p{Number}-]/gu, '')
+  );
+}
+
+function getRegionRoots(product: BusinessNode) {
+  const groupedRegions = new Map<string, BusinessNode[]>();
+  productRegionSources(product).forEach((region) => {
+    const current = groupedRegions.get(region.name) ?? [];
+    current.push(region);
+    groupedRegions.set(region.name, current);
+  });
+
+  return [...groupedRegions.entries()].map(([label, regions]) => {
+    const groupedDetails = new Map<string, BusinessNode[]>();
+    regions.forEach((region) => {
+      const details = region.children?.length ? region.children : [region];
+      details.forEach((detail) => {
+        const current = groupedDetails.get(detail.name) ?? [];
+        current.push(detail);
+        groupedDetails.set(detail.name, current);
+      });
+    });
+    const rootId = `region:${normalizedTreeKey(label)}`;
+    return {
+      id: rootId,
+      label,
+      sourceNodes: [...groupedDetails.values()].flat(),
+      children: [...groupedDetails.entries()].map(
+        ([detailLabel, sourceNodes]) => ({
+          id: `${rootId}:detail:${normalizedTreeKey(detailLabel)}`,
+          label: detailLabel,
+          sourceNodes,
+        }),
+      ),
+    };
+  });
+}
+
+function getVisibleRegions(
+  product: BusinessNode,
+  expandedIds: ReadonlySet<string>,
+): RegionProjectionNode[] {
+  return getRegionRoots(product).flatMap((root) => {
+    const expanded = expandedIds.has(root.id);
+    const rootNode: RegionProjectionNode = {
+      id: root.id,
+      label: root.label,
+      depth: 0,
+      isGroup: root.children.length > 0,
+      expanded,
+      sourceNodes: root.sourceNodes,
+    };
+    if (!expanded) return [rootNode];
+    return [
+      rootNode,
+      ...root.children.map(
+        (child): RegionProjectionNode => ({
+          id: child.id,
+          label: child.label,
+          depth: 1,
+          isGroup: false,
+          expanded: false,
+          sourceNodes: child.sourceNodes,
+        }),
+      ),
+    ];
+  });
+}
+
+function aggregateBusinessNodes(
+  nodes: readonly BusinessNode[],
+  fallback: BusinessNode,
+) {
+  const sourceNodes = nodes.length ? nodes : [fallback];
+  const revenue = sourceNodes.reduce((sum, node) => sum + node.revenue, 0);
+  const productRevenue = sourceNodes.reduce(
+    (sum, node) => sum + node.productRevenue,
+    0,
+  );
+  const serviceRevenue = sourceNodes.reduce(
+    (sum, node) => sum + node.serviceRevenue,
+    0,
+  );
+  const orders = sourceNodes.reduce((sum, node) => sum + node.orders, 0);
+  const onlineOrders = sourceNodes.reduce(
+    (sum, node) => sum + node.onlineOrders,
+    0,
+  );
+  const offlineOrders = sourceNodes.reduce(
+    (sum, node) => sum + node.offlineOrders,
+    0,
+  );
+  const completion =
+    sourceNodes.reduce(
+      (sum, node) => sum + node.completion * (node.revenue || 1),
+      0,
+    ) / Math.max(revenue, 1);
+  const status: Status = sourceNodes.some((node) => node.status === '异常')
+    ? '异常'
+    : sourceNodes.some((node) => node.status === '待复核')
+    ? '待复核'
+    : '已核验';
+  const ownerNames = new Set(sourceNodes.map((node) => node.owner));
+  const updatedAt = new Date(
+    Math.max(...sourceNodes.map((node) => node.updatedAt.getTime())),
+  );
+  const adjustmentFactor =
+    sourceNodes.reduce((sum, node) => sum + node.adjustmentFactor, 0) /
+    sourceNodes.length;
+  return {
+    revenue,
+    productRevenue,
+    serviceRevenue,
+    orders,
+    onlineOrders,
+    offlineOrders,
+    avgOrder: Math.round(revenue / Math.max(orders, 1)),
+    completion,
+    owner: ownerNames.size === 1 ? sourceNodes[0].owner : fallback.owner,
+    status,
+    verified: status === '已核验',
+    updatedAt,
+    adjustmentFactor: Number(adjustmentFactor.toFixed(2)),
+  };
+}
+
+export function createBusinessProjectionRows(
+  view: DrillView,
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+): ViewRow[] {
+  return getVisibleProducts(view, productExpanded).flatMap((product) => {
+    const regions = getVisibleRegions(
+      product.node,
+      regionExpandedByProduct.get(product.id) ?? new Set<string>(),
+    );
+    return regions.map(
+      (region, index): ViewRow => ({
+        id: `${product.id}::${region.id}`,
+        name: `${product.label} / ${region.label}`,
+        hierarchyRole: product.isGroup ? 'category' : 'subcategory',
+        ...aggregateBusinessNodes(region.sourceNodes, product.node),
+        children: product.isGroup
+          ? product.node.children?.filter(
+              (child) => child.hierarchyRole === 'subcategory',
+            )
+          : undefined,
+        level: product.depth,
+        hasChildren: product.isGroup,
+        productId: product.id,
+        productLabel: product.label,
+        productAttribute: product.attribute,
+        productDepth: product.depth,
+        productIsGroup: product.isGroup,
+        productExpanded: product.expanded,
+        productBlockStart: index === 0,
+        productRowSpan: regions.length,
+        regionId: region.id,
+        regionLabel: region.label,
+        regionDepth: region.depth,
+        regionIsGroup: region.isGroup,
+        regionExpanded: region.expanded,
+        sourceNodeIds: region.sourceNodes.map((node) => node.id),
+      }),
+    );
+  });
+}
+
+export function getProductGroupIdsForView(view: DrillView) {
+  return productRootsForView(view)
+    .filter((node) =>
+      node.children?.some((child) => child.hierarchyRole === 'subcategory'),
+    )
+    .map((node) => node.id);
+}
+
+export function getAllProductIdsForView(view: DrillView) {
+  return productRootsForView(view).flatMap((root) => [
+    root.id,
+    ...(root.children ?? [])
+      .filter((child) => child.hierarchyRole === 'subcategory')
+      .map((child) => child.id),
+  ]);
+}
+
+export function getRegionGroupIdsForProduct(productId: string) {
+  const product = findBusinessNode(BUSINESS_DATA, productId);
+  return product ? getRegionRoots(product).map((region) => region.id) : [];
+}
+
+export function getBusinessProjectionSummary(
+  view: DrillView,
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+): OutlineSnapshot {
+  const productGroupIds = getProductGroupIdsForView(view);
+  const products = getVisibleProducts(view, productExpanded);
+  const regionGroups = products.flatMap((product) =>
+    getRegionRoots(product.node).map((region) => ({
+      productId: product.id,
+      regionId: region.id,
+    })),
+  );
+  return {
+    productExpanded: productGroupIds.filter((id) => productExpanded.has(id))
+      .length,
+    productTotal: productGroupIds.length,
+    regionExpanded: regionGroups.filter(({ productId, regionId }) =>
+      regionExpandedByProduct.get(productId)?.has(regionId),
+    ).length,
+    regionTotal: regionGroups.length,
+    rowCount: createBusinessProjectionRows(
+      view,
+      productExpanded,
+      regionExpandedByProduct,
+    ).length,
+  };
+}
+
+export const INITIAL_DATASET_LABEL = `${
+  createBusinessProjectionRows(
+    [],
+    new Set<string>(INITIAL_PRODUCT_EXPANDED),
+    new Map<string, Set<string>>(),
+  ).length
+} 行 × ${COLUMNS.length} 列`;
+
+export function canDrillNode(node: BusinessNode | ViewRow | null | undefined) {
+  if (!node) return false;
+  if ('productIsGroup' in node) return node.productIsGroup;
+  return Boolean(node.children?.length);
 }
 
 export function viewForNode(
@@ -646,37 +1128,13 @@ export function viewForNode(
   node: BusinessNode | ViewRow,
 ): DrillView | null {
   if (!canDrillNode(node)) return null;
-  return [...view, { id: node.id, name: node.name }];
-}
-
-export function flatRowsForView(rows: ViewRow[], view: DrillView): ViewRow[] {
-  if (!view.length) return rows;
-
-  let rangeStart = 0;
-  let rangeEnd = rows.length;
-  let parentLevel = -1;
-  for (const pathItem of view) {
-    const nodeIndex = rows.findIndex(
-      (row, index) =>
-        index >= rangeStart &&
-        index < rangeEnd &&
-        row.level === parentLevel + 1 &&
-        row.id === pathItem.id,
-    );
-    if (nodeIndex < 0) return [];
-
-    parentLevel = rows[nodeIndex].level;
-    rangeStart = nodeIndex + 1;
-    rangeEnd = rangeStart;
-    while (rangeEnd < rows.length && rows[rangeEnd].level > parentLevel)
-      rangeEnd += 1;
-  }
-
-  const levelOffset = parentLevel + 1;
-  return rows.slice(rangeStart, rangeEnd).map((row) => ({
-    ...row,
-    level: row.level - levelOffset,
-  }));
+  return [
+    ...view,
+    {
+      id: 'productId' in node ? node.productId : node.id,
+      name: 'productLabel' in node ? node.productLabel : node.name,
+    },
+  ];
 }
 
 export function stableCellKey(nodeId: string, field: string) {
@@ -732,9 +1190,11 @@ function createStressRecord(index: number): ViewRow {
     : isCity
     ? `${city}分区`
     : `${city}业务单元 ${String(index + 1).padStart(6, '0')}`;
+  const productId = `stress-product-${Math.floor(index / 1_000)}`;
+  const sourceId = `stress-${index}`;
   return {
     ...makeNode(
-      `stress-${index}`,
+      sourceId,
       name,
       isRegion ? 'category' : isCity ? 'region' : 'detail',
       revenue,
@@ -745,7 +1205,24 @@ function createStressRecord(index: number): ViewRow {
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
     level: isRegion ? 0 : isCity ? 1 : 2,
-    hasChildren: isRegion || isCity,
+    hasChildren: false,
+    productId,
+    productLabel: `压力产品线 ${String(Math.floor(index / 1_000) + 1).padStart(
+      3,
+      '0',
+    )}`,
+    productAttribute: ['耐用品', '快消品', '数字产品'][index % 3],
+    productDepth: 0,
+    productIsGroup: false,
+    productExpanded: false,
+    productBlockStart: true,
+    productRowSpan: 1,
+    regionId: `stress-region-${regionIndex}-${cityIndex}`,
+    regionLabel: name,
+    regionDepth: isRegion ? 0 : 1,
+    regionIsGroup: false,
+    regionExpanded: false,
+    sourceNodeIds: [sourceId],
   };
 }
 
@@ -788,61 +1265,30 @@ export async function getStressRecordsAsync() {
   }
 }
 
-export function getRowOutlineGroups(rows: ViewRow[]): RowOutlineGroup[] {
-  const groups: RowOutlineGroup[] = [];
-  const open: Array<{ summaryRow: number; level: number }> = [];
-
-  const closeGroupsAt = (endRow: number, level: number) => {
-    while (open.length && open[open.length - 1].level >= level) {
-      const group = open.pop();
-      if (group && endRow > group.summaryRow + 1) {
-        groups.push({
-          summaryRow: group.summaryRow,
-          detailStart: group.summaryRow + 1,
-          detailCount: endRow - group.summaryRow - 1,
-        });
-      }
-    }
-  };
-
-  rows.forEach((row, index) => {
-    closeGroupsAt(index, row.level);
-    if (row.hasChildren || row.children?.length)
-      open.push({ summaryRow: index, level: row.level });
-  });
-  closeGroupsAt(rows.length, Number.NEGATIVE_INFINITY);
-  return groups.sort((left, right) => left.summaryRow - right.summaryRow);
+export function productHierarchyText(row: ViewRow) {
+  if (!row.productBlockStart) return '';
+  if (!row.productIsGroup) return row.productLabel;
+  return `${row.productExpanded ? '▼' : '▶'}  ${row.productLabel}`;
 }
 
-export function hierarchyCellText(row: ViewRow, collapsed = false) {
-  if (!row.hasChildren && !row.children?.length) return row.name;
-  return `${collapsed ? '▸' : '▾'} ${row.name}`;
-}
-
-export function hierarchyColumnForRole(role: HierarchyRole) {
-  if (role === 'category') return PRIMARY_CATEGORY_COLUMN;
-  if (role === 'subcategory') return PRIMARY_SUBCATEGORY_COLUMN;
-  if (role === 'region') return EXTENSION_REGION_COLUMN;
-  return EXTENSION_DETAIL_COLUMN;
-}
-
-export function hierarchyColumnForRow(row: ViewRow) {
-  return hierarchyColumnForRole(row.hierarchyRole);
+export function regionHierarchyText(row: ViewRow) {
+  if (!row.regionIsGroup) return row.regionLabel;
+  return `${row.regionExpanded ? '▼' : '▶'}  ${row.regionLabel}`;
 }
 
 export function isHierarchyField(field: ColumnField): field is HierarchyField {
   return (
-    field === 'categoryHierarchy' ||
-    field === 'subcategoryHierarchy' ||
-    field === 'regionHierarchy' ||
-    field === 'detailHierarchy'
+    field === 'productHierarchy' ||
+    field === 'productAttribute' ||
+    field === 'regionHierarchy'
   );
 }
 
 export function viewRowCellValue(row: ViewRow, col: number) {
-  if (col < HIERARCHY_COLUMN_COUNT) {
-    return col === hierarchyColumnForRow(row) ? hierarchyCellText(row) : null;
-  }
+  if (col === PRODUCT_HIERARCHY_COLUMN) return productHierarchyText(row);
+  if (col === PRODUCT_ATTRIBUTE_COLUMN)
+    return row.productBlockStart ? row.productAttribute : '';
+  if (col === REGION_HIERARCHY_COLUMN) return regionHierarchyText(row);
   const column = COLUMNS[col];
   return column && !isHierarchyField(column.field) ? row[column.field] : null;
 }

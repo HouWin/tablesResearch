@@ -84,9 +84,8 @@ export default defineConfig({
           component: './SpreadJSDemo',
         },
         {
-          name: '双列独立折叠',
           path: '/spreadjs-demo/independent-outline',
-          component: './SpreadJSIndependentOutline',
+          redirect: '/spreadjs-demo/business',
         },
       ],
     },

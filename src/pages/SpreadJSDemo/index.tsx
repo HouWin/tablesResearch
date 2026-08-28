@@ -18,6 +18,7 @@ import {
   MessageSquareText,
   Paperclip,
   Redo2,
+  RotateCcw,
   Search,
   Settings2,
   Sigma,
@@ -44,6 +45,8 @@ import {
   formatMoney,
   formatStatistic,
   pathForView,
+  type OutlineDimension,
+  type OutlineSnapshot,
   type SelectedCell,
 } from './spreadsheet/model';
 import {
@@ -184,6 +187,103 @@ function useToolbarOverflow() {
   return { toolbarRef, overflow, scroll };
 }
 
+function OutlineControlCard({
+  dimension,
+  title,
+  description,
+  expanded,
+  total,
+  disabled,
+  onSetAll,
+}: {
+  dimension: OutlineDimension;
+  title: string;
+  description: string;
+  expanded: number;
+  total: number;
+  disabled: boolean;
+  onSetAll: (dimension: OutlineDimension, expanded: boolean) => void;
+}) {
+  return (
+    <section className={`integrated-outline-card is-${dimension}`}>
+      <div>
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </div>
+      <span aria-label={`${expanded} 个分组已展开，共 ${total} 个`}>
+        {expanded}/{total} 展开
+      </span>
+      <div className="integrated-outline-actions">
+        <button
+          type="button"
+          disabled={disabled || total === 0 || expanded === total}
+          onClick={() => onSetAll(dimension, true)}
+        >
+          <ChevronDown size={13} />
+          全部展开
+        </button>
+        <button
+          type="button"
+          disabled={disabled || expanded === 0}
+          onClick={() => onSetAll(dimension, false)}
+        >
+          <ChevronRight size={13} />
+          全部收起
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function IntegratedOutlineControls({
+  snapshot,
+  disabled,
+  onSetAll,
+  onReset,
+}: {
+  snapshot: OutlineSnapshot;
+  disabled: boolean;
+  onSetAll: (dimension: OutlineDimension, expanded: boolean) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div
+      className={`integrated-outline-controls${disabled ? ' is-disabled' : ''}`}
+      role="group"
+      aria-label="双列独立折叠控制"
+    >
+      <OutlineControlCard
+        dimension="product"
+        title="第一折叠列 · 产品树"
+        description="家具 / 办公用品 / 技术产品；属性列跟随产品"
+        expanded={snapshot.productExpanded}
+        total={snapshot.productTotal}
+        disabled={disabled}
+        onSetAll={onSetAll}
+      />
+      <OutlineControlCard
+        dimension="region"
+        title="第二折叠列 · 区域树"
+        description="每个产品分别维护区域展开状态"
+        expanded={snapshot.regionExpanded}
+        total={snapshot.regionTotal}
+        disabled={disabled}
+        onSetAll={onSetAll}
+      />
+      <button
+        type="button"
+        className="integrated-outline-reset"
+        disabled={disabled}
+        onClick={onReset}
+        title="恢复产品树默认展开、区域树全部收起"
+      >
+        <RotateCcw size={14} />
+        恢复默认
+      </button>
+    </div>
+  );
+}
+
 export default function SpreadJSDemoPage() {
   const {
     hostRef,
@@ -218,6 +318,7 @@ export default function SpreadJSDemoPage() {
     columnVisibility,
     rowGroupsCollapsed,
     columnGroupsCollapsed,
+    outlineSnapshot,
     toast,
     datasetLabel,
     openPanel,
@@ -529,6 +630,15 @@ export default function SpreadJSDemoPage() {
                 单击层级箭头展开 / 收起 · 双击指标单元格下钻 · 右键打开业务菜单
               </small>
             </div>
+
+            <IntegratedOutlineControls
+              snapshot={outlineSnapshot}
+              disabled={tableBusy || dataMode !== 'regular'}
+              onSetAll={(dimension, expanded) =>
+                actionsRef.current?.setOutlineDimension(dimension, expanded)
+              }
+              onReset={() => actionsRef.current?.resetOutline()}
+            />
 
             <div className="formula-bar">
               <span className="name-box">{selected?.a1 ?? 'A1'}</span>

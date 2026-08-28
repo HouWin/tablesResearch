@@ -489,6 +489,103 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .integrated-outline-controls {
+    min-height: 68px;
+    flex: 0 0 68px;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    padding: 7px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 1px solid var(--line);
+    background: #fcfcfd;
+    scrollbar-width: thin;
+    scrollbar-color: #d8d1ef transparent;
+  }
+  .integrated-outline-controls.is-disabled {
+    background: #f8f9fb;
+  }
+  .integrated-outline-card {
+    min-width: 350px;
+    flex: 1 0 350px;
+    display: grid;
+    grid-template-columns: minmax(145px, 1fr) auto auto;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 8px 6px 11px;
+    border: 1px solid #dbe9e2;
+    border-radius: 9px;
+    background: #f8fcfa;
+  }
+  .integrated-outline-card.is-region {
+    border-color: #e0daf8;
+    background: #faf9ff;
+  }
+  .integrated-outline-card > div:first-child {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .integrated-outline-card strong {
+    color: #19704f;
+    font-size: 10px;
+  }
+  .integrated-outline-card.is-region strong {
+    color: #6045b8;
+  }
+  .integrated-outline-card small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .integrated-outline-card > span {
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: #e9f6ef;
+    color: #297a5d;
+    font-size: 8px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .integrated-outline-card.is-region > span {
+    background: #efecff;
+    color: #6548c8;
+  }
+  .integrated-outline-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .integrated-outline-actions button,
+  .integrated-outline-reset {
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 8px;
+    border: 1px solid #d9dee7;
+    border-radius: 7px;
+    background: #fff;
+    color: #536071;
+    font-size: 9px;
+    font-weight: 620;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .integrated-outline-actions button:hover:not(:disabled),
+  .integrated-outline-reset:hover:not(:disabled) {
+    border-color: #bfb5e2;
+    background: #f8f6ff;
+    color: var(--accent);
+  }
+  .integrated-outline-reset {
+    min-width: 82px;
+    flex: 0 0 82px;
+    align-self: center;
+  }
   .formula-bar {
     min-height: 32px;
     flex: 0 0 32px;

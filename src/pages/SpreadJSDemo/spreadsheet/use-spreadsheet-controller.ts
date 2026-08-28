@@ -7,7 +7,6 @@ import {
   describeClipboardRange,
 } from './clipboard';
 import {
-  BUSINESS_DATA,
   COLUMNS,
   COLUMN_GROUPS,
   COLUMN_HEADER_GROUPS,
@@ -18,8 +17,11 @@ import {
   DRILLABLE_METRIC_COLUMNS,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
+  INITIAL_PRODUCT_EXPANDED,
   INITIAL_DATASET_LABEL,
   ORDERS_COLUMN,
+  PRODUCT_HIERARCHY_COLUMN,
+  REGION_HIERARCHY_COLUMN,
   REVENUE_COLUMN,
   STATUS_COLUMN,
   STRESS_FULL_PAGE_VISIBLE_ROWS,
@@ -29,18 +31,16 @@ import {
   VERIFIED_COLUMN,
   canDrillNode,
   columnName,
-  findBusinessNode,
-  flatRowsForView,
-  flattenTree,
+  createBusinessProjectionRows,
+  getAllProductIdsForView,
   getAggregateValue,
-  getRowOutlineGroups,
+  getBusinessProjectionSummary,
+  getProductGroupIdsForView,
+  getRegionGroupIdsForProduct,
   getStressRecordsAsync,
-  hierarchyCellText,
-  hierarchyColumnForRow,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
-  rootsForView,
   roundToTwoDecimals,
   stableCellKey,
   stressCellSearchText,
@@ -49,11 +49,14 @@ import {
   viewRowCellValue,
   viewRowValues,
   type AggregateMode,
+  type BusinessField,
   type CellAttachment,
   type DataMode,
   type DrillView,
   type HistoryItem,
   type NumericDisplay,
+  type OutlineDimension,
+  type OutlineSnapshot,
   type PanelName,
   type SelectedCell,
   type SelectionStats,
@@ -99,6 +102,8 @@ export type SpreadsheetActions = {
   up: () => void;
   toggleRowGroups: () => void;
   toggleColumnGroups: () => void;
+  setOutlineDimension: (dimension: OutlineDimension, expanded: boolean) => void;
+  resetOutline: () => void;
   loadDataMode: (mode: 'regular' | 'stress') => void;
   openPanel: (panel: Exclude<PanelName, null>) => void;
   saveComment: (content: string) => void;
@@ -150,26 +155,26 @@ export function useSpreadsheetController() {
   const historyRef = useRef<Map<string, HistoryItem[]>>(
     new Map([
       [
-        stableCellKey('bookcases-shanghai', 'revenue'),
+        stableCellKey('furniture-bookcases::region:east', 'revenue'),
         [
           {
             id: 'history-3',
-            oldValue: 2_062_000,
-            newValue: 2_086_400,
+            oldValue: 3_700_400,
+            newValue: 3_724_800,
             source: '日报回写',
             createdAt: new Date('2026-08-21T16:34:00+08:00').getTime(),
           },
           {
             id: 'history-2',
-            oldValue: 2_048_400,
-            newValue: 2_062_000,
+            oldValue: 3_686_800,
+            newValue: 3_700_400,
             source: '批量粘贴',
             createdAt: new Date('2026-08-21T14:18:00+08:00').getTime(),
           },
           {
             id: 'history-1',
             oldValue: null,
-            newValue: 2_048_400,
+            newValue: 3_686_800,
             source: '数据导入',
             createdAt: new Date('2026-08-21T09:02:00+08:00').getTime(),
           },
@@ -180,12 +185,15 @@ export function useSpreadsheetController() {
   const commentsRef = useRef<Map<string, string>>(
     new Map([
       [
-        stableCellKey('bookcases-shanghai', 'revenue'),
+        stableCellKey('furniture-bookcases::region:east', 'revenue'),
         '待复核：净收入与城市日报存在 2,400 元差异。',
       ],
     ]),
   );
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
+  const dataOverridesRef = useRef<Map<string, Map<BusinessField, unknown>>>(
+    new Map(),
+  );
 
   const [ready, setReady] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
@@ -216,6 +224,13 @@ export function useSpreadsheetController() {
   );
   const [rowGroupsCollapsed, setRowGroupsCollapsed] = useState(false);
   const [columnGroupsCollapsed, setColumnGroupsCollapsed] = useState(false);
+  const [outlineSnapshot, setOutlineSnapshot] = useState<OutlineSnapshot>(() =>
+    getBusinessProjectionSummary(
+      [],
+      new Set<string>(INITIAL_PRODUCT_EXPANDED),
+      new Map<string, Set<string>>(),
+    ),
+  );
   const [toast, setToast] = useState<ToastState | null>(null);
   const [datasetLabel, setDatasetLabel] = useState(INITIAL_DATASET_LABEL);
   const aggregateValue = getAggregateValue(
@@ -275,10 +290,14 @@ export function useSpreadsheetController() {
     setInitializationError(null);
     let cancelled = false;
     let workbook: Workbook | null = null;
-    let activeRows = flattenTree(BUSINESS_DATA);
-    let activeRowOutlineGroups = getRowOutlineGroups(activeRows);
+    const productExpanded = new Set<string>(INITIAL_PRODUCT_EXPANDED);
+    const regionExpandedByProduct = new Map<string, Set<string>>();
     let activeView: DrillView = [];
-    let stressSourceRows: ViewRow[] | null = null;
+    let activeRows = createBusinessProjectionRows(
+      activeView,
+      productExpanded,
+      regionExpandedByProduct,
+    );
     let stressSourceById = new Map<string, ViewRow>();
     let activeDataMode: 'regular' | 'stress' = 'regular';
     let activeSearch = { query: '', row: -1, col: -1 };
@@ -297,6 +316,29 @@ export function useSpreadsheetController() {
       col: number;
       backColor: string | null;
     } | null = null;
+
+    const extensionStateFor = (productId: string) => {
+      let state = regionExpandedByProduct.get(productId);
+      if (!state) {
+        state = new Set<string>();
+        regionExpandedByProduct.set(productId, state);
+      }
+      return state;
+    };
+
+    const buildRegularRows = () => {
+      const rows = createBusinessProjectionRows(
+        activeView,
+        productExpanded,
+        regionExpandedByProduct,
+      );
+      rows.forEach((row) => {
+        dataOverridesRef.current.get(row.id)?.forEach((value, field) => {
+          updateBusinessNode(row, field, value);
+        });
+      });
+      return rows;
+    };
 
     const notify = (message: string, tone: ToastTone = 'success') => {
       window.clearTimeout(toastTimer);
@@ -553,20 +595,15 @@ export function useSpreadsheetController() {
       };
 
       const syncGroupToolbarState = (isRowGroup: boolean) => {
-        const collapsed = isRowGroup
-          ? activeRowOutlineGroups.some(({ detailStart }) =>
-              sheet.rowOutlines.isCollapsed(detailStart),
-            )
-          : COLUMN_GROUPS.some(({ detailStart }) =>
-              sheet.columnOutlines.isCollapsed(detailStart),
-            );
         if (isRowGroup) {
-          rowGroupsCollapsedRef.current = collapsed;
-          setRowGroupsCollapsed(collapsed);
-        } else {
-          columnGroupsCollapsedRef.current = collapsed;
-          setColumnGroupsCollapsed(collapsed);
+          setRowGroupsCollapsed(rowGroupsCollapsedRef.current);
+          return;
         }
+        const collapsed = COLUMN_GROUPS.some(({ detailStart }) =>
+          sheet.columnOutlines.isCollapsed(detailStart),
+        );
+        columnGroupsCollapsedRef.current = collapsed;
+        setColumnGroupsCollapsed(collapsed);
       };
 
       const configureCellTypes = (startRow: number, rowCount: number) => {
@@ -627,47 +664,34 @@ export function useSpreadsheetController() {
           .getRange(startRow, 0, rowCount, columnCount)
           .font('12px Arial, PingFang SC');
         sheet
-          .getRange(startRow, 0, rowCount, 2)
-          .backColor('#f4f6f8')
-          .foreColor('#475467')
-          .hAlign(GC.Spread.Sheets.HorizontalAlign.center);
+          .getRange(startRow, PRODUCT_HIERARCHY_COLUMN, rowCount, 1)
+          .backColor('#edf8f2')
+          .foreColor('#19704f');
         sheet
-          .getRange(startRow, 2, rowCount, 2)
-          .backColor('#eaf0f5')
-          .foreColor('#1d2939')
-          .font('600 12px Arial, PingFang SC');
+          .getRange(startRow, 1, rowCount, 1)
+          .backColor('#fff8e9')
+          .foreColor('#875c18');
+        sheet
+          .getRange(startRow, REGION_HIERARCHY_COLUMN, rowCount, 1)
+          .backColor('#f1effd')
+          .foreColor('#6045b8');
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
           .vAlign(GC.Spread.Sheets.VerticalAlign.center);
         const endRow = Math.min(activeRows.length, startRow + rowCount);
         for (let row = startRow; row < endRow; row += 1) {
-          const hierarchyCol = hierarchyColumnForRow(activeRows[row]);
+          const node = activeRows[row];
           sheet
-            .getCell(row, hierarchyCol)
-            .textIndent(activeRows[row].hierarchyRole === 'detail' ? 1 : 0);
-        }
-      };
-
-      const refreshHierarchyNavigator = (
-        startRow = 0,
-        rowCount = activeRows.length,
-      ) => {
-        const endRow = Math.min(activeRows.length, startRow + rowCount);
-        spread.suspendEvent();
-        try {
-          activeRowOutlineGroups.forEach(({ summaryRow, detailStart }) => {
-            if (summaryRow < startRow || summaryRow >= endRow) return;
-            const text = hierarchyCellText(
-              activeRows[summaryRow],
-              sheet.rowOutlines.isCollapsed(detailStart),
-            );
-            const hierarchyCol = hierarchyColumnForRow(activeRows[summaryRow]);
-            if (sheet.getValue(summaryRow, hierarchyCol) !== text) {
-              sheet.setValue(summaryRow, hierarchyCol, text);
-            }
-          });
-        } finally {
-          spread.resumeEvent();
+            .getCell(row, PRODUCT_HIERARCHY_COLUMN)
+            .textIndent(node.productDepth);
+          sheet
+            .getCell(row, REGION_HIERARCHY_COLUMN)
+            .textIndent(node.regionDepth);
+          if (node.productIsGroup || node.regionIsGroup) {
+            sheet
+              .getRange(row, 0, 1, columnCount)
+              .font('600 12px Arial, PingFang SC');
+          }
         }
       };
 
@@ -696,7 +720,6 @@ export function useSpreadsheetController() {
         styleDataRows(startRow, rowCount, sheet.getColumnCount());
         configureCellTypes(startRow, rowCount);
         styleStatusCells(startRow, rowCount);
-        refreshHierarchyNavigator(startRow, rowCount);
         loadedStressPages.add(pageIndex);
         for (let row = startRow; row < startRow + rowCount; row += 1)
           loadedStressRows.delete(row);
@@ -717,7 +740,6 @@ export function useSpreadsheetController() {
         styleDataRows(row, 1, sheet.getColumnCount());
         configureCellTypes(row, 1);
         styleStatusCells(row, 1);
-        refreshHierarchyNavigator(row, 1);
         loadedStressRows.add(row);
       };
 
@@ -875,7 +897,6 @@ export function useSpreadsheetController() {
 
       const refreshAfterGroupChange = (isRowGroup: boolean) => {
         syncGroupToolbarState(isRowGroup);
-        if (isRowGroup) refreshHierarchyNavigator();
         spread.invalidateLayout();
         if (isRowGroup && activeDataMode === 'stress') {
           window.clearTimeout(stressViewportTimer);
@@ -902,9 +923,12 @@ export function useSpreadsheetController() {
         refreshAfterGroupChange(isRowGroup);
       };
 
-      const renderRows = (rows: ViewRow[], stress: boolean) => {
+      const renderRows = (
+        rows: ViewRow[],
+        stress: boolean,
+        preferredCell?: { nodeId: string; productId: string; col: number },
+      ) => {
         activeRows = rows;
-        activeRowOutlineGroups = getRowOutlineGroups(rows);
         activeDataMode = stress ? 'stress' : 'regular';
         activeSearch = { query: '', row: -1, col: -1 };
         const rowCount = rows.length;
@@ -918,6 +942,15 @@ export function useSpreadsheetController() {
           sheet.setRowCount(rowCount);
           sheet.setColumnCount(colCount);
           sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
+          sheet
+            .getSpans(undefined, GC.Spread.Sheets.SheetArea.viewport)
+            .forEach((span) =>
+              sheet.removeSpan(
+                span.row,
+                span.col,
+                GC.Spread.Sheets.SheetArea.viewport,
+              ),
+            );
           loadedStressPages.clear();
           loadedStressRows.clear();
           if (stress) {
@@ -929,6 +962,16 @@ export function useSpreadsheetController() {
               0,
               rows.map((row) => viewRowValues(row, colCount)),
             );
+            rows.forEach((row, rowIndex) => {
+              if (!row.productBlockStart || row.productRowSpan <= 1) return;
+              sheet.addSpan(
+                rowIndex,
+                PRODUCT_HIERARCHY_COLUMN,
+                row.productRowSpan,
+                1,
+              );
+              sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
+            });
           }
 
           const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
@@ -996,26 +1039,26 @@ export function useSpreadsheetController() {
             .backColor('#e9e3fb')
             .foreColor('#513b9d')
             .font('700 12px Arial, PingFang SC');
+          sheet
+            .getRange(2, PRODUCT_HIERARCHY_COLUMN, 1, 1, headerArea)
+            .backColor('#e8f6ee')
+            .foreColor('#19704f');
+          sheet
+            .getRange(2, 1, 1, 1, headerArea)
+            .backColor('#fff4dc')
+            .foreColor('#875c18');
+          sheet
+            .getRange(2, REGION_HIERARCHY_COLUMN, 1, 1, headerArea)
+            .backColor('#eeeafd')
+            .foreColor('#6045b8');
           sheet.setRowHeight(0, 27, headerArea);
           sheet.setRowHeight(1, 27, headerArea);
           sheet.setRowHeight(2, 34, headerArea);
           if (!stress) configureCellTypes(0, rowCount);
 
-          // Summary rows sit above their detail rows. The control therefore stays
-          // on the row whose own descendants it expands or collapses.
-          sheet.rowOutlines.direction(
-            GC.Spread.Sheets.Outlines.OutlineDirection.backward,
-          );
-          activeRowOutlineGroups.forEach(
-            ({ summaryRow, detailStart, detailCount }) => {
-              sheet.rowOutlines.group(detailStart, detailCount);
-              sheet
-                .getRange(summaryRow, 0, 1, colCount)
-                .font('600 12px Arial, PingFang SC');
-            },
-          );
-          sheet.showRowOutline(true);
-          refreshHierarchyNavigator();
+          // 行层级由产品列和区域列分别维护投影状态。原生 row outline
+          // 只能共享一套行可见性，无法表达两列互不干扰，因此这里不启用。
+          sheet.showRowOutline(false);
           // Keep each summary column visible and collapse only its detail columns.
           sheet.columnOutlines.direction(
             GC.Spread.Sheets.Outlines.OutlineDirection.backward,
@@ -1023,6 +1066,15 @@ export function useSpreadsheetController() {
           COLUMN_GROUPS.forEach(({ detailStart, detailCount }) => {
             sheet.columnOutlines.group(detailStart, detailCount);
           });
+          if (columnGroupsCollapsedRef.current) {
+            for (
+              let level = sheet.columnOutlines.getMaxLevel();
+              level >= 0;
+              level -= 1
+            ) {
+              sheet.columnOutlines.expand(level, false);
+            }
+          }
           sheet.showColumnOutline(true);
           if (!stress) {
             applyStableComments();
@@ -1041,24 +1093,103 @@ export function useSpreadsheetController() {
         }
         spread.invalidateLayout();
         spread.repaint();
-        sheet.setActiveCell(0, 0);
-        sheet.setSelection(0, 0, 1, 1);
-        sheet.showCell(
-          0,
-          0,
-          GC.Spread.Sheets.VerticalPosition.top,
-          GC.Spread.Sheets.HorizontalPosition.left,
+        let nextRow = preferredCell
+          ? rows.findIndex((row) => row.id === preferredCell.nodeId)
+          : 0;
+        if (nextRow < 0 && preferredCell)
+          nextRow = rows.findIndex(
+            (row) => row.productId === preferredCell.productId,
+          );
+        if (nextRow < 0) nextRow = 0;
+        const nextCol = Math.min(
+          Math.max(preferredCell?.col ?? 0, 0),
+          colCount - 1,
         );
-        updateSelected(0, 0);
-        calculateSelection(sheet, new GC.Spread.Sheets.Range(0, 0, 1, 1));
+        sheet.setActiveCell(nextRow, nextCol);
+        sheet.setSelection(nextRow, nextCol, 1, 1);
+        sheet.showCell(
+          nextRow,
+          nextCol,
+          GC.Spread.Sheets.VerticalPosition.nearest,
+          GC.Spread.Sheets.HorizontalPosition.nearest,
+        );
+        updateSelected(nextRow, nextCol);
+        calculateSelection(
+          sheet,
+          new GC.Spread.Sheets.Range(nextRow, nextCol, 1, 1),
+        );
         setDatasetLabel(
           `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
         );
-        rowGroupsCollapsedRef.current = false;
-        columnGroupsCollapsedRef.current = false;
-        setRowGroupsCollapsed(false);
-        setColumnGroupsCollapsed(false);
         setReady(true);
+      };
+
+      const currentCellIdentity = () => {
+        const row = activeRows[sheet.getActiveRowIndex()];
+        if (!row) return undefined;
+        return {
+          nodeId: row.id,
+          productId: row.productId,
+          col: sheet.getActiveColumnIndex(),
+        };
+      };
+
+      const syncProjectionSnapshot = () => {
+        const snapshot = getBusinessProjectionSummary(
+          activeView,
+          productExpanded,
+          regionExpandedByProduct,
+        );
+        setOutlineSnapshot(snapshot);
+        const collapsed =
+          snapshot.productExpanded === 0 && snapshot.regionExpanded === 0;
+        rowGroupsCollapsedRef.current = collapsed;
+        setRowGroupsCollapsed(collapsed);
+      };
+
+      const renderProjectionRows = () => {
+        const preferredCell = currentCellIdentity();
+        renderRows(buildRegularRows(), false, preferredCell);
+        syncProjectionSnapshot();
+      };
+
+      const setOutlineDimension = (
+        dimension: OutlineDimension,
+        expanded: boolean,
+      ) => {
+        if (activeDataMode === 'stress') {
+          notify('10 万行压力数据为扁平视图，请先恢复常规数据');
+          return;
+        }
+        if (dimension === 'product') {
+          getProductGroupIdsForView(activeView).forEach((productId) => {
+            if (expanded) productExpanded.add(productId);
+            else productExpanded.delete(productId);
+          });
+        } else if (expanded) {
+          getAllProductIdsForView(activeView).forEach((productId) => {
+            const state = extensionStateFor(productId);
+            getRegionGroupIdsForProduct(productId).forEach((regionId) =>
+              state.add(regionId),
+            );
+          });
+        } else {
+          regionExpandedByProduct.clear();
+        }
+        renderProjectionRows();
+        notify(
+          `${dimension === 'product' ? '产品树' : '区域树'}已全部${
+            expanded ? '展开' : '收起'
+          }`,
+        );
+      };
+
+      const resetOutline = () => {
+        productExpanded.clear();
+        INITIAL_PRODUCT_EXPANDED.forEach((id) => productExpanded.add(id));
+        regionExpandedByProduct.clear();
+        renderProjectionRows();
+        notify('已恢复默认折叠组合');
       };
 
       const openPanelForSelection = (nextPanel: Exclude<PanelName, null>) => {
@@ -1089,22 +1220,26 @@ export function useSpreadsheetController() {
 
       const setViewAndRender = (nextView: DrillView) => {
         const previousDepth = activeView.length;
-        const nextRows =
-          activeDataMode === 'stress'
-            ? flatRowsForView(stressSourceRows ?? [], nextView)
-            : flattenTree(rootsForView(nextView));
+        if (activeDataMode === 'stress') {
+          notify('压力数据为扁平视图，请先恢复常规数据');
+          return;
+        }
+        const previousView = activeView;
+        activeView = nextView;
+        const nextRows = buildRegularRows();
         if (nextView.length && !nextRows.length) {
+          activeView = previousView;
           notify('当前层级没有可显示的下级数据', 'error');
           return;
         }
-        activeView = nextView;
         setView([...nextView]);
         setPanel(null);
-        renderRows(nextRows, activeDataMode === 'stress');
+        renderRows(nextRows, false);
+        syncProjectionSnapshot();
         const currentName = pathForView(nextView).at(-1);
         notify(
           nextView.length === 0
-            ? '已返回全部区域'
+            ? '已返回全部业务'
             : nextView.length > previousDepth
             ? `已下钻至${currentName}`
             : `已返回${currentName}`,
@@ -1123,24 +1258,33 @@ export function useSpreadsheetController() {
 
       const drillSelected = () => drillRow(sheet.getActiveRowIndex());
 
-      const toggleHierarchyRow = (row: number) => {
+      const toggleHierarchyRow = (row: number, col: number) => {
         const node = activeRows[row];
-        const group = activeRowOutlineGroups.find(
-          (candidate) => candidate.summaryRow === row,
-        );
-        if (!node || !group) return;
-        const groupInfo = sheet.rowOutlines.find(group.detailStart, node.level);
-        if (!groupInfo) return;
-        const collapse = !sheet.rowOutlines.isCollapsed(group.detailStart);
-        // The range group owns the complete descendant range, including cells
-        // that have not been materialized yet in 100k mode. The middle column
-        // is a lightweight navigation surface over that single source of truth.
-        runOutlineBatch(true, () =>
-          sheet.rowOutlines.expandGroup(groupInfo, !collapse),
-        );
-        notify(
-          collapse ? `已收起${node.name}的下级` : `已展开${node.name}的下级`,
-        );
+        if (!node || activeDataMode === 'stress') return;
+        if (
+          col === PRODUCT_HIERARCHY_COLUMN &&
+          node.productBlockStart &&
+          node.productIsGroup
+        ) {
+          const expanded = !productExpanded.has(node.productId);
+          if (expanded) productExpanded.add(node.productId);
+          else productExpanded.delete(node.productId);
+          renderProjectionRows();
+          notify(`已${expanded ? '展开' : '收起'}${node.productLabel}产品`);
+          return;
+        }
+        if (col === REGION_HIERARCHY_COLUMN && node.regionIsGroup) {
+          const state = extensionStateFor(node.productId);
+          const expanded = !state.has(node.regionId);
+          if (expanded) state.add(node.regionId);
+          else state.delete(node.regionId);
+          renderProjectionRows();
+          notify(
+            `已${expanded ? '展开' : '收起'}${node.productLabel}的${
+              node.regionLabel
+            }区域`,
+          );
+        }
       };
 
       const openDatePicker = (row: number, col: number) => {
@@ -1461,25 +1605,24 @@ export function useSpreadsheetController() {
         },
         toggleRowGroups: () => {
           const collapse = !rowGroupsCollapsedRef.current;
-          runOutlineBatch(true, () => {
-            if (collapse) {
-              for (
-                let level = sheet.rowOutlines.getMaxLevel();
-                level >= 0;
-                level -= 1
-              ) {
-                sheet.rowOutlines.expand(level, false);
-              }
-            } else {
-              for (
-                let level = 0;
-                level <= sheet.rowOutlines.getMaxLevel();
-                level += 1
-              ) {
-                sheet.rowOutlines.expand(level, true);
-              }
-            }
+          if (activeDataMode === 'stress') {
+            notify('10 万行压力数据为扁平视图，请先恢复常规数据');
+            return;
+          }
+          getProductGroupIdsForView(activeView).forEach((productId) => {
+            if (collapse) productExpanded.delete(productId);
+            else productExpanded.add(productId);
           });
+          if (collapse) regionExpandedByProduct.clear();
+          else {
+            getAllProductIdsForView(activeView).forEach((productId) => {
+              const state = extensionStateFor(productId);
+              getRegionGroupIdsForProduct(productId).forEach((regionId) =>
+                state.add(regionId),
+              );
+            });
+          }
+          renderProjectionRows();
           notify(collapse ? '已收起所有行分组' : '已展开所有行分组');
         },
         toggleColumnGroups: () => {
@@ -1505,6 +1648,8 @@ export function useSpreadsheetController() {
           });
           notify(collapse ? '已收起所有列分组明细' : '已展开所有列分组明细');
         },
+        setOutlineDimension,
+        resetOutline,
         loadDataMode: (mode) => {
           activeSearchRun += 1;
           window.clearTimeout(stressLoadTimer);
@@ -1513,7 +1658,7 @@ export function useSpreadsheetController() {
             setDataMode('regular');
             activeView = [];
             setView([]);
-            renderRows(flattenTree(BUSINESS_DATA), false);
+            renderProjectionRows();
             notify('已恢复常规业务数据');
             return;
           }
@@ -1526,7 +1671,6 @@ export function useSpreadsheetController() {
             void getStressRecordsAsync()
               .then((rows) => {
                 if (cancelled) return;
-                stressSourceRows = rows;
                 stressSourceById = new Map(rows.map((row) => [row.id, row]));
                 activeView = [];
                 setView([]);
@@ -1738,7 +1882,11 @@ export function useSpreadsheetController() {
       // "下钻所选行" button.
       spread.contextMenu.onOpenMenu = (
         _menuData: unknown,
-        itemsDataForShown: { name?: string; disable?: boolean; title?: string }[],
+        itemsDataForShown: {
+          name?: string;
+          disable?: boolean;
+          title?: string;
+        }[],
       ) => {
         const drillItem = itemsDataForShown.find(
           (item) => item.name === 'business-drill',
@@ -1770,8 +1918,12 @@ export function useSpreadsheetController() {
         (_sender: unknown, args: CellClickArgs) => {
           if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
           const node = activeRows[args.row];
-          if (node && args.col === hierarchyColumnForRow(node)) {
-            toggleHierarchyRow(args.row);
+          if (
+            node &&
+            (args.col === PRODUCT_HIERARCHY_COLUMN ||
+              args.col === REGION_HIERARCHY_COLUMN)
+          ) {
+            toggleHierarchyRow(args.row, args.col);
             return;
           }
           openDatePicker(args.row, args.col);
@@ -1860,21 +2012,10 @@ export function useSpreadsheetController() {
           if (isHierarchyField(column.field)) {
             spread.suspendEvent();
             try {
-              const group = activeRowOutlineGroups.find(
-                (candidate) => candidate.summaryRow === args.row,
-              );
-              const hierarchyCol = hierarchyColumnForRow(node);
               sheet.setValue(
                 args.row,
                 args.col,
-                args.col === hierarchyCol
-                  ? hierarchyCellText(
-                      node,
-                      group
-                        ? sheet.rowOutlines.isCollapsed(group.detailStart)
-                        : false,
-                    )
-                  : null,
+                viewRowCellValue(node, args.col),
               );
             } finally {
               spread.resumeEvent();
@@ -1903,9 +2044,20 @@ export function useSpreadsheetController() {
           const sourceNode =
             activeDataMode === 'stress'
               ? stressSourceById.get(node.id)
-              : findBusinessNode(BUSINESS_DATA, node.id);
+              : undefined;
           if (sourceNode && sourceNode !== node)
             updateBusinessNode(sourceNode, column.field, nextValue);
+          if (activeDataMode === 'regular') {
+            const overrides =
+              dataOverridesRef.current.get(node.id) ??
+              new Map<BusinessField, unknown>();
+            overrides.set(column.field, nextValue);
+            if (column.field === 'status' || column.field === 'verified') {
+              overrides.set('status', node.status);
+              overrides.set('verified', node.verified);
+            }
+            dataOverridesRef.current.set(node.id, overrides);
+          }
           if (column.field === 'status' || column.field === 'verified') {
             spread.suspendEvent();
             try {
@@ -1945,7 +2097,8 @@ export function useSpreadsheetController() {
         },
       );
 
-      renderRows(activeRows, false);
+      renderRows(buildRegularRows(), false);
+      syncProjectionSnapshot();
       spread.focus();
     };
 
@@ -2010,6 +2163,7 @@ export function useSpreadsheetController() {
     columnVisibility,
     rowGroupsCollapsed,
     columnGroupsCollapsed,
+    outlineSnapshot,
     toast,
     datasetLabel,
     aggregateValue,
