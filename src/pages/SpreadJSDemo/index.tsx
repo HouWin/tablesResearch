@@ -32,7 +32,6 @@ import {
   SheetStatusBar,
   ToastMessage,
 } from './components/spreadsheet-ui';
-import { IndependentOutlineDemo } from './components/independent-outline-demo';
 import {
   AGGREGATE_MODES,
   FEATURES,
@@ -888,7 +887,6 @@ export default function SpreadJSDemoPage() {
 
         {toast && <ToastMessage toast={toast} />}
       </main>
-      <IndependentOutlineDemo />
     </div>
   );
 }

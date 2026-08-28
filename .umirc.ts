@@ -68,7 +68,22 @@ export default defineConfig({
     {
       name: 'SpreadJS Demo',
       path: '/spreadjs-demo',
-      component: './SpreadJSDemo',
+      routes: [
+        {
+          path: '/spreadjs-demo',
+          redirect: '/spreadjs-demo/business',
+        },
+        {
+          name: '经营数据表',
+          path: '/spreadjs-demo/business',
+          component: './SpreadJSDemo',
+        },
+        {
+          name: '双列独立折叠',
+          path: '/spreadjs-demo/independent-outline',
+          component: './SpreadJSIndependentOutline',
+        },
+      ],
     },
   ],
   npmClient: 'yarn',

@@ -10,7 +10,6 @@ import {
 } from 'react';
 import {
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
@@ -306,14 +305,6 @@ export function SheetStatusBar({
         </span>
       </div>
       <div className="dataset-summary">
-        <a
-          className="independent-demo-link"
-          href="#independent-outline-demo"
-          title="查看新增的双列独立折叠 Demo"
-        >
-          双列独立折叠
-          <ChevronDown size={12} />
-        </a>
         <span>{dataMode === 'stress' ? '压力数据' : '业务样例'}</span>
         <b>{datasetLabel}</b>
       </div>
