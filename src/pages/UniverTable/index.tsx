@@ -929,24 +929,24 @@ const UniverTablePage = () => {
         </Row>
       </Card>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Row gutter={[16, 16]}>
-          <Col xs={12} sm={8} md={6}>
+      <Card style={{ marginBottom: 16 }} styles={{ body: { padding: '12px 24px' } }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+              gap: 16,
+            }}
+          >
             <Statistic title="树节点数" value={stats.treeNodes} suffix="个" />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
             <Statistic title="展平行数" value={stats.sheetRows} suffix="行" />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
             <Statistic title="总列数" value={stats.totalCols} suffix="列" />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
             <Statistic title="变更记录" value={tracks.length} suffix="条" />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
             <Statistic title="数据模式" value={stats.modeLabel} />
-          </Col>
-          <Col xs={12} sm={8} md={6}>
+          </div>
+          <div style={{ flexShrink: 0, textAlign: 'right', minWidth: 88 }}>
             <Statistic
               title="渲染时长"
               value={renderMs ?? '-'}
@@ -959,8 +959,8 @@ const UniverTablePage = () => {
                     : undefined
               }
             />
-          </Col>
-        </Row>
+          </div>
+        </div>
       </Card>
 
       <div
