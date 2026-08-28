@@ -112,9 +112,26 @@ export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_CELL = 10;
 const ATTACHMENT_EXTENSION_PATTERN =
   /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
-const ATTACHMENT_ICON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6548c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
-)}`;
+// A solid-color rounded badge with a white paperclip glyph (and an optional
+// count bubble) baked directly into the icon. A bare 13px outline icon on a
+// near-white button background had almost no contrast and just looked like
+// an empty little box, so the badge now carries its own color regardless of
+// the surrounding cell/theme colors.
+function attachmentIconDataUrl(count: number) {
+  const badge =
+    count > 1
+      ? `<circle cx="18.5" cy="5.5" r="5.5" fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+         <text x="18.5" y="6.2" text-anchor="middle" dominant-baseline="middle" font-size="7.5" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${
+           count > 9 ? '9+' : count
+         }</text>`
+      : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <rect x="1" y="1" width="22" height="22" rx="6" fill="#6548c8"/>
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(3,3) scale(0.62)"/>
+    ${badge}
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
 
 function isAcceptedAttachment(file: File) {
   return (
@@ -482,9 +499,8 @@ export function useSpreadsheetController() {
         if (count) {
           buttons.push({
             imageType: GC.Spread.Sheets.ButtonImageType.custom,
-            imageSrc: ATTACHMENT_ICON,
-            imageSize: { width: 13, height: 13 },
-            caption: count > 1 ? String(count) : undefined,
+            imageSrc: attachmentIconDataUrl(count),
+            imageSize: { width: 20, height: 20 },
             command: (_sheet, buttonRow, buttonCol) => {
               _sheet.setActiveCell(buttonRow, buttonCol);
               _sheet.setSelection(buttonRow, buttonCol, 1, 1);
@@ -498,9 +514,9 @@ export function useSpreadsheetController() {
             position: GC.Spread.Sheets.ButtonPosition.right,
             visibility: GC.Spread.Sheets.ButtonVisibility.always,
             useButtonStyle: true,
-            buttonBackColor: '#f3efff',
+            buttonBackColor: 'transparent',
             hoverBackColor: '#e6defd',
-            width: count > 1 ? 34 : 25,
+            width: 24,
           });
           cell.tag({ kind: 'cell-attachments', key, count });
           renderedAttachmentCells.add(coordinate);
