@@ -11,10 +11,11 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import {
   INITIAL_PRODUCT_EXPANDED,
-  INITIAL_REGION_EXPANDED,
   PRODUCT_TREE,
   REGION_TREE,
   createIndependentOutlineRows,
+  getAllOutlineNodeIds,
+  getVisibleExtensionSummary,
   outlineNodeLabel,
   type IndependentOutlineRow,
 } from '../spreadsheet/independent-outline-model';
@@ -35,6 +36,7 @@ type DemoSnapshot = {
   status: 'loading' | 'ready' | 'error';
   productExpanded: number;
   regionExpanded: number;
+  regionTotal: number;
   rowCount: number;
   message: string;
 };
@@ -42,7 +44,8 @@ type DemoSnapshot = {
 const INITIAL_SNAPSHOT: DemoSnapshot = {
   status: 'loading',
   productExpanded: INITIAL_PRODUCT_EXPANDED.length,
-  regionExpanded: INITIAL_REGION_EXPANDED.length,
+  regionExpanded: 0,
+  regionTotal: 0,
   rowCount: 0,
   message: '正在初始化独立折叠表格…',
 };
@@ -146,13 +149,26 @@ export function IndependentOutlineDemo() {
         };
 
         const productExpanded = new Set<string>(INITIAL_PRODUCT_EXPANDED);
-        const regionExpanded = new Set<string>(INITIAL_REGION_EXPANDED);
+        const extensionExpandedByProduct = new Map<string, Set<string>>();
         let activeRows: IndependentOutlineRow[] = [];
+
+        const extensionStateFor = (productId: string) => {
+          let state = extensionExpandedByProduct.get(productId);
+          if (!state) {
+            state = new Set<string>();
+            extensionExpandedByProduct.set(productId, state);
+          }
+          return state;
+        };
 
         const renderRows = (message: string) => {
           activeRows = createIndependentOutlineRows(
             productExpanded,
-            regionExpanded,
+            extensionExpandedByProduct,
+          );
+          const extensionSummary = getVisibleExtensionSummary(
+            productExpanded,
+            extensionExpandedByProduct,
           );
           const activeRow = Math.min(
             Math.max(sheet.getActiveRowIndex(), 0),
@@ -164,12 +180,21 @@ export function IndependentOutlineDemo() {
           );
 
           sheet.suspendPaint();
+          sheet
+            .getSpans(undefined, GC.Spread.Sheets.SheetArea.viewport)
+            .forEach((span) =>
+              sheet.removeSpan(
+                span.row,
+                span.col,
+                GC.Spread.Sheets.SheetArea.viewport,
+              ),
+            );
           sheet.setRowCount(activeRows.length);
           sheet.setArray(
             0,
             0,
             activeRows.map((row) => [
-              outlineNodeLabel(row.product),
+              row.productBlockStart ? outlineNodeLabel(row.product) : '',
               outlineNodeLabel(row.region),
               row.revenue,
               row.orders,
@@ -230,14 +255,19 @@ export function IndependentOutlineDemo() {
             sheet.setRowHeight(rowIndex, 29);
             const productCell = sheet.getCell(rowIndex, 0);
             const regionCell = sheet.getCell(rowIndex, 1);
-            productCell.textIndent(row.product.depth);
             regionCell.textIndent(row.region.depth);
 
-            if (row.product.isGroup) {
-              productCell
-                .backColor('#edf8f2')
-                .foreColor('#176a4b')
-                .font('600 12px Arial, PingFang SC');
+            if (row.productBlockStart) {
+              productCell.textIndent(row.product.depth);
+              if (row.product.isGroup) {
+                productCell
+                  .backColor('#edf8f2')
+                  .foreColor('#176a4b')
+                  .font('600 12px Arial, PingFang SC');
+              }
+              if (row.productRowSpan > 1) {
+                sheet.addSpan(rowIndex, 0, row.productRowSpan, 1);
+              }
             }
             if (row.region.isGroup) {
               regionCell
@@ -258,30 +288,38 @@ export function IndependentOutlineDemo() {
           setSnapshot({
             status: 'ready',
             productExpanded: productExpanded.size,
-            regionExpanded: regionExpanded.size,
+            regionExpanded: extensionSummary.expanded,
+            regionTotal: extensionSummary.total,
             rowCount: activeRows.length,
             message,
           });
         };
 
         const setAll = (dimension: OutlineDimension, expanded: boolean) => {
-          const tree = dimension === 'product' ? PRODUCT_TREE : REGION_TREE;
-          const target =
-            dimension === 'product' ? productExpanded : regionExpanded;
-          target.clear();
-          if (expanded) tree.forEach((node) => target.add(node.id));
+          if (dimension === 'product') {
+            productExpanded.clear();
+            if (expanded)
+              PRODUCT_TREE.forEach((node) => productExpanded.add(node.id));
+          } else {
+            const regionIds = REGION_TREE.map((node) => node.id);
+            getAllOutlineNodeIds(PRODUCT_TREE).forEach((productId) => {
+              const state = extensionStateFor(productId);
+              state.clear();
+              if (expanded)
+                regionIds.forEach((regionId) => state.add(regionId));
+            });
+          }
           renderRows(
-            `${dimensionLabel(dimension)}已${
-              expanded ? '全部展开' : '全部收起'
-            }，另一列的状态未改变。`,
+            `${dimensionLabel(dimension)}${
+              dimension === 'region' ? '的所有产品块' : ''
+            }已${expanded ? '全部展开' : '全部收起'}，另一列的状态未改变。`,
           );
         };
 
         const reset = () => {
           productExpanded.clear();
-          regionExpanded.clear();
+          extensionExpandedByProduct.clear();
           INITIAL_PRODUCT_EXPANDED.forEach((id) => productExpanded.add(id));
-          INITIAL_REGION_EXPANDED.forEach((id) => regionExpanded.add(id));
           renderRows('已恢复初始组合，两列仍使用各自独立的展开状态。');
         };
 
@@ -302,14 +340,18 @@ export function IndependentOutlineDemo() {
             if (!node?.isGroup) return;
 
             const target =
-              dimension === 'product' ? productExpanded : regionExpanded;
+              dimension === 'product'
+                ? productExpanded
+                : extensionStateFor(row.product.id);
             const nextExpanded = !target.has(node.id);
             if (nextExpanded) target.add(node.id);
             else target.delete(node.id);
             renderRows(
-              `${dimensionLabel(dimension)}的「${node.label}」已${
-                nextExpanded ? '展开' : '收起'
-              }，另一列的状态未改变。`,
+              `${dimensionLabel(dimension)}的「${
+                dimension === 'region'
+                  ? `${row.product.label} / ${node.label}`
+                  : node.label
+              }」已${nextExpanded ? '展开' : '收起'}，另一列的状态未改变。`,
             );
           },
         );
@@ -383,8 +425,8 @@ export function IndependentOutlineDemo() {
         <div className="independent-outline-explainer">
           <MousePointerClick size={17} />
           <p>
-            直接点击第一列或第二列中带 <b>▶ / ▼</b> 的分组。每一列维护自己的
-            <code>expandedIds</code>，切换后只重算展示投影与汇总值。
+            第一列每个产品节点只出现一次；第二列为每个产品块维护独立的扩展树。
+            点击 <b>▶ / ▼</b> 只改变当前节点，另一列及其他产品块保持原状。
           </p>
         </div>
 
@@ -404,10 +446,10 @@ export function IndependentOutlineDemo() {
           />
           <IndependentControls
             dimension="region"
-            title="第二列 · 区域树"
-            description="华东 / 华中 / 华南"
+            title="第二列 · 扩展树"
+            description="每个产品块各自拥有 华东 → 城市"
             expandedCount={snapshot.regionExpanded}
-            totalCount={REGION_TREE.length}
+            totalCount={snapshot.regionTotal}
             onSetAll={setAll}
           />
         </div>
@@ -434,7 +476,7 @@ export function IndependentOutlineDemo() {
           <span className="outline-state-dot is-product" />
           第一列 {snapshot.productExpanded}/{PRODUCT_TREE.length} 展开
           <span className="outline-state-dot is-region" />
-          第二列 {snapshot.regionExpanded}/{REGION_TREE.length} 展开
+          第二列 {snapshot.regionExpanded}/{snapshot.regionTotal} 个产品块展开
           <span className="outline-projection-count">
             当前 {snapshot.rowCount} 行
           </span>
