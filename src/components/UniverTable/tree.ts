@@ -12,15 +12,22 @@ import type {
   ETableTreeNode,
   ETableTreeToggleBinding,
 } from './types';
+import {
+  applyGroupStatistics,
+  computeGrandTotalValues,
+} from './groupStatistics';
 
 export const TREE_EXPAND_ICON = '▼';
 export const TREE_COLLAPSE_ICON = '▶';
 
 /**
  * 根据树形配置生成列定义。
- * 优先 measureGroups（多级表头：Region → Sales/Profit），否则用扁平 measures。
+ * 优先 headerColumns（自定义多级表头），其次 measureGroups，否则用扁平 measures。
  */
 export const buildTreeColumns = (config: ETableTreeConfig) => {
+  if (config.headerColumns?.length) {
+    return config.headerColumns;
+  }
   const lockDims = Boolean(config.treeUI);
   const columns: Array<{
     id: string;
@@ -213,6 +220,15 @@ export const flattenTreeData = (
   treeData: ETableTreeNode[] = [],
   config: ETableTreeConfig,
 ): ETableFlattenResult => {
+  const stats = config.groupStatistics;
+  const preparedTree =
+    !config.liteMode &&
+    stats &&
+    stats.enabled !== false &&
+    stats.fields?.length
+      ? applyGroupStatistics(treeData, stats, config)
+      : treeData;
+
   const columns = buildTreeColumns(config);
   const rows: ETableRow[] = [];
   const rowGroups: ETableRowGroup[] = [];
@@ -234,6 +250,9 @@ export const flattenTreeData = (
     depth: number,
     options?: { regionDetail?: boolean },
   ): ETableRow['style'] | undefined => {
+    if (config.liteMode) {
+      return undefined;
+    }
     if (options?.regionDetail && regionDetailBackground) {
       return { bg: regionDetailBackground };
     }
@@ -297,6 +316,10 @@ export const flattenTreeData = (
     if (count <= 1) {
       return;
     }
+    // 大数据模式仍保留品类列纵向合并，跳过子品类等海量 merge
+    if (config.liteMode && field !== dimensionFields[0]) {
+      return;
+    }
     const column = fieldColumnIndex.get(field);
     if (column === undefined) {
       return;
@@ -322,6 +345,10 @@ export const flattenTreeData = (
     }
     if (values) {
       Object.entries(values).forEach(([key, value]) => {
+        // values 里常有 region:'华东'，不能覆盖 attributeLabel（▶/▼ 前缀）
+        if (attributeField && key === attributeField) {
+          return;
+        }
         data[key] = styleMeasureCell(value) as ETablePrimitive | ETableCell;
       });
     }
@@ -450,6 +477,13 @@ export const flattenTreeData = (
         if (labelField) {
           regionPath[labelField] = '';
         }
+        if (node.data) {
+          Object.keys(node.data).forEach((key) => {
+            if (key !== labelField && fieldColumnIndex.has(key)) {
+              regionPath[key] = '';
+            }
+          });
+        }
 
         primary.children?.forEach((detail) => {
           rows.push({
@@ -509,14 +543,24 @@ export const flattenTreeData = (
               pushMerge(key, headerRow, 1 + detailCount, value);
             });
           }
+          // 品类列跨叶子汇总行 + Region 明细行
+          if (treeUI && labelField && path[labelField]) {
+            pushMerge(
+              labelField,
+              headerRow,
+              1 + detailCount,
+              path[labelField] as ETablePrimitive,
+            );
+          }
         }
         return;
       }
 
       if (labelField) {
+        const labelDepth = labelMode === 'depth' ? 0 : depth;
         path[labelField] = treeUI
           ? toLabelCell(
-              formatTreeLabel(node.label, depth, {
+              formatTreeLabel(node.label, labelDepth, {
                 expandable: hasChildren,
                 collapsed,
               }),
@@ -575,6 +619,8 @@ export const flattenTreeData = (
       rows.push({
         id: node.id,
         data: buildData(path, regionLabel, summaryValues),
+        // 有子节点的分组汇总行禁止编辑
+        readonly: true,
         style: resolveRowStyle(depth),
       });
       currentRow += 1;
@@ -590,6 +636,13 @@ export const flattenTreeData = (
           const regionPath = { ...path };
           if (dimensionFields[0]) {
             regionPath[dimensionFields[0]] = '';
+          }
+          if (node.data) {
+            Object.keys(node.data).forEach((key) => {
+              if (key !== labelField && fieldColumnIndex.has(key)) {
+                regionPath[key] = '';
+              }
+            });
           }
           rows.push({
             id: detail.id,
@@ -668,17 +721,20 @@ export const flattenTreeData = (
           };
           childGroups.push(categoryGroup);
           if (treeUI) {
+            const toggleColumn =
+              fieldColumnIndex.get(labelField ?? '') ?? labelColumn;
+            const labelDepth = labelMode === 'depth' ? 0 : depth;
             treeToggles.push({
               groupId: node.id,
               row: summaryStart,
-              column: labelColumn,
+              column: toggleColumn,
               collapsed,
               kind: 'category',
-              expandedText: formatTreeLabel(node.label, depth, {
+              expandedText: formatTreeLabel(node.label, labelDepth, {
                 expandable: true,
                 collapsed: false,
               }),
-              collapsedText: formatTreeLabel(node.label, depth, {
+              collapsedText: formatTreeLabel(node.label, labelDepth, {
                 expandable: true,
                 collapsed: true,
               }),
@@ -705,6 +761,19 @@ export const flattenTreeData = (
         }
       }
 
+      // treeUI + depth：父级维度列纵向合并，对齐「品类 / 子品类 / 区域」多列表头
+      if (treeUI && labelMode === 'depth' && labelField && totalCount > 1) {
+        pushMerge(
+          labelField,
+          summaryStart,
+          totalCount,
+          formatTreeLabel(node.label, 0, {
+            expandable: hasChildren,
+            collapsed,
+          }),
+        );
+      }
+
       // treeUI：中间维度列只跨「汇总 + Region 明细」，不吞进 Category 子行
       if (treeUI && node.data && regionGroup) {
         const regionSpan = 1 + regionGroup.count;
@@ -714,6 +783,16 @@ export const flattenTreeData = (
           }
           pushMerge(key, summaryStart, regionSpan, value);
         });
+      }
+
+      // treeUI：品类列跨 Category 汇总行 + 同行 Region 明细行（如 家具 + 上海/江苏）
+      if (treeUI && regionGroup && labelField && path[labelField] !== undefined) {
+        pushMerge(
+          labelField,
+          summaryStart,
+          1 + regionGroup.count,
+          path[labelField] as ETablePrimitive,
+        );
       }
 
       // 顶层分组：包住该节点下全部明细，便于嵌套折叠
@@ -743,7 +822,36 @@ export const flattenTreeData = (
     return groups;
   };
 
-  rowGroups.push(...walk(treeData, 0, {}));
+  rowGroups.push(...walk(preparedTree, 0, {}));
+
+  // 总计行
+  if (
+    !config.liteMode &&
+    stats &&
+    stats.enabled !== false &&
+    stats.showGrandTotal &&
+    stats.fields?.length &&
+    preparedTree.length
+  ) {
+    const dim0 = dimensionFields[0];
+    const totals = computeGrandTotalValues(preparedTree, stats);
+    const totalLabel = stats.grandTotalLabel || '总计';
+    const data: ETableRow['data'] = { ...totals };
+    if (dim0) {
+      data[dim0] = totalLabel;
+    }
+    if (attributeField) {
+      data[attributeField] = '';
+    }
+    rows.push({
+      id: '__group_grand_total__',
+      data,
+      readonly: true,
+      style: {
+        bg: stats.grandTotalBackground || '#FFF7E6',
+      },
+    });
+  }
 
   return { columns, rows, rowGroups, columnGroups, merges, treeToggles };
 };

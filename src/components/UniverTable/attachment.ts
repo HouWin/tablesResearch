@@ -71,20 +71,34 @@ export const getCellAttachments = (range: any): ETableAttachmentFile[] => {
 
 /**
  * 用 Univer Note 角标展示附件摘要（有 note API 时才生效）。
+ * 若单元格已有用户批注（非 📎 前缀），不覆盖批注内容。
  */
 export const syncAttachmentNote = (range: any, files: ETableAttachmentFile[]) => {
   try {
+    const readNoteText = () => {
+      const note = range.getNote?.();
+      if (typeof note === 'string') {
+        return note;
+      }
+      if (note && typeof note.note === 'string') {
+        return note.note;
+      }
+      return '';
+    };
+
     if (!files.length) {
       if (typeof range.deleteNote === 'function') {
-        const note = range.getNote?.();
-        const text =
-          typeof note === 'string'
-            ? note
-            : note?.note;
+        const text = readNoteText();
         if (typeof text === 'string' && text.startsWith('📎')) {
           range.deleteNote();
         }
       }
+      return;
+    }
+
+    const existing = readNoteText();
+    // 已有用户批注时保留批注，附件只走 customMetaData
+    if (existing.trim() && !existing.startsWith('📎')) {
       return;
     }
 

@@ -12,10 +12,13 @@ export const applyColumnTypes = (
   leafColumns: ETableColumn[],
   dataStartRow: number,
   rowCount: number,
+  options?: { skipValidation?: boolean },
 ) => {
   if (!univerAPI || !worksheet || !leafColumns.length || rowCount <= 0) {
     return;
   }
+
+  const skipValidation = options?.skipValidation ?? rowCount > 5000;
 
   leafColumns.forEach((column, columnIndex) => {
     const type = column.type ?? 'text';
@@ -33,7 +36,7 @@ export const applyColumnTypes = (
         } catch {
           // ignore format failure
         }
-        if (typeof univerAPI.newDataValidation === 'function') {
+        if (!skipValidation && typeof univerAPI.newDataValidation === 'function') {
           const builder = univerAPI.newDataValidation();
           if (typeof builder.requireNumberBetween === 'function') {
             const rule = builder
@@ -57,7 +60,7 @@ export const applyColumnTypes = (
         } catch {
           // ignore format failure
         }
-        if (typeof univerAPI.newDataValidation === 'function') {
+        if (!skipValidation && typeof univerAPI.newDataValidation === 'function') {
           const builder = univerAPI.newDataValidation();
           if (typeof builder.requireDateBetween === 'function') {
             const rule = builder
@@ -75,6 +78,9 @@ export const applyColumnTypes = (
       }
 
       if (type === 'select' && column.options?.length) {
+        if (skipValidation) {
+          return;
+        }
         if (typeof univerAPI.newDataValidation !== 'function') {
           console.warn('[ETable] data validation preset missing, skip select column');
           return;

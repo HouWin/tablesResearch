@@ -84,6 +84,11 @@ export interface ETableRow {
   data: Record<string, ETablePrimitive | ETableCell>;
   /** 当前行高度 */
   height?: number;
+  /**
+   * 是否整行只读（如分组汇总行、总计行）。
+   * 为 true 时禁止进入单元格编辑。
+   */
+  readonly?: boolean;
   /** 行样式（会应用到该行全部单元格） */
   style?: {
     /** 背景色，如 #E8F3FF */
@@ -316,6 +321,12 @@ export interface ETableTreeConfig {
   dimensions: Array<{ field: string; title: string; width?: number }>;
   /** 属性列（可选；行内属性展开。与 measureGroups 列维度互斥场景下不要混用） */
   attribute?: { field: string; title: string; width?: number };
+  /**
+   * 自定义多级表头（完整列树）。
+   * 设置后优先使用，不再由 dimensions / measures / measureGroups 自动生成表头；
+   * 展平逻辑仍读取 dimensions / attribute / measures。
+   */
+  headerColumns?: ETableColumn[];
   /** 指标列（扁平；若配置了 measureGroups 则忽略） */
   measures?: Array<{
     field: string;
@@ -371,6 +382,50 @@ export interface ETableTreeConfig {
    * 用 field 声明；若已配置 measureGroups，会自动生成，无需再传。
    */
   columnGroups?: ETableTreeColumnGroup[];
+  /**
+   * 分组统计：按子节点/属性明细自动汇总，统计名称可自定义。
+   * 例：fields: [{ field: 'sales', method: 'sum', name: '销售额合计' }]
+   * labelTemplate: '{label} 小计'
+   */
+  groupStatistics?: ETableGroupStatistics;
+  /**
+   * 大数据轻量模式：跳过分组统计与 Region 多层展平，配合 generateScaledTreeData 使用。
+   * 每个叶子约 1 行，避免 1 万目标膨胀到数万行。
+   */
+  liteMode?: boolean;
+}
+
+/** 分组统计字段 */
+export interface ETableGroupStatisticField {
+  /** 指标字段（对应 measures.field） */
+  field: string;
+  /** 汇总方式，默认 sum */
+  method?: 'sum' | 'avg' | 'count' | 'min' | 'max';
+  /**
+   * 统计名称（可自定义）。
+   * 可用于 labelTemplate 的 {statName}，不传则回退为 measures.title / field。
+   */
+  name?: string;
+}
+
+/** 分组统计配置 */
+export interface ETableGroupStatistics {
+  /** 是否启用，默认 true（配置了 fields 即启用） */
+  enabled?: boolean;
+  /**
+   * 分组行标签模板。
+   * 占位符：{label} 原节点名、{statName} 首个统计字段的自定义名称
+   * 例：'{label} 小计' → Furniture 小计
+   */
+  labelTemplate?: string;
+  /** 是否在表格底部追加总计行 */
+  showGrandTotal?: boolean;
+  /** 总计行名称，默认「总计」 */
+  grandTotalLabel?: string;
+  /** 总计行背景色 */
+  grandTotalBackground?: string;
+  /** 参与统计的字段 */
+  fields: ETableGroupStatisticField[];
 }
 
 /**
