@@ -1,5 +1,6 @@
 import { VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
+import { ASYNC_RENDER_ROW_THRESHOLD } from './treeDataGenerator';
 import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
 
 /**
@@ -263,15 +264,22 @@ export const renderData = (
     return 0;
   }
 
-  const virtualScroll = options?.virtualScroll !== false;
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
+  const useSingleWrite = rows.length <= 400;
 
-  for (let offset = 0; offset < rows.length; offset += chunkSize) {
-    const limit = Math.min(chunkSize, rows.length - offset);
-    const values = buildRowValues(rows, leafColumns, { offset, limit });
+  if (useSingleWrite) {
+    const values = buildRowValues(rows, leafColumns);
     worksheet
-      .getRange(startRow + offset, 0, values.length, leafColumns.length)
+      .getRange(startRow, 0, values.length, leafColumns.length)
       .setValues(values);
+  } else {
+    for (let offset = 0; offset < rows.length; offset += chunkSize) {
+      const limit = Math.min(chunkSize, rows.length - offset);
+      const values = buildRowValues(rows, leafColumns, { offset, limit });
+      worksheet
+        .getRange(startRow + offset, 0, values.length, leafColumns.length)
+        .setValues(values);
+    }
   }
 
   rows.forEach((row, index) => {
@@ -399,7 +407,7 @@ export const renderDataAsync = async (
   const valueOptions = {
     skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000,
   };
-  const yieldBetweenChunks = rows.length > 2000;
+  const yieldBetweenChunks = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
 
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
     const limit = Math.min(chunkSize, rows.length - offset);

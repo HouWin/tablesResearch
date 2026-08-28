@@ -34,7 +34,6 @@ import {
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
-import { flattenTreeData } from '@/components/UniverTable/tree';
 import { generateScaledTreeData } from '@/components/UniverTable/treeDataGenerator';
 import type {
   ETableCell,
@@ -650,6 +649,7 @@ const UniverTablePage = () => {
     null,
   );
   const [flatRowCount, setFlatRowCount] = useState(0);
+  const [sheetRowCount, setSheetRowCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [tableKey, setTableKey] = useState(0);
@@ -658,6 +658,7 @@ const UniverTablePage = () => {
   const [contextMenu, setContextMenu] = useState(true);
   const [virtualScroll, setVirtualScroll] = useState(true);
   const [renderMs, setRenderMs] = useState<number | null>(null);
+  const [tableRendering, setTableRendering] = useState(false);
   const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
   const [focusCell, setFocusCell] = useState('D5');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -685,6 +686,7 @@ const UniverTablePage = () => {
     return {
       ...config,
       liteMode: true,
+      skipMerges: true,
       groupStatistics: undefined,
     };
   }, [isDemoTree, addedColumns]);
@@ -708,6 +710,7 @@ const UniverTablePage = () => {
       message.warning('数据量较大，生成与渲染可能较慢，请耐心等待');
     }
     setLoading(true);
+    setTableRendering(true);
     setProgress(0);
     setRenderMs(null);
     try {
@@ -722,6 +725,7 @@ const UniverTablePage = () => {
       );
     } catch {
       message.error('树形数据生成失败');
+      setTableRendering(false);
     } finally {
       setLoading(false);
       setProgress(100);
@@ -729,12 +733,17 @@ const UniverTablePage = () => {
   }, []);
 
   const handleScaleChange = async (value: DataScale) => {
+    if (value !== 'tree') {
+      setLoading(true);
+      setTableRendering(true);
+    }
     setDataScale(value);
     if (value === 'tree') {
       setScaledTreeData(null);
       setFlatRowCount(0);
       setTracks([]);
       setRenderMs(null);
+      setTableRendering(true);
       setTableKey((key) => key + 1);
       message.success('已切换到树形演示数据');
       return;
@@ -746,6 +755,7 @@ const UniverTablePage = () => {
     if (dataScale === 'tree') {
       setTracks([]);
       setRenderMs(null);
+      setTableRendering(true);
       setTableKey((key) => key + 1);
       message.success('已重新加载树形演示');
       return;
@@ -763,6 +773,7 @@ const UniverTablePage = () => {
       return;
     }
     setAddedColumns((prev) => [...prev, column]);
+    setTableRendering(true);
     setTableKey((key) => key + 1);
     setRenderMs(null);
     setAddColumnKey(undefined);
@@ -771,9 +782,7 @@ const UniverTablePage = () => {
 
   const stats = useMemo(() => {
     const treeNodes = countNodes(activeTreeData);
-    const sheetRows = isDemoTree
-      ? flattenTreeData(activeTreeData, activeTreeConfig).rows.length
-      : flatRowCount;
+    const sheetRows = isDemoTree ? sheetRowCount : flatRowCount;
     const totalCols = HIERARCHY_COLS + BASE_MEASURE_COUNT + addedColumns.length;
     return {
       treeNodes,
@@ -782,7 +791,7 @@ const UniverTablePage = () => {
       totalCells: sheetRows * totalCols,
       modeLabel: isDemoTree ? '树形演示' : '树形大数据',
     };
-  }, [activeTreeData, activeTreeConfig, flatRowCount, isDemoTree, addedColumns.length]);
+  }, [activeTreeData, sheetRowCount, flatRowCount, isDemoTree, addedColumns.length]);
 
   const options = useMemo(
     () => ({
@@ -1122,14 +1131,33 @@ const UniverTablePage = () => {
                 <Spin size="large" tip={`生成树形数据中… ${progress}%`} />
               </div>
             ) : isDemoTree || scaledTreeData ? (
-              <div style={{ height: 560, overflow: 'hidden' }}>
+              <div style={{ height: 560, overflow: 'hidden', position: 'relative' }}>
+                {tableRendering && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      zIndex: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(255,255,255,0.88)',
+                    }}
+                  >
+                    <Spin size="large" tip="渲染表格中…" />
+                  </div>
+                )}
                 <ETable
                   ref={tableRef}
                   key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}-${addedColumns.map((item) => item.id).join(',')}`}
                   treeData={activeTreeData}
                   treeConfig={activeTreeConfig}
                   options={options}
-                  onReady={({ renderMs: ms }) => {
+                  onReady={({ renderMs: ms, rowCount }) => {
+                    setTableRendering(false);
+                    if (typeof rowCount === 'number') {
+                      setSheetRowCount(rowCount);
+                    }
                     if (typeof ms === 'number') {
                       setRenderMs(ms);
                       if (ms >= 1000) {

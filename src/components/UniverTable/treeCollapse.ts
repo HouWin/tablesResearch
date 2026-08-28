@@ -126,6 +126,8 @@ export interface ETableTreeCollapseApi {
   drillDown: (dataRow?: number) => boolean;
   drillUp: (dataRow?: number) => boolean;
   getBreadcrumb: (dataRow: number) => string[];
+  /** 初始折叠（分批 hideRows）完成 */
+  ready: Promise<void>;
 }
 
 const buildRegionIndex = (
@@ -164,6 +166,9 @@ const buildRegionIndex = (
       continue;
     }
     const regionGroup = groupMap.get(toggle.groupId);
+    const groupStart = regionGroup?.startRow;
+    const groupEnd = regionGroup ? regionGroup.startRow + regionGroup.count : -1;
+
     for (let j = 0; j < categoryBounds.length; j += 1) {
       const bound = categoryBounds[j];
       if (toggle.groupId === bound.categoryId) {
@@ -171,11 +176,10 @@ const buildRegionIndex = (
       }
       const onSummaryRow = toggle.row === bound.toggleRow;
       const headerInCategory = toggle.row >= bound.start && toggle.row < bound.end;
-      const bodyInCategory = Boolean(
-        regionGroup &&
-          regionGroup.startRow >= bound.start &&
-          regionGroup.startRow + regionGroup.count <= bound.end,
-      );
+      const bodyInCategory =
+        groupStart !== undefined &&
+        groupStart >= bound.start &&
+        groupEnd <= bound.end;
       if (onSummaryRow || headerInCategory || bodyInCategory) {
         regionTogglesByCategoryId.get(bound.categoryId)!.push(toggle);
       }
@@ -204,6 +208,7 @@ export const setupTreeCellCollapse = (
       drillDown: () => false,
       drillUp: () => false,
       getBreadcrumb: () => [],
+      ready: Promise.resolve(),
     };
   }
 
@@ -391,7 +396,10 @@ export const setupTreeCellCollapse = (
     });
   };
 
-  const isRegionDetailHiddenByCategory = (toggle: ETableTreeToggleBinding): boolean => {
+  const isRegionDetailHiddenByCategory = (
+    toggle: ETableTreeToggleBinding,
+    collapsedCategoryRanges: Array<{ start: number; end: number }>,
+  ): boolean => {
     const group = groupMap.get(toggle.groupId);
     if (!group) {
       return true;
@@ -399,22 +407,24 @@ export const setupTreeCellCollapse = (
     const detailStart = group.startRow;
     const detailEnd = group.startRow + group.count;
 
-    for (const categoryToggle of categoryToggles) {
-      if (!collapsedState.get(categoryToggle.groupId)) {
-        continue;
-      }
-      const categoryGroup = groupMap.get(categoryToggle.groupId);
-      if (!categoryGroup) {
-        continue;
-      }
-      const hiddenStart = categoryGroup.startRow;
-      const hiddenEnd = categoryGroup.startRow + categoryGroup.count;
-      if (detailStart >= hiddenStart && detailEnd <= hiddenEnd) {
+    for (let i = 0; i < collapsedCategoryRanges.length; i += 1) {
+      const range = collapsedCategoryRanges[i];
+      if (detailStart >= range.start && detailEnd <= range.end) {
         return true;
       }
     }
     return false;
   };
+
+  const buildCollapsedCategoryRanges = () =>
+    categoryToggles
+      .filter((categoryToggle) => collapsedState.get(categoryToggle.groupId))
+      .map((categoryToggle) => groupMap.get(categoryToggle.groupId))
+      .filter((group): group is ETableRowGroup => Boolean(group))
+      .map((group) => ({
+        start: group.startRow,
+        end: group.startRow + group.count,
+      }));
 
   const batchHideRegionToggles = async (regionToggles: ETableTreeToggleBinding[]) => {
     if (!regionToggles.length) {
@@ -501,19 +511,27 @@ export const setupTreeCellCollapse = (
         });
       });
 
+    const collapsedCategoryRanges = buildCollapsedCategoryRanges();
     const regionToggles = toggles.filter(
       (toggle) =>
         toggle.kind === 'region' &&
         toggle.collapsed &&
         groupMap.has(toggle.groupId) &&
-        !isRegionDetailHiddenByCategory(toggle),
+        !isRegionDetailHiddenByCategory(toggle, collapsedCategoryRanges),
     );
 
     await batchHideRegionToggles(regionToggles);
   };
 
+  let resolveReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+
   if (options?.batchedInit) {
-    void initDefaultCollapse();
+    void initDefaultCollapse().finally(() => {
+      resolveReady();
+    });
   } else {
     toggles.forEach((toggle) => {
       if (!toggle.collapsed || !groupMap.get(toggle.groupId)) {
@@ -521,6 +539,7 @@ export const setupTreeCellCollapse = (
       }
       applyCollapsed(toggle.groupId, true);
     });
+    resolveReady();
   }
 
   const toggleGroup = (groupId: string) => {
@@ -741,5 +760,6 @@ export const setupTreeCellCollapse = (
     drillDown,
     drillUp,
     getBreadcrumb,
+    ready,
   };
 };
