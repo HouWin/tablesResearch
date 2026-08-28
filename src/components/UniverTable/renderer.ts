@@ -1,5 +1,6 @@
+import { VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
-import type { ETableColumn, ETableMerge, ETableRow } from './types';
+import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
 
 /**
  * =========================================================
@@ -14,6 +15,35 @@ import type { ETableColumn, ETableMerge, ETableRow } from './types';
  * 因此这里暂时使用 any，避免和具体版本强绑定。
  */
 type UniverWorksheet = any;
+
+const yieldToMain = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: 32 });
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
+
+/** 按行数自适应分片大小，减少 setValues 调用次数 */
+const resolveDataChunkSize = (rowCount: number, explicit?: number) => {
+  if (explicit !== undefined) {
+    return Math.max(400, explicit);
+  }
+  if (rowCount >= 100_000) {
+    return 4000;
+  }
+  if (rowCount >= 50_000) {
+    return 3000;
+  }
+  if (rowCount >= 20_000) {
+    return 2000;
+  }
+  if (rowCount >= 5000) {
+    return 1200;
+  }
+  return 800;
+};
 
 /**
  * Univer 默认工作表仅 1000 行 × 20 列。
@@ -211,31 +241,34 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
  * @param leafColumns 叶子列
  * @param startRow 数据开始行
  * @param options.virtualScroll 分片写入，避免超大矩阵一次 setValues
+ * @returns 实际写入的行数（全量模式 = rows.length；视口懒加载时由 loader 另行写入）
  */
 export const renderData = (
   worksheet: UniverWorksheet,
   rows: ETableRow[] = [],
   leafColumns: ETableColumn[] = [],
   startRow: number,
-  options?: { virtualScroll?: boolean; chunkSize?: number },
-) => {
+  options?: { virtualScroll?: boolean; chunkSize?: number; skipWrite?: boolean },
+): number => {
   if (!worksheet || !rows.length || !leafColumns.length) {
-    return;
+    return 0;
   }
 
   if (startRow < 0) {
-    return;
+    return 0;
+  }
+
+  // 视口懒加载模式：骨架已扩容，数据由 virtualRender 按页写入
+  if (options?.skipWrite) {
+    return 0;
   }
 
   const virtualScroll = options?.virtualScroll !== false;
-  const chunkSize = Math.max(
-    500,
-    options?.chunkSize ?? (virtualScroll ? 2000 : rows.length),
-  );
+  const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
 
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
-    const slice = rows.slice(offset, offset + chunkSize);
-    const values = buildRowValues(slice, leafColumns);
+    const limit = Math.min(chunkSize, rows.length - offset);
+    const values = buildRowValues(rows, leafColumns, { offset, limit });
     worksheet
       .getRange(startRow + offset, 0, values.length, leafColumns.length)
       .setValues(values);
@@ -251,13 +284,53 @@ export const renderData = (
 const buildRowValues = (
   rows: ETableRow[],
   leafColumns: ETableColumn[],
-  options?: { skipRowBackgrounds?: boolean },
+  options?: { skipRowBackgrounds?: boolean; offset?: number; limit?: number },
 ) => {
   const skipRowBackgrounds = options?.skipRowBackgrounds ?? false;
+  const offset = options?.offset ?? 0;
+  const end = options?.limit !== undefined ? offset + options.limit : rows.length;
+  const rowCount = end - offset;
+  const colCount = leafColumns.length;
+
+  if (rowCount <= 0 || !colCount) {
+    return [];
+  }
+
+  const colIds = new Array<string>(colCount);
+  for (let c = 0; c < colCount; c += 1) {
+    colIds[c] = leafColumns[c].id;
+  }
+
+  if (skipRowBackgrounds) {
+    const matrix = new Array(rowCount);
+    for (let r = 0; r < rowCount; r += 1) {
+      const row = rows[offset + r];
+      const data = row.data;
+      const out = new Array(colCount);
+      for (let c = 0; c < colCount; c += 1) {
+        const cell = data?.[colIds[c]];
+        if (cell !== null && typeof cell === 'object') {
+          const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
+          if (styledCell.style) {
+            out[c] = {
+              v: styledCell.value ?? null,
+              s: styledCell.style,
+            };
+          } else {
+            out[c] = styledCell.value ?? null;
+          }
+        } else {
+          out[c] = cell ?? null;
+        }
+      }
+      matrix[r] = out;
+    }
+    return matrix;
+  }
 
   const toRowValues = (row: ETableRow) => {
     const bgStyle =
-      !skipRowBackgrounds && row.style?.bg
+      row.style?.bg
         ? {
             bg: {
               rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
@@ -265,12 +338,13 @@ const buildRowValues = (
           }
         : null;
 
-    return leafColumns.map((column) => {
-      const cell = row.data?.[column.id];
+    const out = new Array(colCount);
+    for (let c = 0; c < colCount; c += 1) {
+      const cell = row.data?.[colIds[c]];
       if (cell !== null && typeof cell === 'object') {
         const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
         if (styledCell.style || bgStyle) {
-          return {
+          out[c] = {
             v: styledCell.value ?? null,
             s: {
               ...(bgStyle || {}),
@@ -278,20 +352,26 @@ const buildRowValues = (
               bg: (styledCell.style as any)?.bg || bgStyle?.bg,
             },
           };
+        } else {
+          out[c] = styledCell.value ?? null;
         }
-        return styledCell.value ?? null;
-      }
-      if (bgStyle) {
-        return {
+      } else if (bgStyle) {
+        out[c] = {
           v: cell ?? null,
           s: bgStyle,
         };
+      } else {
+        out[c] = cell ?? null;
       }
-      return cell ?? null;
-    });
+    }
+    return out;
   };
 
-  return rows.map(toRowValues);
+  const matrix = new Array(rowCount);
+  for (let r = 0; r < rowCount; r += 1) {
+    matrix[r] = toRowValues(rows[offset + r]);
+  }
+  return matrix;
 };
 
 /**
@@ -313,24 +393,25 @@ export const renderDataAsync = async (
   }
 
   const virtualScroll = options?.virtualScroll !== false;
-  const chunkSize = Math.max(
-    400,
-    options?.chunkSize ?? (virtualScroll ? 800 : rows.length),
-  );
+  const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
+  const valueOptions = {
+    skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000,
+  };
   const yieldBetweenChunks = rows.length > 2000;
-  const valueOptions = { skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000 };
 
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
-    const slice = rows.slice(offset, offset + chunkSize);
-    const values = buildRowValues(slice, leafColumns, valueOptions);
+    const limit = Math.min(chunkSize, rows.length - offset);
+    const values = buildRowValues(rows, leafColumns, {
+      ...valueOptions,
+      offset,
+      limit,
+    });
     worksheet
       .getRange(startRow + offset, 0, values.length, leafColumns.length)
       .setValues(values);
 
-    if (yieldBetweenChunks && offset + chunkSize < rows.length) {
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 0);
-      });
+    if (yieldBetweenChunks && offset + limit < rows.length) {
+      await yieldToMain();
     }
   }
 
@@ -349,6 +430,8 @@ export const renderDataAsync = async (
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
+
+  return rows.length;
 };
 
 /**
@@ -418,6 +501,26 @@ export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, c
  */
 
 /**
+ * 纵向合并单元格写入值，并强制垂直居中（Univer 默认 vt=0 会顶对齐）。
+ */
+const toMergedCellPayload = (value: unknown) => {
+  if (value !== null && typeof value === 'object' && 'value' in value) {
+    const cell = value as ETableCell;
+    return {
+      v: cell.value ?? null,
+      s: {
+        ...(cell.style || {}),
+        vt: VerticalAlign.MIDDLE,
+      },
+    };
+  }
+  return {
+    v: value ?? null,
+    s: { vt: VerticalAlign.MIDDLE },
+  };
+};
+
+/**
  * 根据业务配置执行单元格合并。
  *
  * 与 renderHeader() 的表头自动合并完全独立。
@@ -439,28 +542,120 @@ export const renderMerges = (
   }
 
   merges.forEach((merge) => {
-    // 参数校验
-    if (merge.row < 0 || merge.column < 0 || merge.rowSpan <= 0 || merge.columnSpan <= 0) {
-      return;
+    applyMerge(worksheet, merge, dataStartRow);
+  });
+};
+
+/**
+ * 大数据分片合并，避免一次性 merge 阻塞主线程。
+ */
+export const renderMergesAsync = async (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[] = [],
+  dataStartRow = 0,
+  options?: { batchSize?: number },
+) => {
+  if (!worksheet || !merges.length) {
+    return;
+  }
+
+  const batchSize = Math.max(50, options?.batchSize ?? (merges.length > 5000 ? 400 : 200));
+  for (let offset = 0; offset < merges.length; offset += batchSize) {
+    const batch = merges.slice(offset, offset + batchSize);
+    batch.forEach((merge) => {
+      applyMerge(worksheet, merge, dataStartRow);
+    });
+    if (offset + batchSize < merges.length) {
+      await yieldToMain();
     }
-    const startRow = dataStartRow + merge.row;
-    // 获取区域。
-    const range = worksheet.getRange(startRow, merge.column, merge.rowSpan, merge.columnSpan);
-    // 如果配置了 value，先写入左上角。
+  }
+};
+
+/**
+ * hideRows / unhideRow 会破坏跨行 merge，展开后按数据行区间重新合并。
+ */
+export const reapplyMergesForRowSpan = (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[],
+  dataStartRow: number,
+  anchorRow: number,
+  rowSpan: number,
+) => {
+  if (!worksheet || !merges.length || rowSpan <= 1) {
+    return;
+  }
+
+  const touchStart = anchorRow;
+  const touchEnd = anchorRow + rowSpan;
+  const affected = merges.filter((merge) => {
+    if (merge.rowSpan <= 1) {
+      return false;
+    }
+    const mergeStart = merge.row;
+    const mergeEnd = merge.row + merge.rowSpan;
+    return mergeStart < touchEnd && mergeEnd > touchStart;
+  });
+
+  if (!affected.length) {
+    return;
+  }
+
+  affected.forEach((merge) => {
+    try {
+      worksheet
+        .getRange(
+          dataStartRow + merge.row,
+          merge.column,
+          merge.rowSpan,
+          merge.columnSpan,
+        )
+        .breakApart?.();
+    } catch {
+      // ignore broken merge cleanup
+    }
+  });
+
+  affected.forEach((merge) => {
+    applyMerge(worksheet, merge, dataStartRow, { preserveValue: true });
+  });
+};
+
+const applyMerge = (
+  worksheet: UniverWorksheet,
+  merge: ETableMerge,
+  dataStartRow: number,
+  options?: { preserveValue?: boolean },
+) => {
+  // 参数校验
+  if (merge.row < 0 || merge.column < 0 || merge.rowSpan <= 0 || merge.columnSpan <= 0) {
+    return;
+  }
+  const startRow = dataStartRow + merge.row;
+  // 获取区域。
+  const range = worksheet.getRange(startRow, merge.column, merge.rowSpan, merge.columnSpan);
+
+  // 单个单元格无需 merge。
+  if (merge.rowSpan === 1 && merge.columnSpan === 1) {
     if (merge.value !== undefined) {
       range.setValue(merge.value);
     }
-    // 单个单元格无需 merge。
-    if (merge.rowSpan === 1 && merge.columnSpan === 1) {
-      return;
-    }
-    // 执行合并。
-    try {
-      range.merge();
-    } catch (error) {
-      console.warn('[ETable] custom merge failed', { merge, error });
-    }
-  });
+    return;
+  }
+
+  // 执行合并后再写入左上角，避免 merge 覆盖样式。
+  try {
+    range.merge();
+  } catch (error) {
+    console.warn('[ETable] custom merge failed', { merge, error });
+    return;
+  }
+
+  if (merge.value !== undefined && !options?.preserveValue) {
+    const topLeft = worksheet.getRange(startRow, merge.column, 1, 1);
+    topLeft.setValue(
+      merge.rowSpan > 1 ? toMergedCellPayload(merge.value) : merge.value,
+    );
+  }
 };
 
 /**

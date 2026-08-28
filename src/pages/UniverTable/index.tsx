@@ -631,7 +631,7 @@ const defaultOptions: ETableOptions = {
   freezeRows: HEADER_DEPTH,
   freezeColumns: HIERARCHY_COLS,
   customizeColumnHeader: true,
-  /** Canvas 可视区虚拟绘制 + 大数据分片写入 */
+  /** Canvas 可视区绘制；≥5000 行时视口按页懒写入 */
   virtualScroll: true,
   contextMenuItems: defaultContextMenuItems,
   enableContextMenu: true,
@@ -995,8 +995,8 @@ const UniverTablePage = () => {
               message="树形交互说明"
               description={
                 isDemoTree
-                  ? '品类列同列缩进折叠（▶/▼）；区域列可展开城市明细。三层表头保留；净收入为数字列，核验状态为下拉，更新日期为日期列。'
-                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。品类与子项行的区域列均可展开「华东→城市」；默认折叠。50万/100万行可能较慢。`
+                  ? '品类列同列缩进折叠（▶/▼）；区域列可展开城市明细。Sales 为数字列，Profit 为下拉，Date 为日期列。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
+                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。虚拟滚动开启时 Canvas 只画可视区；≥5000 行按页懒写入。品类与子项行的区域列均可展开明细；默认折叠。`
               }
               type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
               showIcon
