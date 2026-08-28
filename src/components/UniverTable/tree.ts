@@ -313,7 +313,11 @@ export const flattenTreeData = (
     count: number,
     value: ETablePrimitive,
   ) => {
-    if (config.liteMode || count <= 1) {
+    if (count <= 1) {
+      return;
+    }
+    // 大数据模式仍保留品类列纵向合并，跳过子品类等海量 merge
+    if (config.liteMode && field !== dimensionFields[0]) {
       return;
     }
     const column = fieldColumnIndex.get(field);
@@ -473,6 +477,13 @@ export const flattenTreeData = (
         if (labelField) {
           regionPath[labelField] = '';
         }
+        if (node.data) {
+          Object.keys(node.data).forEach((key) => {
+            if (key !== labelField && fieldColumnIndex.has(key)) {
+              regionPath[key] = '';
+            }
+          });
+        }
 
         primary.children?.forEach((detail) => {
           rows.push({
@@ -531,6 +542,15 @@ export const flattenTreeData = (
               }
               pushMerge(key, headerRow, 1 + detailCount, value);
             });
+          }
+          // 品类列跨叶子汇总行 + Region 明细行
+          if (treeUI && labelField && path[labelField]) {
+            pushMerge(
+              labelField,
+              headerRow,
+              1 + detailCount,
+              path[labelField] as ETablePrimitive,
+            );
           }
         }
         return;
@@ -616,6 +636,13 @@ export const flattenTreeData = (
           const regionPath = { ...path };
           if (dimensionFields[0]) {
             regionPath[dimensionFields[0]] = '';
+          }
+          if (node.data) {
+            Object.keys(node.data).forEach((key) => {
+              if (key !== labelField && fieldColumnIndex.has(key)) {
+                regionPath[key] = '';
+              }
+            });
           }
           rows.push({
             id: detail.id,
@@ -756,6 +783,16 @@ export const flattenTreeData = (
           }
           pushMerge(key, summaryStart, regionSpan, value);
         });
+      }
+
+      // treeUI：品类列跨 Category 汇总行 + 同行 Region 明细行（如 家具 + 上海/江苏）
+      if (treeUI && regionGroup && labelField && path[labelField] !== undefined) {
+        pushMerge(
+          labelField,
+          summaryStart,
+          1 + regionGroup.count,
+          path[labelField] as ETablePrimitive,
+        );
       }
 
       // 顶层分组：包住该节点下全部明细，便于嵌套折叠
