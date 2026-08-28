@@ -233,6 +233,25 @@ export const renderData = (
     options?.chunkSize ?? (virtualScroll ? 2000 : rows.length),
   );
 
+  for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    const slice = rows.slice(offset, offset + chunkSize);
+    const values = buildRowValues(slice, leafColumns);
+    worksheet
+      .getRange(startRow + offset, 0, values.length, leafColumns.length)
+      .setValues(values);
+  }
+
+  rows.forEach((row, index) => {
+    if (typeof row.height === 'number') {
+      worksheet.setRowHeight(startRow + index, row.height);
+    }
+  });
+};
+
+const buildRowValues = (
+  rows: ETableRow[],
+  leafColumns: ETableColumn[],
+) => {
   const toRowValues = (row: ETableRow) => {
     const bgStyle = row.style?.bg
       ? {
@@ -268,13 +287,42 @@ export const renderData = (
     });
   };
 
-  // 分片写入：Canvas 可视区虚拟绘制；写入侧避免一次提交超大矩阵
+  return rows.map(toRowValues);
+};
+
+/**
+ * 分片异步写入：每批之间让出主线程，避免 1 万行以上长时间阻塞导致页面无响应。
+ */
+export const renderDataAsync = async (
+  worksheet: UniverWorksheet,
+  rows: ETableRow[] = [],
+  leafColumns: ETableColumn[] = [],
+  startRow: number,
+  options?: { virtualScroll?: boolean; chunkSize?: number },
+): Promise<void> => {
+  if (!worksheet || !rows.length || !leafColumns.length || startRow < 0) {
+    return;
+  }
+
+  const virtualScroll = options?.virtualScroll !== false;
+  const chunkSize = Math.max(
+    500,
+    options?.chunkSize ?? (virtualScroll ? 1500 : rows.length),
+  );
+  const yieldBetweenChunks = rows.length > 3000;
+
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
     const slice = rows.slice(offset, offset + chunkSize);
-    const values = slice.map(toRowValues);
+    const values = buildRowValues(slice, leafColumns);
     worksheet
       .getRange(startRow + offset, 0, values.length, leafColumns.length)
       .setValues(values);
+
+    if (yieldBetweenChunks && offset + chunkSize < rows.length) {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
+    }
   }
 
   rows.forEach((row, index) => {

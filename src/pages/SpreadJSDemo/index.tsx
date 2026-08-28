@@ -8,6 +8,9 @@ import {
   Columns3,
   Copy,
   Database,
+  Download,
+  Eye,
+  FileText,
   Gauge,
   GitBranch,
   History,
@@ -20,6 +23,7 @@ import {
   Sigma,
   Trash2,
   Undo2,
+  Upload,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import '@grapecity-software/spread-sheets/styles/gc.spread.sheets.excel2013white.css';
@@ -42,7 +46,11 @@ import {
   pathForView,
   type SelectedCell,
 } from './spreadsheet/model';
-import { useSpreadsheetController } from './spreadsheet/use-spreadsheet-controller';
+import {
+  ATTACHMENT_ACCEPT,
+  MAX_ATTACHMENT_SIZE,
+  useSpreadsheetController,
+} from './spreadsheet/use-spreadsheet-controller';
 
 type LineageDetails = {
   result: string;
@@ -53,6 +61,20 @@ type LineageDetails = {
     { label: string; value: string; note: string },
   ];
 };
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function canPreviewAttachment(mimeType: string, name: string) {
+  return (
+    mimeType.startsWith('image/') ||
+    mimeType === 'application/pdf' ||
+    /\.pdf$/i.test(name)
+  );
+}
 
 function getLineageDetails(
   selected: SelectedCell | null,
@@ -183,6 +205,7 @@ export default function SpreadJSDemoPage() {
     commentExists,
     commentDirty,
     setCommentDraft,
+    selectedAttachments,
     selectedHistory,
     searchOpen,
     setSearchOpen,
@@ -724,46 +747,122 @@ export default function SpreadJSDemoPage() {
         {panel === 'attachment' && (
           <Drawer
             title="单元格附件"
-            subtitle={`${selected?.node.name ?? '—'} · ${
-              selected?.a1 ?? '未选择'
-            }`}
+            subtitle={`${selected?.a1 ?? '未选择'} · ${
+              selectedAttachments.length
+            } 个附件`}
             onClose={() => setPanel(null)}
           >
             <div className="attachment-hero">
               <Paperclip size={22} />
               <div>
-                <b>SpreadJS FileUpload 单元格</b>
-                <span>支持选择、预览、下载和清除文件</span>
+                <b>附件与单元格内容分开保存</b>
+                <span>附件使用稳定单元格 ID 关联，不会改写当前值</span>
               </div>
             </div>
-            <dl className="detail-list">
-              <div>
-                <dt>允许类型</dt>
-                <dd>图片、PDF、Word、Excel</dd>
-              </div>
-              <div>
-                <dt>单文件上限</dt>
-                <dd>5 MB</dd>
-              </div>
-              <div>
-                <dt>关联方式</dt>
-                <dd>{selected?.node.id ?? 'rowId'}::attachment</dd>
-              </div>
-              <div>
-                <dt>当前状态</dt>
-                <dd>{selected?.node.attachment ? '已添加附件' : '未添加'}</dd>
-              </div>
-            </dl>
-            <button
-              className="primary-button full-width"
-              type="button"
-              onClick={() => actionsRef.current?.focusAttachment()}
+            <div className="selected-card attachment-cell-card">
+              <span>{selected?.fieldLabel ?? '未选择字段'}</span>
+              <strong>{selected?.text || '空单元格'}</strong>
+              <small>稳定 ID：{selected?.key ?? '—'}</small>
+            </div>
+
+            <label
+              className="attachment-dropzone"
+              htmlFor="cell-attachment-input"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                actionsRef.current?.addAttachments([
+                  ...event.dataTransfer.files,
+                ]);
+              }}
             >
-              定位到附件单元格
-            </button>
+              <Upload size={20} />
+              <strong>拖放文件到此处，或点击选择</strong>
+              <span>
+                图片、PDF、Word、Excel · 单文件不超过{' '}
+                {formatFileSize(MAX_ATTACHMENT_SIZE)}
+              </span>
+              <input
+                id="cell-attachment-input"
+                type="file"
+                accept={ATTACHMENT_ACCEPT}
+                multiple
+                onChange={(event) => {
+                  actionsRef.current?.addAttachments([
+                    ...(event.currentTarget.files ?? []),
+                  ]);
+                  event.currentTarget.value = '';
+                }}
+              />
+            </label>
+
+            <div className="attachment-list" aria-live="polite">
+              <div className="attachment-list-heading">
+                <b>已添加附件</b>
+                <span>{selectedAttachments.length}/10</span>
+              </div>
+              {selectedAttachments.length ? (
+                selectedAttachments.map((attachment) => (
+                  <article key={attachment.id}>
+                    <FileText size={18} />
+                    <div>
+                      <b title={attachment.name}>{attachment.name}</b>
+                      <span>
+                        {formatFileSize(attachment.size)} ·{' '}
+                        {new Date(attachment.createdAt).toLocaleString(
+                          'zh-CN',
+                          {
+                            hour12: false,
+                          },
+                        )}
+                      </span>
+                    </div>
+                    <div className="attachment-file-actions">
+                      {canPreviewAttachment(
+                        attachment.mimeType,
+                        attachment.name,
+                      ) && (
+                        <a
+                          href={attachment.objectUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={`预览 ${attachment.name}`}
+                          title="预览附件"
+                        >
+                          <Eye size={14} />
+                        </a>
+                      )}
+                      <a
+                        href={attachment.objectUrl}
+                        download={attachment.name}
+                        aria-label={`下载 ${attachment.name}`}
+                        title="下载附件"
+                      >
+                        <Download size={14} />
+                      </a>
+                      <button
+                        type="button"
+                        aria-label={`删除 ${attachment.name}`}
+                        title="删除附件"
+                        onClick={() =>
+                          actionsRef.current?.removeAttachment(attachment.id)
+                        }
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <div className="attachment-empty">
+                  <Paperclip size={18} />
+                  <span>当前单元格还没有附件</span>
+                </div>
+              )}
+            </div>
             <p className="helper-text">
-              点击单元格内的上传图标选择文件；上传、预览、下载和清除按钮由
-              SpreadJS 原生单元格类型提供。
+              添加后，单元格右侧会显示回形针标记；点击标记可再次打开附件列表。
+              Demo 使用浏览器内存保存文件，刷新页面后会清空。
             </p>
           </Drawer>
         )}

@@ -542,6 +542,17 @@ const UniverTablePage = () => {
   const isDemoTree = dataScale === 'tree';
   const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
   const activeTreeData = isDemoTree ? treeData : scaledTreeData ?? [];
+  const activeTreeConfig = useMemo(
+    () =>
+      isDemoTree
+        ? treeConfig
+        : {
+            ...treeConfig,
+            liteMode: true,
+            groupStatistics: undefined,
+          },
+    [isDemoTree],
+  );
   const cellHistory = useMemo(
     () => tracks.filter((item) => item.cell === focusCell),
     [tracks, focusCell],
@@ -932,7 +943,7 @@ const UniverTablePage = () => {
                   ref={tableRef}
                   key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}`}
                   treeData={activeTreeData}
-                  treeConfig={treeConfig}
+                  treeConfig={activeTreeConfig}
                   options={options}
                   onReady={({ renderMs: ms }) => {
                     if (typeof ms === 'number') {
