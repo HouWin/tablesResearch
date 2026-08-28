@@ -992,6 +992,137 @@
     color: #7769a9;
     font-size: 8px;
   }
+  .attachment-cell-card {
+    min-height: 88px;
+    margin-top: 12px;
+  }
+  .attachment-cell-card strong {
+    font-size: 18px;
+  }
+  .attachment-dropzone {
+    min-height: 112px;
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 14px;
+    border: 1px dashed #bdb1e8;
+    border-radius: 10px;
+    background: #fbfaff;
+    color: var(--accent);
+    text-align: center;
+    cursor: pointer;
+  }
+  .attachment-dropzone:hover,
+  .attachment-dropzone:focus-within {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .attachment-dropzone strong {
+    color: #4e3b98;
+    font-size: 10px;
+  }
+  .attachment-dropzone span {
+    color: var(--muted);
+    font-size: 8px;
+  }
+  .attachment-dropzone input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .attachment-list {
+    margin-top: 16px;
+  }
+  .attachment-list-heading,
+  .attachment-list article,
+  .attachment-file-actions {
+    display: flex;
+    align-items: center;
+  }
+  .attachment-list-heading {
+    justify-content: space-between;
+    color: #465163;
+    font-size: 9px;
+  }
+  .attachment-list-heading span {
+    color: var(--faint);
+  }
+  .attachment-list article {
+    gap: 9px;
+    min-height: 58px;
+    margin-top: 8px;
+    padding: 9px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    color: var(--accent);
+  }
+  .attachment-list article > div:first-of-type {
+    min-width: 0;
+    flex: 1;
+  }
+  .attachment-list article b,
+  .attachment-list article span {
+    display: block;
+  }
+  .attachment-list article b {
+    overflow: hidden;
+    color: #414b5b;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .attachment-list article span {
+    margin-top: 4px;
+    color: var(--faint);
+    font-size: 7px;
+  }
+  .attachment-file-actions {
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  .attachment-file-actions a,
+  .attachment-file-actions button {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #fff;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .attachment-file-actions a:hover {
+    border-color: #c9bdf1;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .attachment-file-actions button:hover {
+    border-color: #efd0d0;
+    background: #fff5f5;
+    color: var(--danger);
+  }
+  .attachment-empty {
+    min-height: 82px;
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    color: var(--faint);
+    font-size: 8px;
+  }
   .detail-list {
     margin: 16px 0;
   }
