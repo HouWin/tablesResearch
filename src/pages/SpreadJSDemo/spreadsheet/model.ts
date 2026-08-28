@@ -156,9 +156,11 @@ export const COLUMN_HEADER_SECTIONS = [
   { label: '业务治理', startCol: 12, colCount: 5 },
 ] as const;
 
+// 层级列（品类/子品类/区域/城市门店）没有真实的二级细分，
+// 因此不在此处列出——渲染时会让 COLUMN_HEADER_SECTIONS 的对应
+// 表头纵向合并两行，避免出现内部代码名（rowTree / extensionRows）
+// 这类开发调试信息展示给业务用户。
 export const COLUMN_HEADER_GROUPS = [
-  { label: 'rowTree', startCol: 0, colCount: 2 },
-  { label: 'extensionRows', startCol: 2, colCount: 2 },
   { label: '收入指标', startCol: 4, colCount: 3 },
   { label: '订单指标', startCol: 7, colCount: 4 },
   { label: '目标管理', startCol: 11, colCount: 1 },

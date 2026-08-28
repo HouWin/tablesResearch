@@ -937,9 +937,24 @@ export function useSpreadsheetController() {
 
           COLUMN_HEADER_SECTIONS.forEach(
             ({ label, startCol, colCount: sectionColumnCount }) => {
+              // Sections without a real second-level breakdown (e.g. the
+              // hierarchy columns) span both group rows so the header reads
+              // as a single label instead of leaving row 1 blank.
+              const hasSubGroups = COLUMN_HEADER_GROUPS.some(
+                (group) =>
+                  group.startCol >= startCol &&
+                  group.startCol < startCol + sectionColumnCount,
+              );
+              const rowSpan = hasSubGroups ? 1 : 2;
               sheet.setValue(0, startCol, label, headerArea);
-              if (sectionColumnCount > 1)
-                sheet.addSpan(0, startCol, 1, sectionColumnCount, headerArea);
+              if (sectionColumnCount > 1 || rowSpan > 1)
+                sheet.addSpan(
+                  0,
+                  startCol,
+                  rowSpan,
+                  sectionColumnCount,
+                  headerArea,
+                );
             },
           );
           COLUMNS.forEach((column, col) =>
@@ -952,6 +967,7 @@ export function useSpreadsheetController() {
             .backColor('#f4f6fa')
             .foreColor('#344054')
             .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
+            .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .font('600 12px Arial, PingFang SC');
           sheet
             .getRange(1, 0, 1, colCount, headerArea)
