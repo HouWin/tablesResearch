@@ -27,6 +27,7 @@ import {
   STRESS_TEXT_SEARCH_COLUMNS,
   UPDATED_AT_COLUMN,
   VERIFIED_COLUMN,
+  canDrillNode,
   columnName,
   findBusinessNode,
   flatRowsForView,
@@ -1715,6 +1716,25 @@ export function useSpreadsheetController() {
           workArea: 'viewport',
         },
       );
+      // Grey out "下钻到下一层" when the right-clicked row has no lower
+      // level to drill into, so choosing it can never surface an error
+      // toast — mirrors the disabled state already used by the toolbar
+      // "下钻所选行" button.
+      spread.contextMenu.onOpenMenu = (
+        _menuData: unknown,
+        itemsDataForShown: { name?: string; disable?: boolean; title?: string }[],
+      ) => {
+        const drillItem = itemsDataForShown.find(
+          (item) => item.name === 'business-drill',
+        );
+        if (drillItem) {
+          const node = activeRows[sheet.getActiveRowIndex()];
+          const drillable = canDrillNode(node);
+          drillItem.disable = !drillable;
+          drillItem.title = drillable ? undefined : '当前行没有下级数据';
+        }
+        return false;
+      };
 
       sheet.bind(
         GC.Spread.Sheets.Events.EnterCell,
@@ -1747,6 +1767,10 @@ export function useSpreadsheetController() {
           if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
           const node = activeRows[args.row];
           if (!node || !DRILLABLE_METRIC_COLUMNS.has(args.col)) return;
+          // Exploratory double-clicks on leaf-level rows are common and
+          // shouldn't interrupt the user with an error toast — silently
+          // do nothing when there is nothing to drill into.
+          if (!canDrillNode(node)) return;
           drillRow(args.row);
         },
       );
