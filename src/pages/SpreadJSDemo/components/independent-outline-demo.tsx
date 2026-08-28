@@ -51,7 +51,9 @@ const INITIAL_SNAPSHOT: DemoSnapshot = {
 };
 
 function dimensionLabel(dimension: OutlineDimension) {
-  return dimension === 'product' ? '第一列（产品树）' : '第二列（区域树）';
+  return dimension === 'product'
+    ? '第一折叠列（产品树）'
+    : '第二折叠列（区域树）';
 }
 
 function IndependentControls({
@@ -136,8 +138,8 @@ export function IndependentOutlineDemo() {
 
         const sheet = spread.getActiveSheet();
         sheet.name('双列独立折叠');
-        sheet.setColumnCount(5);
-        sheet.frozenColumnCount(2);
+        sheet.setColumnCount(6);
+        sheet.frozenColumnCount(3);
         sheet.options.rowHeaderAutoText =
           GC.Spread.Sheets.HeaderAutoText.numbers;
         sheet.options.isProtected = true;
@@ -176,7 +178,7 @@ export function IndependentOutlineDemo() {
           );
           const activeColumn = Math.min(
             Math.max(sheet.getActiveColumnIndex(), 0),
-            4,
+            5,
           );
 
           sheet.suspendPaint();
@@ -195,6 +197,7 @@ export function IndependentOutlineDemo() {
             0,
             activeRows.map((row) => [
               row.productBlockStart ? outlineNodeLabel(row.product) : '',
+              row.productBlockStart ? row.productAttribute : '',
               outlineNodeLabel(row.region),
               row.revenue,
               row.orders,
@@ -204,7 +207,8 @@ export function IndependentOutlineDemo() {
 
           const headers = [
             '第一列 · 产品树',
-            '第二列 · 区域树',
+            '第二列 · 产品属性',
+            '第三列 · 区域树',
             '销售额',
             '订单数',
             '利润',
@@ -217,23 +221,23 @@ export function IndependentOutlineDemo() {
               GC.Spread.Sheets.SheetArea.colHeader,
             );
           });
-          [190, 190, 132, 104, 122].forEach((width, column) =>
+          [190, 140, 190, 132, 104, 122].forEach((width, column) =>
             sheet.setColumnWidth(column, width),
           );
           sheet.setRowHeight(0, 38, GC.Spread.Sheets.SheetArea.colHeader);
           sheet.setColumnWidth(0, 44, GC.Spread.Sheets.SheetArea.rowHeader);
 
           sheet
-            .getRange(0, 0, activeRows.length, 5)
+            .getRange(0, 0, activeRows.length, 6)
             .font('12px Arial, PingFang SC')
             .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .backColor('#ffffff')
             .foreColor('#344054');
-          sheet.getRange(0, 2, activeRows.length, 1).formatter('¥#,##0');
-          sheet.getRange(0, 3, activeRows.length, 1).formatter('#,##0');
-          sheet.getRange(0, 4, activeRows.length, 1).formatter('¥#,##0');
+          sheet.getRange(0, 3, activeRows.length, 1).formatter('¥#,##0');
+          sheet.getRange(0, 4, activeRows.length, 1).formatter('#,##0');
+          sheet.getRange(0, 5, activeRows.length, 1).formatter('¥#,##0');
           sheet
-            .getRange(0, 2, activeRows.length, 3)
+            .getRange(0, 3, activeRows.length, 3)
             .hAlign(GC.Spread.Sheets.HorizontalAlign.right);
           sheet
             .getRange(0, 0, 1, 1, GC.Spread.Sheets.SheetArea.colHeader)
@@ -242,11 +246,16 @@ export function IndependentOutlineDemo() {
             .font('600 12px Arial, PingFang SC');
           sheet
             .getRange(0, 1, 1, 1, GC.Spread.Sheets.SheetArea.colHeader)
+            .backColor('#fff4dc')
+            .foreColor('#875c18')
+            .font('600 12px Arial, PingFang SC');
+          sheet
+            .getRange(0, 2, 1, 1, GC.Spread.Sheets.SheetArea.colHeader)
             .backColor('#eeeafd')
             .foreColor('#6045b8')
             .font('600 12px Arial, PingFang SC');
           sheet
-            .getRange(0, 2, 1, 3, GC.Spread.Sheets.SheetArea.colHeader)
+            .getRange(0, 3, 1, 3, GC.Spread.Sheets.SheetArea.colHeader)
             .backColor('#f5f7fa')
             .foreColor('#475467')
             .font('600 12px Arial, PingFang SC');
@@ -254,7 +263,8 @@ export function IndependentOutlineDemo() {
           activeRows.forEach((row, rowIndex) => {
             sheet.setRowHeight(rowIndex, 29);
             const productCell = sheet.getCell(rowIndex, 0);
-            const regionCell = sheet.getCell(rowIndex, 1);
+            const attributeCell = sheet.getCell(rowIndex, 1);
+            const regionCell = sheet.getCell(rowIndex, 2);
             regionCell.textIndent(row.region.depth);
 
             if (row.productBlockStart) {
@@ -267,7 +277,12 @@ export function IndependentOutlineDemo() {
               }
               if (row.productRowSpan > 1) {
                 sheet.addSpan(rowIndex, 0, row.productRowSpan, 1);
+                sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
               }
+              attributeCell
+                .backColor('#fffaf0')
+                .foreColor('#875c18')
+                .font('500 12px Arial, PingFang SC');
             }
             if (row.region.isGroup) {
               regionCell
@@ -277,7 +292,7 @@ export function IndependentOutlineDemo() {
             }
             if (row.product.isGroup && row.region.isGroup) {
               sheet
-                .getRange(rowIndex, 2, 1, 3)
+                .getRange(rowIndex, 3, 1, 3)
                 .backColor('#faf9ff')
                 .font('600 12px Arial, PingFang SC');
             }
@@ -329,7 +344,7 @@ export function IndependentOutlineDemo() {
           (_sender: unknown, args: CellClickArgs) => {
             if (
               args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport ||
-              (args.col !== 0 && args.col !== 1)
+              (args.col !== 0 && args.col !== 2)
             )
               return;
 
@@ -425,8 +440,8 @@ export function IndependentOutlineDemo() {
         <div className="independent-outline-explainer">
           <MousePointerClick size={17} />
           <p>
-            第一列每个产品节点只出现一次；第二列为每个产品块维护独立的扩展树。
-            点击 <b>▶ / ▼</b> 只改变当前节点，另一列及其他产品块保持原状。
+            第一列是产品树，第二列展示随产品稳定关联的属性，第三列为每个产品块维护独立的区域树。
+            点击 <b>▶ / ▼</b> 只改变对应折叠列，属性列及另一棵树保持原状。
           </p>
         </div>
 
@@ -438,7 +453,7 @@ export function IndependentOutlineDemo() {
         >
           <IndependentControls
             dimension="product"
-            title="第一列 · 产品树"
+            title="第一折叠列 · 产品树"
             description="家具 / 办公用品 / 技术产品"
             expandedCount={snapshot.productExpanded}
             totalCount={PRODUCT_TREE.length}
@@ -446,7 +461,7 @@ export function IndependentOutlineDemo() {
           />
           <IndependentControls
             dimension="region"
-            title="第二列 · 扩展树"
+            title="第二折叠列 · 区域树"
             description="每个产品块各自拥有 华东 → 城市"
             expandedCount={snapshot.regionExpanded}
             totalCount={snapshot.regionTotal}
@@ -458,7 +473,7 @@ export function IndependentOutlineDemo() {
           <div
             ref={hostRef}
             className="independent-outline-sheet"
-            aria-label="第一列产品树与第二列区域树独立展开的 SpreadJS 表格"
+            aria-label="产品树与区域树独立展开且中间包含产品属性列的 SpreadJS 表格"
             aria-busy={snapshot.status === 'loading'}
           />
           {snapshot.status !== 'ready' && (
@@ -474,9 +489,9 @@ export function IndependentOutlineDemo() {
 
         <footer className="independent-outline-footer">
           <span className="outline-state-dot is-product" />
-          第一列 {snapshot.productExpanded}/{PRODUCT_TREE.length} 展开
+          产品树 {snapshot.productExpanded}/{PRODUCT_TREE.length} 展开
           <span className="outline-state-dot is-region" />
-          第二列 {snapshot.regionExpanded}/{snapshot.regionTotal} 个产品块展开
+          区域树 {snapshot.regionExpanded}/{snapshot.regionTotal} 个产品块展开
           <span className="outline-projection-count">
             当前 {snapshot.rowCount} 行
           </span>
