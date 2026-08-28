@@ -15,6 +15,11 @@ import { setupTreeCellCollapse } from './treeCollapse';
 import type { ETableTreeCollapseApi } from './treeCollapse';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
+import {
+  createVirtualDataLoader,
+  VIRTUAL_LAZY_THRESHOLD,
+} from './virtualRender';
+import type { VirtualDataLoader } from './virtualRender';
 import { setupCellHistory } from './cellHistory';
 import type { ETableCellHistoryApi } from './cellHistory';
 import {
@@ -160,7 +165,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     freezeColumns,
     // 是否自定义 Univer 原生列头
     customizeColumnHeader = true,
-    // 虚拟滚动渲染（Canvas 可视区绘制 + 大数据分片写入）
+    // 虚拟滚动：Canvas 可视区绘制；大数据视口按页懒写入
     virtualScroll = true,
     // 扩展选项：自定义右键菜单项（不传则使用默认的 defaultContextMenuItems）
     contextMenuItems = defaultContextMenuItems,
@@ -677,13 +682,40 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderColumnWidths(worksheet, leafColumns, defaultColumnWidth);
     // 5. 设置表头行高
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
-    // 6. 渲染数据（虚拟滚动开启时分片写入）
-    renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
-    // 6.5 列类型：Sales 数字 / Profit 下拉等
-    applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length);
-    // 7. 设置数据行高
-    if (rows.length) {
-      renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
+    // 6. 渲染数据
+    // ≥ VIRTUAL_LAZY_THRESHOLD 且开启虚拟滚动：视口按页懒写入
+    // 否则：分片/全量 setValues
+    const useLazyVirtual =
+      virtualScroll && rows.length >= VIRTUAL_LAZY_THRESHOLD;
+    let disposeVirtualLoader: (() => void) | undefined;
+    let virtualLoader: VirtualDataLoader | null = null;
+
+    if (useLazyVirtual) {
+      // 先铺默认行高，保证滚动条与骨架正确
+      if (rows.length) {
+        renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
+      }
+      virtualLoader = createVirtualDataLoader({
+        univerAPI,
+        worksheet,
+        rows,
+        leafColumns,
+        dataStartRow: maxDepth,
+      });
+      disposeVirtualLoader = virtualLoader?.dispose;
+      // skipWrite：单元格由 loader 按页写入
+      renderData(worksheet, rows, leafColumns, maxDepth, {
+        virtualScroll,
+        skipWrite: true,
+      });
+    } else {
+      renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+      // 6.5 列类型：Sales 数字 / Profit 下拉等
+      applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length);
+      // 7. 设置数据行高
+      if (rows.length) {
+        renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
+      }
     }
     // 8. 自定义合并（row 相对于数据区，需加上表头深度）
     renderMerges(worksheet, merges, maxDepth);
@@ -868,6 +900,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
 
     // 15. 销毁
     return () => {
+      try {
+        disposeVirtualLoader?.();
+      } catch (error) {
+        console.warn('[Table] dispose virtual loader failed', error);
+      }
       try {
         disposeReadonly?.();
       } catch (error) {

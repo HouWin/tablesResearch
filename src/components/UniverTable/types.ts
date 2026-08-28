@@ -172,7 +172,9 @@ export interface ETableOptions {
   customizeColumnHeader?: boolean;
   /**
    * 开启虚拟滚动渲染（默认 true）。
-   * Univer Canvas 仅绘制可视区单元格；大数据写入时分片 setValues，降低卡顿。
+   * - Canvas 仅绘制可视区
+   * - 小数据：分片 setValues
+   * - ≥5000 行：视口按页懒写入，滚动/选区时再补页
    */
   virtualScroll?: boolean;
 }

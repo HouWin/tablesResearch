@@ -332,7 +332,7 @@ const defaultOptions: ETableOptions = {
   freezeRows: 1,
   freezeColumns: 0,
   customizeColumnHeader: true,
-  /** Canvas 可视区虚拟绘制 + 大数据分片写入 */
+  /** Canvas 可视区绘制；≥5000 行时视口按页懒写入 */
   virtualScroll: true,
   contextMenuItems: defaultContextMenuItems,
   enableContextMenu: true,
@@ -709,7 +709,7 @@ const UniverTablePage = () => {
               description={
                 isDemoTree
                   ? 'Sales 为数字列，Profit 为下拉（High/Medium/Low/Loss），Date 为日期列。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
-                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。编辑 Sales/Profit 会写入数据追踪；50万/100万行可能较慢。`
+                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。虚拟滚动开启时：Canvas 只画可视区；≥5000 行按页懒写入。编辑 Sales/Profit 会写入数据追踪。`
               }
               type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
               showIcon
