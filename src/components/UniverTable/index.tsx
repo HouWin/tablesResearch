@@ -57,8 +57,8 @@ import UniverPresetSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-
 import UniverPresetSheetsAdvancedZhCN from '@univerjs/preset-sheets-advanced/locales/zh-CN';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import UniverPresetSheetsNoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN';
-import UniverPresetSheetsDataValidationZhCN from '@univerjs/preset-sheets-data-validation/lib/es/locales/zh-CN';
-import UniverPresetSheetsFindReplaceZhCN from '@univerjs/preset-sheets-find-replace/lib/es/locales/zh-CN';
+import UniverPresetSheetsDataValidationZhCN from '@univerjs/preset-sheets-data-validation/locales/zh-CN';
+import UniverPresetSheetsFindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN';
 import '@univerjs/preset-sheets-advanced/lib/index.css';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import '@univerjs/preset-sheets-thread-comment/lib/index.css';

@@ -279,6 +279,8 @@ export const renderData = (
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
+
+  return rows.length;
 };
 
 const buildRowValues = (
@@ -430,8 +432,6 @@ export const renderDataAsync = async (
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
-
-  return rows.length;
 };
 
 /**

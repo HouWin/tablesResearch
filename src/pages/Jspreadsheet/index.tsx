@@ -56,6 +56,12 @@ const outlineBridge = {
   collapseAll: (_onDone?: () => void) => {},
 };
 
+/** 透视源数据：折叠样式初始化完成后通知（用于统计渲染总耗时） */
+const outlineLoadBridge = {
+  onRenderDone: () => {},
+  restoreTab: () => {},
+};
+
 /** expand_all / collapse_all 不在 Material Icons 字体中，用 SVG 还原官方造型 */
 const OUTLINE_TOOLBAR_SVG = {
   expand_all:
@@ -525,6 +531,23 @@ function getActiveWorksheet(ref: React.MutableRefObject<any>) {
   return list[idx] || list[0];
 }
 
+function getActiveWorksheetIndex(ref: React.MutableRefObject<any>) {
+  const list = getWorksheetList(ref);
+  if (!list.length) return 0;
+  const parent = list[0]?.parent;
+  if (typeof parent?.getWorksheetActive === 'function') {
+    const idx = parent.getWorksheetActive();
+    return typeof idx === 'number' && idx >= 0 ? idx : 0;
+  }
+  return 0;
+}
+
+function getActiveWorksheetName(ref: React.MutableRefObject<any>) {
+  const ws = getActiveWorksheet(ref);
+  if (!ws) return '订单明细';
+  return ws.options?.worksheetName || ws.getWorksheetName?.() || '订单明细';
+}
+
 function getWorksheetByName(ref: React.MutableRefObject<any>, name: string) {
   const list = getWorksheetList(ref);
   return (
@@ -552,6 +575,21 @@ function JspreadsheetPageInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachTarget = useRef<{ x: number; y: number } | null>(null);
   const outlineLoadTokenRef = useRef(0);
+  const orderLoadTokenRef = useRef(0);
+  const outlineLoadPendingRef = useRef<{
+    token: number;
+    t0: number;
+    rows: number;
+  } | null>(null);
+  const orderLoadPendingRef = useRef<{
+    token: number;
+    t0: number;
+    count: number;
+  } | null>(null);
+  const outlineLoadFallbackRef = useRef<number | undefined>(undefined);
+  const restoreWorksheetRef = useRef<{ index: number; name: string } | null>(null);
+  const outlineTabLockRef = useRef(false);
+  const outlineTabGuardRef = useRef(false);
 
   const [orderScale, setOrderScale] = useState<OrderScale>('2000');
   const [orderBusy, setOrderBusy] = useState(false);
@@ -604,10 +642,140 @@ function JspreadsheetPageInner() {
     [openWorksheetByName],
   );
 
-  const openOutlineWorksheet = useCallback(
-    () => openWorksheetByName('透视源数据'),
-    [openWorksheetByName],
+  const captureActiveWorksheet = useCallback(() => {
+    restoreWorksheetRef.current = {
+      index: getActiveWorksheetIndex(spreadsheet),
+      name: getActiveWorksheetName(spreadsheet),
+    };
+  }, []);
+
+  const restoreActiveWorksheet = useCallback(() => {
+    const target = restoreWorksheetRef.current;
+    if (!target) return;
+
+    const markTabRestored = () => {
+      if (outlineTabLockRef.current) {
+        outlineTabGuardRef.current = true;
+      }
+    };
+
+    const tryRestore = (): boolean => {
+      const list = getWorksheetList(spreadsheet);
+      if (!list.length) return false;
+      const parent = list[0]?.parent;
+      if (!parent?.openWorksheet) return false;
+
+      let idx = target.index;
+      if (idx < 0 || idx >= list.length) {
+        idx = list.findIndex(
+          (ws) =>
+            ws?.options?.worksheetName === target.name ||
+            ws?.getWorksheetName?.() === target.name,
+        );
+      }
+      if (idx < 0) return false;
+
+      const activeIdx =
+        typeof parent.getWorksheetActive === 'function'
+          ? parent.getWorksheetActive()
+          : -1;
+      if (activeIdx === idx) {
+        markTabRestored();
+        if (!outlineTabLockRef.current) {
+          restoreWorksheetRef.current = null;
+        }
+        return true;
+      }
+
+      try {
+        parent.openWorksheet(idx, true);
+        markTabRestored();
+        if (!outlineTabLockRef.current) {
+          restoreWorksheetRef.current = null;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    if (tryRestore()) return;
+
+    let attempts = 0;
+    const retry = () => {
+      if (!restoreWorksheetRef.current) return;
+      if (tryRestore() || attempts >= 40) {
+        if (attempts >= 40 && !outlineTabLockRef.current) {
+          restoreWorksheetRef.current = null;
+        }
+        return;
+      }
+      attempts += 1;
+      window.setTimeout(retry, 50);
+    };
+    window.setTimeout(retry, 0);
+  }, []);
+
+  const finishOutlineLoad = useCallback(
+    (token: number) => {
+      if (token !== outlineLoadTokenRef.current) return;
+      const pending = outlineLoadPendingRef.current;
+      if (!pending || pending.token !== token) return;
+      if (outlineLoadFallbackRef.current) {
+        window.clearTimeout(outlineLoadFallbackRef.current);
+        outlineLoadFallbackRef.current = undefined;
+      }
+      outlineLoadPendingRef.current = null;
+      const total = Math.round(performance.now() - pending.t0);
+      setOutlineLoadInfo(
+        `透视源数据 ${pending.rows.toLocaleString()} 行 · 总耗时 ${total}ms`,
+      );
+      setOutlineBusy(false);
+      restoreActiveWorksheet();
+      outlineTabLockRef.current = false;
+      outlineTabGuardRef.current = false;
+      restoreWorksheetRef.current = null;
+      try {
+        message.success(`透视源数据已加载 ${pending.rows.toLocaleString()} 行`);
+      } catch {
+        // ignore
+      }
+    },
+    [message, restoreActiveWorksheet],
   );
+
+  const finishOrderLoad = useCallback(
+    (token: number) => {
+      if (token !== orderLoadTokenRef.current) return;
+      const pending = orderLoadPendingRef.current;
+      if (!pending || pending.token !== token) return;
+      orderLoadPendingRef.current = null;
+      const total = Math.round(performance.now() - pending.t0);
+      setOrderLoadInfo(`${pending.count.toLocaleString()} 行 · 总耗时 ${total}ms`);
+      setOrderBusy(false);
+      try {
+        message.success(`订单明细已加载 ${pending.count.toLocaleString()} 行`);
+      } catch {
+        // ignore
+      }
+    },
+    [message],
+  );
+
+  useEffect(() => {
+    outlineLoadBridge.onRenderDone = () => {
+      const pending = outlineLoadPendingRef.current;
+      if (!pending) return;
+      finishOutlineLoad(pending.token);
+    };
+    outlineLoadBridge.restoreTab = () => {
+      restoreActiveWorksheet();
+    };
+    return () => {
+      outlineLoadBridge.onRenderDone = () => {};
+      outlineLoadBridge.restoreTab = () => {};
+    };
+  }, [finishOutlineLoad, restoreActiveWorksheet]);
 
   const handleOrderScaleChange = useCallback(
     (value: OrderScale) => {
@@ -615,11 +783,13 @@ function JspreadsheetPageInner() {
       if (value === orderScale) return;
 
       const count = Number(value);
+      const token = ++orderLoadTokenRef.current;
       setOrderBusy(true);
       setOrderScale(value);
       setOrderLoadInfo(`正在生成 ${count.toLocaleString()} 行订单明细…`);
 
       window.setTimeout(() => {
+        if (token !== orderLoadTokenRef.current) return;
         const t0 = performance.now();
         try {
           const data = buildSeedRows(count);
@@ -628,22 +798,17 @@ function JspreadsheetPageInner() {
             `${count.toLocaleString()} 行已生成（${genCost}ms），正在渲染表格…`,
           );
 
+          orderLoadPendingRef.current = { token, t0, count };
           destroySpreadsheet();
           setOrderData(data);
           setSheetNonce((n) => n + 1);
 
           window.setTimeout(() => {
+            if (token !== orderLoadTokenRef.current) return;
             openOrderWorksheet();
-            const total = Math.round(performance.now() - t0);
-            setOrderLoadInfo(`${count.toLocaleString()} 行 · 总耗时 ${total}ms`);
-            setOrderBusy(false);
-            try {
-              message.success(`订单明细已加载 ${count.toLocaleString()} 行`);
-            } catch {
-              // ignore
-            }
-          }, 200);
+          }, 0);
         } catch (err) {
+          orderLoadPendingRef.current = null;
           destroySpreadsheet();
           setOrderScale('2000');
           setOrderData(buildSeedRows(2000));
@@ -674,6 +839,9 @@ function JspreadsheetPageInner() {
       setOutlineBusy(true);
       setOutlineScale(value);
       setOutlineLoadInfo(`正在生成透视源数据（${label}）…`);
+      outlineTabLockRef.current = true;
+      outlineTabGuardRef.current = false;
+      captureActiveWorksheet();
 
       window.setTimeout(() => {
         if (token !== outlineLoadTokenRef.current) return;
@@ -693,22 +861,24 @@ function JspreadsheetPageInner() {
           destroySpreadsheet();
           setOutlineSheet(next);
           setSheetNonce((n) => n + 1);
+          outlineLoadPendingRef.current = { token, t0, rows };
 
-          window.setTimeout(() => {
-            if (token !== outlineLoadTokenRef.current) return;
-            openOutlineWorksheet();
-            const total = Math.round(performance.now() - t0);
-            setOutlineLoadInfo(
-              `透视源数据 ${rows.toLocaleString()} 行 · 总耗时 ${total}ms`,
-            );
-            setOutlineBusy(false);
-            try {
-              message.success(`透视源数据已加载 ${rows.toLocaleString()} 行`);
-            } catch {
-              // ignore
-            }
-          }, 200);
+          if (outlineLoadFallbackRef.current) {
+            window.clearTimeout(outlineLoadFallbackRef.current);
+          }
+          outlineLoadFallbackRef.current = window.setTimeout(() => {
+            outlineLoadFallbackRef.current = undefined;
+            finishOutlineLoad(token);
+          }, 120_000);
         } catch (err) {
+          if (outlineLoadFallbackRef.current) {
+            window.clearTimeout(outlineLoadFallbackRef.current);
+            outlineLoadFallbackRef.current = undefined;
+          }
+          outlineLoadPendingRef.current = null;
+          outlineTabLockRef.current = false;
+          outlineTabGuardRef.current = false;
+          restoreWorksheetRef.current = null;
           if (token !== outlineLoadTokenRef.current) return;
           destroySpreadsheet();
           setOutlineScale('demo');
@@ -724,7 +894,25 @@ function JspreadsheetPageInner() {
         }
       }, 50);
     },
-    [outlineScale, destroySpreadsheet, openOutlineWorksheet, message],
+    [outlineScale, destroySpreadsheet, message, finishOutlineLoad, captureActiveWorksheet],
+  );
+
+  const handleBeforeOpenWorksheet = useCallback((_ws: any, index: number) => {
+    if (!outlineTabLockRef.current || !outlineTabGuardRef.current) return;
+    const target = restoreWorksheetRef.current;
+    if (!target) return;
+    if (index === target.index) return;
+    return false;
+  }, []);
+
+  const handleOpenWorksheet = useCallback(
+    (_ws: any, index: number) => {
+      if (!outlineTabLockRef.current || !outlineTabGuardRef.current) return;
+      const target = restoreWorksheetRef.current;
+      if (!target || index === target.index) return;
+      window.requestAnimationFrame(() => restoreActiveWorksheet());
+    },
+    [restoreActiveWorksheet],
   );
 
   const columns = useMemo(
@@ -1153,8 +1341,15 @@ function JspreadsheetPageInner() {
     /** hideRow 追踪 + 逻辑行号→连续序号（虚拟滚动下滚动不重算） */
     const hiddenRows = new Set<number>();
     const rowSeqMap = new Map<number, number>();
+    let rowSeqDirty = true;
+    const paintCols = new Set([0, 1, OUTLINE_PROFIT_COL]);
+
+    const markRowSeqDirty = () => {
+      rowSeqDirty = true;
+    };
 
     const rebuildRowSeqMap = () => {
+      if (!rowSeqDirty && rowSeqMap.size) return;
       rowSeqMap.clear();
       let seq = 0;
       const total = outlineSheet.data.length;
@@ -1163,22 +1358,26 @@ function JspreadsheetPageInner() {
         seq += 1;
         rowSeqMap.set(r, seq);
       }
+      rowSeqDirty = false;
     };
 
     const writeRowNumberCell = (cell: HTMLElement, seq: number) => {
+      const key = String(seq);
+      if (cell.dataset.outlineRowSeq === key) return;
+      cell.dataset.outlineRowSeq = key;
       cell.querySelectorAll('i').forEach((i) => i.remove());
       let wrote = false;
       Array.from(cell.childNodes).forEach((node) => {
         if (node.nodeType !== Node.TEXT_NODE) return;
         if (!wrote) {
-          node.textContent = String(seq);
+          node.textContent = key;
           wrote = true;
         } else {
           node.textContent = '';
         }
       });
       if (!wrote) {
-        cell.insertBefore(document.createTextNode(String(seq)), cell.firstChild);
+        cell.insertBefore(document.createTextNode(key), cell.firstChild);
       }
     };
 
@@ -1189,17 +1388,7 @@ function JspreadsheetPageInner() {
         const cell = cellEl as HTMLElement;
         const tr = cell.closest('tr') as HTMLElement | null;
         if (!tr) return;
-        try {
-          if (
-            tr.style.display === 'none' ||
-            getComputedStyle(tr).display === 'none' ||
-            tr.classList.contains('jss_hidden')
-          ) {
-            return;
-          }
-        } catch {
-          return;
-        }
+        if (tr.style.display === 'none' || tr.classList.contains('jss_hidden')) return;
         const row = Number(
           cell.getAttribute('data-y') ??
             tr.querySelector('td[data-y]')?.getAttribute('data-y'),
@@ -1223,11 +1412,12 @@ function JspreadsheetPageInner() {
     const setRowVisible = (ws: any, row: number, visible: boolean) => {
       try {
         if (visible) {
+          if (hiddenRows.delete(row)) markRowSeqDirty();
           ws.showRow?.(row);
-          hiddenRows.delete(row);
         } else {
-          ws.hideRow?.(row);
+          if (!hiddenRows.has(row)) markRowSeqDirty();
           hiddenRows.add(row);
+          ws.hideRow?.(row);
         }
       } catch {
         // ignore
@@ -1564,7 +1754,12 @@ function JspreadsheetPageInner() {
       }
     };
 
-    const paint = (ws: any, root: HTMLElement, outlineTable?: HTMLElement | null) => {
+    const paint = (
+      ws: any,
+      root: HTMLElement,
+      outlineTable?: HTMLElement | null,
+      opts?: { stripIcons?: boolean },
+    ) => {
       if (disposed || painting) return;
       painting = true;
       try {
@@ -1572,38 +1767,39 @@ function JspreadsheetPageInner() {
           outlineTable ||
           getOutlineTable(ws) ||
           (root.querySelector('table.jss-outline-table') as HTMLElement | null);
-        if (!outlinePerf) stripMaterialIcons(table);
+        if (!outlinePerf && opts?.stripIcons !== false) stripMaterialIcons(table);
 
-        // 优先只画可见单元格（虚拟滚动时 groupCells 可能几十万）
+        // 单次扫描 data-x，比三条选择器合并查询更省
         const searchRoot = table || root;
-        const visible = searchRoot.querySelectorAll<HTMLElement>(
-          `td[data-x="0"], td[data-x="1"], td[data-x="${OUTLINE_PROFIT_COL}"]`,
-        );
-        if (visible.length) {
-          visible.forEach((cell) => {
-            if (cell.classList.contains('jss_row')) return;
+        const cells = searchRoot.querySelectorAll<HTMLElement>('td[data-x]');
+        if (cells.length) {
+          for (let i = 0; i < cells.length; i += 1) {
+            const cell = cells[i];
+            if (cell.classList.contains('jss_row')) continue;
             const col = Number(cell.getAttribute('data-x'));
+            if (!paintCols.has(col)) continue;
             const row = Number(cell.getAttribute('data-y'));
-            if (!Number.isFinite(col) || !Number.isFinite(row)) return;
+            if (!Number.isFinite(col) || !Number.isFinite(row)) continue;
             const meta = foldMetaByKey.get(`${col}:${row}`);
             if (meta) {
               paintCell(ws, cell, meta);
               if (col === OUTLINE_PROFIT_COL) paintProfitCell(cell, row);
-              return;
+              continue;
             }
             if (stateDetailRows.has(row)) {
               if (col === 0 || col === 1) paintStateDetailCell(cell, col);
               if (col === OUTLINE_PROFIT_COL) paintProfitCell(cell, row);
             }
-          });
-        } else {
-          // fallback：虚拟滚动首帧尚无 data-x 时，按元数据补绘
+          }
+        } else if (!outlineBatch) {
+          // fallback：虚拟滚动首帧尚无 data-x 时，按元数据补绘（仅小表）
           outlineSheet.groupCells.forEach((meta) => {
             const el = getCellEl(ws, meta.col, meta.row);
             if (el) paintCell(ws, el, meta);
           });
         }
 
+        if (rowSeqDirty) rebuildRowSeqMap();
         renumberVisibleRows(table);
       } finally {
         painting = false;
@@ -1628,9 +1824,24 @@ function JspreadsheetPageInner() {
     const outlineBindKey = `outline-${sheetNonce}`;
 
     let schedulePaintRef: (() => void) | null = null;
+    let scrollPaintRef: (() => void) | null = null;
+    let scrollPaintRaf: number | undefined;
+
+    const mutationNeedsPaint = (records: MutationRecord[]) => {
+      for (let i = 0; i < records.length; i += 1) {
+        const rec = records[i];
+        if (rec.type !== 'childList') continue;
+        if (rec.addedNodes.length || rec.removedNodes.length) return true;
+      }
+      return false;
+    };
 
     const stopWatching = () => {
       observer?.disconnect();
+      if (scrollPaintRaf) {
+        window.cancelAnimationFrame(scrollPaintRaf);
+        scrollPaintRaf = undefined;
+      }
       if (scrollTarget && onScrollPaint) {
         scrollTarget.removeEventListener('scroll', onScrollPaint);
       }
@@ -1643,8 +1854,9 @@ function JspreadsheetPageInner() {
       if (disposed) return;
 
       if (!observer) {
-        observer = new MutationObserver(() => {
+        observer = new MutationObserver((records) => {
           if (outlineBulkBusy || outlineInitBusy) return;
+          if (!mutationNeedsPaint(records)) return;
           schedulePaintRef?.();
         });
       }
@@ -1656,7 +1868,7 @@ function JspreadsheetPageInner() {
         (rootEl.querySelector('.jss_content') as HTMLElement | null) ||
         (rootEl.querySelector('.jss_worksheet') as HTMLElement | null) ||
         rootEl;
-      onScrollPaint = () => schedulePaintRef?.();
+      onScrollPaint = () => scrollPaintRef?.();
       scrollTarget.addEventListener('scroll', onScrollPaint, { passive: true });
       (rootEl as any).__outlineScrollEl = scrollTarget;
       (rootEl as any).__outlineScrollFn = onScrollPaint;
@@ -1731,11 +1943,12 @@ function JspreadsheetPageInner() {
           if (!nextOpen) {
             // Category 收起：第二列同步显示 ▶（子行已隐藏，Region 语义状态一并复位）
             regionState.set(row, false);
-            regionByRow.forEach((_c, r) => {
-              if (r > row && r <= row + span) regionState.set(r, false);
-            });
+            for (let r = row + 1; r <= row + span; r += 1) {
+              if (regionByRow.has(r)) regionState.set(r, false);
+            }
           }
           applyCategoryVisibilityDemo(ws, row);
+          markRowSeqDirty();
           rebuildRowSeqMap();
           clearOutlineSnapInSpan(table, row, span);
           paint(ws, root, table);
@@ -1780,16 +1993,30 @@ function JspreadsheetPageInner() {
         paintTimer = window.setTimeout(() => {
           paintTimer = undefined;
           if (disposed || outlineBulkBusy || outlineInitBusy) return;
-          if (!outlinePerf) stripMaterialIcons(table);
           paint(ws, root, table);
         }, debounceMs);
       };
       schedulePaintRef = schedulePaint;
 
+      scrollPaintRef = () => {
+        if (disposed || outlineBulkBusy || outlineInitBusy) return;
+        if (scrollPaintRaf) return;
+        scrollPaintRaf = window.requestAnimationFrame(() => {
+          scrollPaintRaf = undefined;
+          if (disposed || outlineBulkBusy || outlineInitBusy) return;
+          paint(ws, root, table, { stripIcons: false });
+        });
+      };
+
       const flushPaint = () => {
         if (paintTimer) window.clearTimeout(paintTimer);
         paintTimer = undefined;
+        if (scrollPaintRaf) {
+          window.cancelAnimationFrame(scrollPaintRaf);
+          scrollPaintRaf = undefined;
+        }
         if (!outlinePerf) stripMaterialIcons(table);
+        if (rowSeqDirty) rebuildRowSeqMap();
         paint(ws, root, table);
       };
 
@@ -1913,6 +2140,13 @@ function JspreadsheetPageInner() {
         rebuildRowSeqMap();
         flushPaint();
         startWatching(table, root);
+        outlineLoadBridge.restoreTab();
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (disposed || bindToken !== sheetNonce) return;
+            outlineLoadBridge.onRenderDone();
+          });
+        });
       };
 
       if (outlinePerf) {
@@ -1930,6 +2164,8 @@ function JspreadsheetPageInner() {
     const clearOutlineTimers = () => {
       if (paintTimer) window.clearTimeout(paintTimer);
       if (tabTimer) window.clearTimeout(tabTimer);
+      if (scrollPaintRaf) window.cancelAnimationFrame(scrollPaintRaf);
+      scrollPaintRaf = undefined;
       initTimers.forEach((id) => window.clearTimeout(id));
       initTimers.length = 0;
       const cancelRic = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
@@ -2498,6 +2734,18 @@ function JspreadsheetPageInner() {
             onevent={(event: string, ...rest: any[]) => {
               cellHistoryPlugin.onevent(event, ...rest);
             }}
+            onload={() => {
+              const orderPending = orderLoadPendingRef.current;
+              if (orderPending) {
+                finishOrderLoad(orderPending.token);
+                return;
+              }
+              if (outlineLoadPendingRef.current) {
+                restoreActiveWorksheet();
+              }
+            }}
+            onbeforeopenworksheet={handleBeforeOpenWorksheet}
+            onopenworksheet={handleOpenWorksheet}
             onchange={(
               worksheet: any,
               _cell: any,
