@@ -1,17 +1,20 @@
 export type OutlineLeaf = {
   id: string;
   label: string;
+  attribute?: string;
 };
 
 export type OutlineRoot = {
   id: string;
   label: string;
+  attribute?: string;
   children: readonly OutlineLeaf[];
 };
 
 export type VisibleOutlineNode = {
   id: string;
   label: string;
+  attribute: string;
   depth: 0 | 1;
   isGroup: boolean;
   expanded: boolean;
@@ -22,6 +25,7 @@ export type ExtensionExpansionState = ReadonlyMap<string, ReadonlySet<string>>;
 
 export type IndependentOutlineRow = {
   product: VisibleOutlineNode;
+  productAttribute: string;
   region: VisibleOutlineNode;
   productBlockStart: boolean;
   productRowSpan: number;
@@ -34,28 +38,31 @@ export const PRODUCT_TREE: readonly OutlineRoot[] = [
   {
     id: 'furniture',
     label: '家具',
+    attribute: '家居耐用品',
     children: [
-      { id: 'bookcases', label: '书柜' },
-      { id: 'chairs', label: '座椅' },
-      { id: 'furnishings', label: '装饰用品' },
+      { id: 'bookcases', label: '书柜', attribute: '收纳家具' },
+      { id: 'chairs', label: '座椅', attribute: '坐具' },
+      { id: 'furnishings', label: '装饰用品', attribute: '家居装饰' },
     ],
   },
   {
     id: 'office',
     label: '办公用品',
+    attribute: '日常办公耗材',
     children: [
-      { id: 'paper', label: '纸品' },
-      { id: 'storage', label: '收纳' },
-      { id: 'art', label: '美术用品' },
+      { id: 'paper', label: '纸品', attribute: '纸制品' },
+      { id: 'storage', label: '收纳', attribute: '收纳用品' },
+      { id: 'art', label: '美术用品', attribute: '创作耗材' },
     ],
   },
   {
     id: 'technology',
     label: '技术产品',
+    attribute: '数码与硬件',
     children: [
-      { id: 'phones', label: '手机' },
-      { id: 'accessories', label: '配件' },
-      { id: 'machines', label: '设备' },
+      { id: 'phones', label: '手机', attribute: '移动终端' },
+      { id: 'accessories', label: '配件', attribute: '周边配件' },
+      { id: 'machines', label: '设备', attribute: '办公设备' },
     ],
   },
 ] as const;
@@ -85,6 +92,7 @@ export function getVisibleOutlineNodes(
     const rootNode: VisibleOutlineNode = {
       id: root.id,
       label: root.label,
+      attribute: root.attribute ?? '',
       depth: 0,
       isGroup: true,
       expanded,
@@ -99,6 +107,7 @@ export function getVisibleOutlineNodes(
         (child): VisibleOutlineNode => ({
           id: child.id,
           label: child.label,
+          attribute: child.attribute ?? '',
           depth: 1,
           isGroup: false,
           expanded: false,
@@ -179,6 +188,7 @@ export function createIndependentOutlineRows(
 
     return regions.map((region, regionIndex) => ({
       product,
+      productAttribute: product.attribute,
       region,
       productBlockStart: regionIndex === 0,
       productRowSpan: regions.length,
