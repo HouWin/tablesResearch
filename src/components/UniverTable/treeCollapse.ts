@@ -1,10 +1,12 @@
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
-import { reapplyMergesForRowSpan } from './renderer';
+import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
 
 const LARGE_TOGGLE_COUNT = 200;
 const DEFAULT_TOGGLE_BATCH_SIZE = 60;
-const INTERACTIVE_HIDE_BATCH = 40;
+/** 交互时合并后 hide 区间低于该值则同步一次完成，避免多帧 yield 反复重绘 */
+const INTERACTIVE_HIDE_SYNC_MAX = 400;
+const INTERACTIVE_HIDE_BATCH = 80;
 
 /**
  * 收集全部行分组（含嵌套）。
@@ -86,7 +88,7 @@ const hideRangesInBatches = async (
     return;
   }
   const merged = mergeRowRanges(ranges);
-  if (!options.useBatch || merged.length <= 30) {
+  if (!options.useBatch || merged.length <= INTERACTIVE_HIDE_SYNC_MAX) {
     hideCoalescedRowRanges(worksheet, merged);
     return;
   }
@@ -109,6 +111,7 @@ const setRowsCollapsed = (
     anchorRow: number;
     afterReapply?: () => void;
   },
+  rowOptions?: { deferMergeFix?: boolean },
 ) => {
   if (group.count <= 0) {
     return;
@@ -130,14 +133,21 @@ const setRowsCollapsed = (
         }
       }
       if (mergeFix?.merges?.length) {
-        reapplyMergesForRowSpan(
-          worksheet,
-          mergeFix.merges,
-          dataStartRow,
-          mergeFix.anchorRow,
-          1 + group.count,
-        );
-        mergeFix.afterReapply?.();
+        const runMergeFix = () => {
+          reapplyMergesForRowSpan(
+            worksheet,
+            mergeFix.merges,
+            dataStartRow,
+            mergeFix.anchorRow,
+            1 + group.count,
+          );
+          mergeFix.afterReapply?.();
+        };
+        if (rowOptions?.deferMergeFix) {
+          requestAnimationFrame(runMergeFix);
+        } else {
+          runMergeFix();
+        }
       }
     }
   } catch (error) {
@@ -254,14 +264,16 @@ export const setupTreeCellCollapse = (
   const batchSize = options?.initBatchSize ?? DEFAULT_TOGGLE_BATCH_SIZE;
   const useBatchToggle = toggles.length >= LARGE_TOGGLE_COUNT;
   const merges = options?.merges ?? [];
+  const mergesByAnchorRow = buildMergeIndexByAnchorRow(merges);
   const ensureDataRows = options?.ensureDataRows;
 
   const mergeFixForRegion = (anchorRow: number, group: Pick<ETableRowGroup, 'count'>) => {
-    if (!merges.length) {
+    const relevant = mergesByAnchorRow.get(anchorRow);
+    if (!relevant?.length) {
       return undefined;
     }
     return {
-      merges,
+      merges: relevant,
       anchorRow,
       afterReapply: () => {
         const categoryToggle = togglesByRow.get(anchorRow)?.find(
@@ -294,7 +306,9 @@ export const setupTreeCellCollapse = (
         ensureDataRows(group.startRow, group.startRow + group.count - 1);
       }
     }
-    setRowsCollapsed(worksheet, dataStartRow, group, collapsed, mergeFix);
+    setRowsCollapsed(worksheet, dataStartRow, group, collapsed, mergeFix, {
+      deferMergeFix: useBatchToggle,
+    });
   };
 
   const getWorkbook = () => {
@@ -315,10 +329,7 @@ export const setupTreeCellCollapse = (
   };
 
   const hideSelectionBorderAfterTreeAction = () => {
-    requestAnimationFrame(() => {
-      hideSelectionBorder();
-      requestAnimationFrame(hideSelectionBorder);
-    });
+    requestAnimationFrame(hideSelectionBorder);
   };
 
   const groupMap = new Map(
@@ -413,9 +424,7 @@ export const setupTreeCellCollapse = (
    */
   const showCategoryBody = async (categoryGroupId: string) => {
     const categoryGroup = groupMap.get(categoryGroupId);
-    if (useBatchToggle) {
-      await yieldToMain();
-    }
+    hideSelectionBorder();
 
     if (categoryGroup?.count) {
       toggleGroupRows(categoryGroup, false);
@@ -476,36 +485,6 @@ export const setupTreeCellCollapse = (
     collapsedState.set(toggle.groupId, true);
     setRowsCollapsed(worksheet, dataStartRow, group, true);
   };
-
-  const isRegionDetailHiddenByCategory = (
-    toggle: ETableTreeToggleBinding,
-    collapsedCategoryRanges: Array<{ start: number; end: number }>,
-  ): boolean => {
-    const group = groupMap.get(toggle.groupId);
-    if (!group) {
-      return true;
-    }
-    const detailStart = group.startRow;
-    const detailEnd = group.startRow + group.count;
-
-    for (let i = 0; i < collapsedCategoryRanges.length; i += 1) {
-      const range = collapsedCategoryRanges[i];
-      if (detailStart >= range.start && detailEnd <= range.end) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const buildCollapsedCategoryRanges = () =>
-    categoryToggles
-      .filter((categoryToggle) => collapsedState.get(categoryToggle.groupId))
-      .map((categoryToggle) => groupMap.get(categoryToggle.groupId))
-      .filter((group): group is ETableRowGroup => Boolean(group))
-      .map((group) => ({
-        start: group.startRow,
-        end: group.startRow + group.count,
-      }));
 
   const batchHideRegionToggles = async (regionToggles: ETableTreeToggleBinding[]) => {
     if (!regionToggles.length) {
@@ -596,13 +575,11 @@ export const setupTreeCellCollapse = (
       });
     });
 
-    const collapsedCategoryRanges = buildCollapsedCategoryRanges();
     const regionToggles = toggles.filter(
       (toggle) =>
         toggle.kind === 'region' &&
         toggle.collapsed &&
-        groupMap.has(toggle.groupId) &&
-        !isRegionDetailHiddenByCategory(toggle, collapsedCategoryRanges),
+        groupMap.has(toggle.groupId),
     );
 
     await batchHideRegionToggles(regionToggles);
@@ -644,9 +621,7 @@ export const setupTreeCellCollapse = (
     const runCategoryBody = async () => {
       if (next) {
         syncCategoryRegionCollapsedState(groupId, true);
-        if (useBatchToggle) {
-          await yieldToMain();
-        }
+        hideSelectionBorder();
         hideCategoryBody(groupId);
       } else {
         await showCategoryBody(groupId);
@@ -673,6 +648,8 @@ export const setupTreeCellCollapse = (
     }
 
     if (useBatchToggle && toggle.kind === 'region') {
+      collapsedState.set(groupId, next);
+      writeLabel(toggle, next);
       enqueueToggleTask(runToggle);
       return;
     }

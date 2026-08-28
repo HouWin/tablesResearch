@@ -1,3 +1,7 @@
+import type { VirtualRenderStats } from './virtualRender';
+
+export type { VirtualRenderStats } from './virtualRender';
+
 export type ETablePrimitive = string | number | boolean | null | undefined;
 
 /**
@@ -585,6 +589,8 @@ export interface ETableProps {
     renderMs?: number;
     /** 展平后的数据行数 */
     rowCount?: number;
+    /** 懒虚拟写入状态（仅行数 ≥ 5000 且开启 virtualScroll 时有值） */
+    virtualRender?: VirtualRenderStats | null;
   }) => void;
 }
 
@@ -671,4 +677,6 @@ export interface ETableRef {
   clearTracks(): void;
   /** 构建当前单元格数据追踪树 */
   getDataTrace(cell?: string): ETableDataTraceNode | null;
+  /** 懒虚拟写入统计（未启用时返回 null） */
+  getVirtualRenderStats(): VirtualRenderStats | null;
 }
