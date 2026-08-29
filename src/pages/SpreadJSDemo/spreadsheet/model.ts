@@ -1230,20 +1230,19 @@ function createStressRecord(index: number): ViewRow {
   );
   const positionInProductLine =
     positionAfterBusinessGroup % STRESS_PRODUCT_LINE_SIZE;
-  const positionAfterProductLine = Math.max(positionInProductLine - 1, 0);
-  const regionOffset = Math.floor(
-    positionAfterProductLine / STRESS_REGION_SIZE,
-  );
-  const positionInRegion = positionAfterProductLine % STRESS_REGION_SIZE;
+  const regionOffset = Math.floor(positionInProductLine / STRESS_REGION_SIZE);
+  const positionInRegion = positionInProductLine % STRESS_REGION_SIZE;
   const isBusinessGroup = positionInBusinessGroup === 0;
   const isProductLine = !isBusinessGroup && positionInProductLine === 0;
-  const isRegion = !isBusinessGroup && !isProductLine && positionInRegion === 0;
+  const isRegion = !isBusinessGroup && positionInRegion === 0;
   const productLineIndex = businessGroupIndex * 10 + productLineOffset;
   const [regionName, city] =
     STRESS_REGIONS[regionOffset % STRESS_REGIONS.length];
   const businessGroupId = `stress-business-group-${businessGroupIndex}`;
   const productId = `stress-product-${productLineIndex}`;
-  const regionId = `${productId}:region-${regionOffset}`;
+  const regionId = isBusinessGroup
+    ? `${businessGroupId}:region-all`
+    : `${productId}:region-${regionOffset}`;
   const businessGroupLabel = `${STRESS_BUSINESS_GROUPS[businessGroupIndex]}事业群`;
   const productLabel = `${
     STRESS_PRODUCT_LINES[productLineOffset]
@@ -1283,24 +1282,29 @@ function createStressRecord(index: number): ViewRow {
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
     level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
-    hasChildren: isBusinessGroup || isProductLine || isRegion,
+    hasChildren: isBusinessGroup || isRegion,
     productId: isBusinessGroup ? businessGroupId : productId,
     productParentId: isBusinessGroup ? null : businessGroupId,
     productLabel: isBusinessGroup ? businessGroupLabel : productLabel,
     productAttribute: isBusinessGroup
       ? '战略业务组合'
       : STRESS_PRODUCT_ATTRIBUTES[productLineIndex % 3],
-    productDepth: isProductLine ? 1 : 0,
-    productIsGroup: isBusinessGroup || isProductLine,
-    productExpanded: isBusinessGroup || isProductLine,
+    productDepth: isBusinessGroup ? 0 : 1,
+    productIsGroup: isBusinessGroup,
+    productExpanded: isBusinessGroup,
     productBlockStart: isBusinessGroup || isProductLine,
-    productRowSpan: 1,
+    productRowSpan: isProductLine
+      ? Math.min(
+          STRESS_PRODUCT_LINE_SIZE,
+          STRESS_BUSINESS_GROUP_SIZE - positionInBusinessGroup,
+        )
+      : 1,
     regionId,
     regionRootId: regionId,
-    regionLabel: isRegion
+    regionLabel: isBusinessGroup
+      ? '全国 · 事业群汇总'
+      : isRegion
       ? regionLabel
-      : isBusinessGroup || isProductLine
-      ? ''
       : detailLabel,
     regionDepth: isRegion ? 0 : 1,
     regionIsGroup: isRegion,
@@ -1310,34 +1314,42 @@ function createStressRecord(index: number): ViewRow {
 
 export function getStressRowOutlineGroups(rows: ViewRow[]) {
   const groups: StressRowOutlineGroup[] = [];
-  const open: Array<{
-    summaryRow: number;
-    level: number;
-    dimension: OutlineDimension;
-  }> = [];
-  const closeGroupsAt = (endRow: number, level: number) => {
-    while (open.length && open[open.length - 1].level >= level) {
-      const group = open.pop();
-      if (!group || endRow <= group.summaryRow + 1) continue;
-      groups.push({
-        ...group,
-        detailStart: group.summaryRow + 1,
-        detailCount: endRow - group.summaryRow - 1,
-      });
-    }
+  let openProductSummary = -1;
+  let openRegionSummary = -1;
+  const closeGroup = (
+    summaryRow: number,
+    endRow: number,
+    level: number,
+    dimension: OutlineDimension,
+  ) => {
+    if (summaryRow < 0 || endRow <= summaryRow + 1) return;
+    groups.push({
+      summaryRow,
+      detailStart: summaryRow + 1,
+      detailCount: endRow - summaryRow - 1,
+      level,
+      dimension,
+    });
   };
 
   rows.forEach((row, index) => {
-    closeGroupsAt(index, row.level);
-    if (!row.hasChildren) return;
-    open.push({
-      summaryRow: index,
-      level: row.level,
-      dimension: row.productIsGroup ? 'product' : 'region',
-    });
+    if (row.productBlockStart && row.productIsGroup) {
+      closeGroup(openRegionSummary, index, 1, 'region');
+      openRegionSummary = -1;
+      closeGroup(openProductSummary, index, 0, 'product');
+      openProductSummary = index;
+    }
+    if (row.regionIsGroup) {
+      closeGroup(openRegionSummary, index, 1, 'region');
+      openRegionSummary = index;
+    }
   });
-  closeGroupsAt(rows.length, Number.NEGATIVE_INFINITY);
-  return groups.sort((left, right) => left.summaryRow - right.summaryRow);
+  closeGroup(openRegionSummary, rows.length, 1, 'region');
+  closeGroup(openProductSummary, rows.length, 0, 'product');
+  return groups.sort(
+    (left, right) =>
+      left.summaryRow - right.summaryRow || left.level - right.level,
+  );
 }
 
 function applyStressGroupSummaries(rows: ViewRow[]) {

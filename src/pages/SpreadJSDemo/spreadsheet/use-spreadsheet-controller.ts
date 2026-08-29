@@ -1113,6 +1113,17 @@ export function useSpreadsheetController() {
               .getRange(row, 0, 1, columnCount)
               .font('600 12px Arial, PingFang SC');
           }
+          if (
+            activeDataMode === 'stress' &&
+            node.productBlockStart &&
+            node.productRowSpan > 1
+          ) {
+            // 常规数据块只有几行，居中阅读更自然；压力数据的产品块
+            // 最长跨 1,000 行，顶部对齐才能让产品与首个区域同时出现。
+            sheet
+              .getRange(row, PRODUCT_HIERARCHY_COLUMN, 1, 2)
+              .vAlign(GC.Spread.Sheets.VerticalAlign.top);
+          }
         }
       };
 
@@ -1419,17 +1430,17 @@ export function useSpreadsheetController() {
               0,
               rows.map((row) => viewRowValues(row, colCount)),
             );
-            rows.forEach((row, rowIndex) => {
-              if (!row.productBlockStart || row.productRowSpan <= 1) return;
-              sheet.addSpan(
-                rowIndex,
-                PRODUCT_HIERARCHY_COLUMN,
-                row.productRowSpan,
-                1,
-              );
-              sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
-            });
           }
+          rows.forEach((row, rowIndex) => {
+            if (!row.productBlockStart || row.productRowSpan <= 1) return;
+            sheet.addSpan(
+              rowIndex,
+              PRODUCT_HIERARCHY_COLUMN,
+              row.productRowSpan,
+              1,
+            );
+            sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
+          });
 
           const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
           sheet.getSpans(undefined, headerArea).forEach((span) => {
@@ -1642,7 +1653,7 @@ export function useSpreadsheetController() {
         expanded: boolean,
       ) => {
         if (activeDataMode === 'stress') {
-          const levels = dimension === 'product' ? [0, 1] : [2];
+          const levels = dimension === 'product' ? [0] : [1];
           runOutlineBatch(true, () => {
             const orderedLevels = expanded ? levels : [...levels].reverse();
             orderedLevels.forEach((level) =>
@@ -1650,7 +1661,7 @@ export function useSpreadsheetController() {
             );
           });
           notify(
-            `${dimension === 'product' ? '事业群与产品线' : '区域树'}已全部${
+            `${dimension === 'product' ? '产品层级' : '区域树'}已全部${
               expanded ? '展开' : '收起'
             }`,
           );

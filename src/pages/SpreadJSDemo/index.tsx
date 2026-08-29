@@ -257,10 +257,10 @@ function IntegratedOutlineControls({
     >
       <OutlineControlCard
         dimension="product"
-        title={dataMode === 'stress' ? '事业群与产品线' : '产品层级'}
+        title="产品层级"
         description={
           dataMode === 'stress'
-            ? '10 个事业群 / 100 条产品线；两级均可独立折叠'
+            ? '10 个事业群 / 100 条产品线；产品线与首个区域同行展示'
             : '家具 / 办公用品 / 技术产品；属性列跟随产品'
         }
         expanded={snapshot.productExpanded}
