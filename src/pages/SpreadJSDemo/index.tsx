@@ -45,6 +45,7 @@ import {
   formatMoney,
   formatStatistic,
   pathForView,
+  type DataMode,
   type OutlineDimension,
   type OutlineSnapshot,
   type SelectedCell,
@@ -237,11 +238,13 @@ function OutlineControlCard({
 
 function IntegratedOutlineControls({
   snapshot,
+  dataMode,
   disabled,
   onSetAll,
   onReset,
 }: {
   snapshot: OutlineSnapshot;
+  dataMode: DataMode;
   disabled: boolean;
   onSetAll: (dimension: OutlineDimension, expanded: boolean) => void;
   onReset: () => void;
@@ -254,8 +257,12 @@ function IntegratedOutlineControls({
     >
       <OutlineControlCard
         dimension="product"
-        title="产品层级"
-        description="家具 / 办公用品 / 技术产品；属性列跟随产品"
+        title={dataMode === 'stress' ? '事业群与产品线' : '产品层级'}
+        description={
+          dataMode === 'stress'
+            ? '10 个事业群 / 100 条产品线；两级均可独立折叠'
+            : '家具 / 办公用品 / 技术产品；属性列跟随产品'
+        }
         expanded={snapshot.productExpanded}
         total={snapshot.productTotal}
         disabled={disabled}
@@ -264,7 +271,11 @@ function IntegratedOutlineControls({
       <OutlineControlCard
         dimension="region"
         title="区域层级"
-        description="每个产品分别维护区域展开状态"
+        description={
+          dataMode === 'stress'
+            ? '约 1,000 个区域组；折叠状态不影响产品层级'
+            : '每个产品分别维护区域展开状态'
+        }
         expanded={snapshot.regionExpanded}
         total={snapshot.regionTotal}
         disabled={disabled}
@@ -275,7 +286,11 @@ function IntegratedOutlineControls({
         className="integrated-outline-reset"
         disabled={disabled}
         onClick={onReset}
-        title="恢复产品树默认展开、区域树全部收起"
+        title={
+          dataMode === 'stress'
+            ? '收起全部层级，仅显示事业群汇总'
+            : '恢复产品树默认展开、区域树全部收起'
+        }
       >
         <RotateCcw size={14} />
         恢复默认
@@ -326,7 +341,8 @@ export default function SpreadJSDemoPage() {
     tableBusy,
     aggregateValue,
   } = useSpreadsheetController();
-  const canDrillSelected = canDrillNode(selected?.node);
+  const canDrillSelected =
+    dataMode === 'regular' && canDrillNode(selected?.node);
   const lineageDetails = getLineageDetails(selected);
   const searchAnchorRef = useRef<HTMLDivElement>(null);
   const columnAnchorRef = useRef<HTMLDivElement>(null);
@@ -456,14 +472,16 @@ export default function SpreadJSDemoPage() {
 
             <button
               type="button"
-              disabled={tableBusy || dataMode !== 'regular'}
+              disabled={tableBusy}
               aria-label={rowGroupsCollapsed ? '展开全部行组' : '收起全部行组'}
               title={
-                dataMode === 'regular'
-                  ? rowGroupsCollapsed
-                    ? '展开全部产品与区域层级'
-                    : '收起全部产品与区域层级'
-                  : '压力数据为扁平视图，不支持行层级折叠'
+                rowGroupsCollapsed
+                  ? dataMode === 'stress'
+                    ? '展开全部事业群、产品线与区域层级'
+                    : '展开全部产品与区域层级'
+                  : dataMode === 'stress'
+                  ? '收起全部事业群、产品线与区域层级'
+                  : '收起全部产品与区域层级'
               }
               onClick={() => actionsRef.current?.toggleRowGroups()}
               className={rowGroupsCollapsed ? 'is-active' : ''}
@@ -600,7 +618,7 @@ export default function SpreadJSDemoPage() {
                   <span key={`${index}-${crumb}`}>
                     <button
                       type="button"
-                      disabled={tableBusy}
+                      disabled={tableBusy || dataMode !== 'regular'}
                       className={index === crumbs.length - 1 ? 'current' : ''}
                       onClick={() =>
                         actionsRef.current?.setView(view.slice(0, index))
@@ -641,13 +659,16 @@ export default function SpreadJSDemoPage() {
                 </button>
               </div>
               <small>
-                单击层级单元格展开 / 收起 · 选中汇总行后下钻 · 右键打开业务菜单
+                {dataMode === 'stress'
+                  ? '单击产品或区域层级单元格逐级展开 / 收起 · 搜索会自动展开命中项路径'
+                  : '单击层级单元格展开 / 收起 · 选中汇总行后下钻 · 右键打开业务菜单'}
               </small>
             </div>
 
             <IntegratedOutlineControls
               snapshot={outlineSnapshot}
-              disabled={tableBusy || dataMode !== 'regular'}
+              dataMode={dataMode}
+              disabled={tableBusy}
               onSetAll={(dimension, expanded) =>
                 actionsRef.current?.setOutlineDimension(dimension, expanded)
               }

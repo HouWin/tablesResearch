@@ -83,7 +83,6 @@ export type ViewRow = BusinessNode & {
   regionDepth: 0 | 1;
   regionIsGroup: boolean;
   regionExpanded: boolean;
-  sourceNodeIds: readonly string[];
 };
 
 export type OutlineDimension = 'product' | 'region';
@@ -94,6 +93,14 @@ export type OutlineSnapshot = {
   regionExpanded: number;
   regionTotal: number;
   rowCount: number;
+};
+
+export type StressRowOutlineGroup = {
+  summaryRow: number;
+  detailStart: number;
+  detailCount: number;
+  level: number;
+  dimension: OutlineDimension;
 };
 
 export type SelectedCell = {
@@ -1062,7 +1069,6 @@ export function createBusinessProjectionRows(
         regionDepth: region.depth,
         regionIsGroup: region.isGroup,
         regionExpanded: region.expanded,
-        sourceNodeIds: region.sourceNodes.map((node) => node.id),
       }),
     );
   });
@@ -1172,41 +1178,103 @@ const STRESS_OWNERS = [
   '徐昕',
   '吴哲',
 ];
-const STRESS_CITIES = [
-  '上海',
-  '苏州',
-  '南京',
-  '杭州',
-  '广州',
-  '厦门',
-  '北京',
-  '天津',
+const STRESS_BUSINESS_GROUPS = [
+  '智能家居',
+  '办公科技',
+  '消费电子',
+  '商业设备',
+  '生活服务',
+  '数字零售',
+  '企业采购',
+  '智慧门店',
+  '渠道运营',
+  '新兴业务',
 ];
+const STRESS_PRODUCT_LINES = [
+  '收纳家具',
+  '人体工学坐具',
+  '办公耗材',
+  '移动终端',
+  '商用硬件',
+  '门店服务',
+  '数字订阅',
+  '渠道设备',
+  '零售配件',
+  '创新产品',
+];
+const STRESS_PRODUCT_ATTRIBUTES = ['耐用品', '快消品', '数字产品'];
+const STRESS_REGIONS = [
+  ['华东', '上海'],
+  ['华东', '苏州'],
+  ['华东', '杭州'],
+  ['华中', '武汉'],
+  ['华中', '郑州'],
+  ['华南', '广州'],
+  ['华南', '厦门'],
+  ['华北', '北京'],
+  ['华北', '天津'],
+  ['西南', '成都'],
+] as const;
+const STRESS_CHANNELS = ['直营网点', '经销网点', '电商渠道', '企业客户'];
+
+const STRESS_BUSINESS_GROUP_SIZE = 10_000;
+const STRESS_PRODUCT_LINE_SIZE = 1_000;
+const STRESS_REGION_SIZE = 100;
 
 function createStressRecord(index: number): ViewRow {
-  const positionInRegion = index % 10_000;
-  const regionIndex = Math.floor(index / 10_000);
-  const positionAfterRegion = Math.max(positionInRegion - 1, 0);
-  const cityIndex = Math.floor(positionAfterRegion / 1_000);
-  const isRegion = positionInRegion === 0;
-  const isCity = !isRegion && positionAfterRegion % 1_000 === 0;
-  const city = STRESS_CITIES[(regionIndex + cityIndex) % STRESS_CITIES.length];
+  const positionInBusinessGroup = index % STRESS_BUSINESS_GROUP_SIZE;
+  const businessGroupIndex = Math.floor(index / STRESS_BUSINESS_GROUP_SIZE);
+  const positionAfterBusinessGroup = Math.max(positionInBusinessGroup - 1, 0);
+  const productLineOffset = Math.floor(
+    positionAfterBusinessGroup / STRESS_PRODUCT_LINE_SIZE,
+  );
+  const positionInProductLine =
+    positionAfterBusinessGroup % STRESS_PRODUCT_LINE_SIZE;
+  const positionAfterProductLine = Math.max(positionInProductLine - 1, 0);
+  const regionOffset = Math.floor(
+    positionAfterProductLine / STRESS_REGION_SIZE,
+  );
+  const positionInRegion = positionAfterProductLine % STRESS_REGION_SIZE;
+  const isBusinessGroup = positionInBusinessGroup === 0;
+  const isProductLine = !isBusinessGroup && positionInProductLine === 0;
+  const isRegion = !isBusinessGroup && !isProductLine && positionInRegion === 0;
+  const productLineIndex = businessGroupIndex * 10 + productLineOffset;
+  const [regionName, city] =
+    STRESS_REGIONS[regionOffset % STRESS_REGIONS.length];
+  const businessGroupId = `stress-business-group-${businessGroupIndex}`;
+  const productId = `stress-product-${productLineIndex}`;
+  const regionId = `${productId}:region-${regionOffset}`;
+  const businessGroupLabel = `${STRESS_BUSINESS_GROUPS[businessGroupIndex]}事业群`;
+  const productLabel = `${
+    STRESS_PRODUCT_LINES[productLineOffset]
+  }产品线 ${String(productLineIndex + 1).padStart(3, '0')}`;
+  const regionLabel = `${regionName} · ${city}片区`;
+  const detailLabel = `${city}${
+    STRESS_CHANNELS[index % STRESS_CHANNELS.length]
+  } ${String(index + 1).padStart(6, '0')}`;
   const revenue = 110_000 + ((index * 7_919) % 4_800_000);
   const orders = 30 + ((index * 37) % 970);
   const status: Status =
     index % 17 === 0 ? '异常' : index % 5 === 0 ? '待复核' : '已核验';
-  const name = isRegion
-    ? `压力区域 ${String(regionIndex + 1).padStart(2, '0')}`
-    : isCity
-    ? `${city}分区`
-    : `${city}业务单元 ${String(index + 1).padStart(6, '0')}`;
-  const productId = `stress-product-${Math.floor(index / 1_000)}`;
+  const name = isBusinessGroup
+    ? businessGroupLabel
+    : isProductLine
+    ? productLabel
+    : isRegion
+    ? regionLabel
+    : detailLabel;
   const sourceId = `stress-${index}`;
   return {
     ...makeNode(
       sourceId,
       name,
-      isRegion ? 'category' : isCity ? 'region' : 'detail',
+      isBusinessGroup
+        ? 'category'
+        : isProductLine
+        ? 'subcategory'
+        : isRegion
+        ? 'region'
+        : 'detail',
       revenue,
       orders,
       0.72 + ((index * 13) % 35) / 100,
@@ -1214,36 +1282,132 @@ function createStressRecord(index: number): ViewRow {
       status,
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
-    level: isRegion ? 0 : isCity ? 1 : 2,
-    hasChildren: false,
-    productId,
-    productParentId: null,
-    productLabel: `压力产品线 ${String(Math.floor(index / 1_000) + 1).padStart(
-      3,
-      '0',
-    )}`,
-    productAttribute: ['耐用品', '快消品', '数字产品'][index % 3],
-    productDepth: 0,
-    productIsGroup: false,
-    productExpanded: false,
-    productBlockStart: true,
+    level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
+    hasChildren: isBusinessGroup || isProductLine || isRegion,
+    productId: isBusinessGroup ? businessGroupId : productId,
+    productParentId: isBusinessGroup ? null : businessGroupId,
+    productLabel: isBusinessGroup ? businessGroupLabel : productLabel,
+    productAttribute: isBusinessGroup
+      ? '战略业务组合'
+      : STRESS_PRODUCT_ATTRIBUTES[productLineIndex % 3],
+    productDepth: isProductLine ? 1 : 0,
+    productIsGroup: isBusinessGroup || isProductLine,
+    productExpanded: isBusinessGroup || isProductLine,
+    productBlockStart: isBusinessGroup || isProductLine,
     productRowSpan: 1,
-    regionId: `stress-region-${regionIndex}-${cityIndex}`,
-    regionRootId: `stress-region-${regionIndex}-${cityIndex}`,
-    regionLabel: name,
+    regionId,
+    regionRootId: regionId,
+    regionLabel: isRegion
+      ? regionLabel
+      : isBusinessGroup || isProductLine
+      ? ''
+      : detailLabel,
     regionDepth: isRegion ? 0 : 1,
-    regionIsGroup: false,
-    regionExpanded: false,
-    sourceNodeIds: [sourceId],
+    regionIsGroup: isRegion,
+    regionExpanded: isRegion,
   };
 }
 
+export function getStressRowOutlineGroups(rows: ViewRow[]) {
+  const groups: StressRowOutlineGroup[] = [];
+  const open: Array<{
+    summaryRow: number;
+    level: number;
+    dimension: OutlineDimension;
+  }> = [];
+  const closeGroupsAt = (endRow: number, level: number) => {
+    while (open.length && open[open.length - 1].level >= level) {
+      const group = open.pop();
+      if (!group || endRow <= group.summaryRow + 1) continue;
+      groups.push({
+        ...group,
+        detailStart: group.summaryRow + 1,
+        detailCount: endRow - group.summaryRow - 1,
+      });
+    }
+  };
+
+  rows.forEach((row, index) => {
+    closeGroupsAt(index, row.level);
+    if (!row.hasChildren) return;
+    open.push({
+      summaryRow: index,
+      level: row.level,
+      dimension: row.productIsGroup ? 'product' : 'region',
+    });
+  });
+  closeGroupsAt(rows.length, Number.NEGATIVE_INFINITY);
+  return groups.sort((left, right) => left.summaryRow - right.summaryRow);
+}
+
+function applyStressGroupSummaries(rows: ViewRow[]) {
+  getStressRowOutlineGroups(rows).forEach((group) => {
+    const summary = rows[group.summaryRow];
+    const endRow = group.detailStart + group.detailCount;
+    let leafCount = 0;
+    let revenue = 0;
+    let productRevenue = 0;
+    let serviceRevenue = 0;
+    let orders = 0;
+    let onlineOrders = 0;
+    let offlineOrders = 0;
+    let weightedCompletion = 0;
+    let adjustmentFactor = 0;
+    let abnormal = 0;
+    let pending = 0;
+    let latestUpdate = 0;
+    for (let rowIndex = group.detailStart; rowIndex < endRow; rowIndex += 1) {
+      const row = rows[rowIndex];
+      if (row.hasChildren) continue;
+      leafCount += 1;
+      revenue += row.revenue;
+      productRevenue += row.productRevenue;
+      serviceRevenue += row.serviceRevenue;
+      orders += row.orders;
+      onlineOrders += row.onlineOrders;
+      offlineOrders += row.offlineOrders;
+      weightedCompletion += row.completion * row.revenue;
+      adjustmentFactor += row.adjustmentFactor;
+      latestUpdate = Math.max(latestUpdate, row.updatedAt.getTime());
+      if (row.status === '异常') abnormal += 1;
+      else if (row.status === '待复核') pending += 1;
+    }
+    if (!leafCount) return;
+    const status: Status =
+      abnormal / leafCount > 0.08
+        ? '异常'
+        : pending || abnormal
+        ? '待复核'
+        : '已核验';
+    summary.revenue = revenue;
+    summary.productRevenue = productRevenue;
+    summary.serviceRevenue = serviceRevenue;
+    summary.orders = orders;
+    summary.onlineOrders = onlineOrders;
+    summary.offlineOrders = offlineOrders;
+    summary.avgOrder = Math.round(revenue / Math.max(orders, 1));
+    summary.completion = weightedCompletion / Math.max(revenue, 1);
+    summary.owner = '多负责人';
+    summary.status = status;
+    summary.verified = status === '已核验';
+    summary.updatedAt = new Date(latestUpdate);
+    summary.adjustmentFactor = Number(
+      (adjustmentFactor / leafCount).toFixed(2),
+    );
+  });
+}
+
 export function createStressRecords(size = STRESS_ROW_COUNT): ViewRow[] {
-  return Array.from({ length: size }, (_, index) => createStressRecord(index));
+  const rows = Array.from({ length: size }, (_, index) =>
+    createStressRecord(index),
+  );
+  applyStressGroupSummaries(rows);
+  return rows;
 }
 
 let stressRecordsCache: ViewRow[] | null = null;
 let stressRecordsPromise: Promise<ViewRow[]> | null = null;
+let stressRecordsCacheEpoch = 0;
 
 export function getStressRecords() {
   stressRecordsCache ??= createStressRecords();
@@ -1253,6 +1417,7 @@ export function getStressRecords() {
 export async function getStressRecordsAsync() {
   if (stressRecordsCache) return stressRecordsCache;
   stressRecordsPromise ??= (async () => {
+    const cacheEpoch = stressRecordsCacheEpoch;
     const rows = new Array<ViewRow>(STRESS_ROW_COUNT);
     const chunkSize = 5_000;
     for (let start = 0; start < rows.length; start += chunkSize) {
@@ -1267,7 +1432,8 @@ export async function getStressRecordsAsync() {
         });
       }
     }
-    stressRecordsCache = rows;
+    applyStressGroupSummaries(rows);
+    if (cacheEpoch === stressRecordsCacheEpoch) stressRecordsCache = rows;
     return rows;
   })();
   try {
@@ -1275,6 +1441,11 @@ export async function getStressRecordsAsync() {
   } finally {
     stressRecordsPromise = null;
   }
+}
+
+export function releaseStressRecords() {
+  stressRecordsCacheEpoch += 1;
+  stressRecordsCache = null;
 }
 
 export function productHierarchyText(row: ViewRow) {

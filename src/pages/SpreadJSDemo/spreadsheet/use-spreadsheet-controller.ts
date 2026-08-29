@@ -37,9 +37,11 @@ import {
   getProductGroupIdsForView,
   getRegionGroupIdsForProduct,
   getStressRecordsAsync,
+  getStressRowOutlineGroups,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
+  releaseStressRecords,
   roundToTwoDecimals,
   stableCellKey,
   stressCellSearchText,
@@ -59,6 +61,7 @@ import {
   type PanelName,
   type SelectedCell,
   type SelectionStats,
+  type StressRowOutlineGroup,
   type ToastState,
   type ToastTone,
   type ViewRow,
@@ -309,7 +312,9 @@ export function useSpreadsheetController() {
       productExpanded,
       regionExpandedByProduct,
     );
-    let stressSourceById = new Map<string, ViewRow>();
+    let activeStressOutlineGroups: StressRowOutlineGroup[] = [];
+    let stressGroupBySummaryRow = new Map<number, StressRowOutlineGroup>();
+    let collapsedStressRanges: Array<{ start: number; end: number }> = [];
     let activeDataMode: 'regular' | 'stress' = 'regular';
     let activeSearch = {
       query: '',
@@ -650,8 +655,132 @@ export function useSpreadsheetController() {
         }
       };
 
+      const isStressRowMaterialized = (row: number) =>
+        loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
+        loadedStressRows.has(row);
+
+      const stressHierarchyColumn = (group: StressRowOutlineGroup) =>
+        group.dimension === 'product'
+          ? PRODUCT_HIERARCHY_COLUMN
+          : REGION_HIERARCHY_COLUMN;
+
+      const isStressGroupCollapsed = (group: StressRowOutlineGroup) =>
+        sheet.rowOutlines.find(group.detailStart, group.level).state() ===
+        GC.Spread.Sheets.Outlines.OutlineState.collapsed;
+
+      const stressHierarchyText = (group: StressRowOutlineGroup) => {
+        const row = activeRows[group.summaryRow];
+        const label =
+          group.dimension === 'product' ? row.productLabel : row.regionLabel;
+        return `${isStressGroupCollapsed(group) ? '▶' : '▼'}  ${label}`;
+      };
+
+      const refreshStressHierarchyNavigator = (
+        startRow = 0,
+        rowCount = activeRows.length,
+      ) => {
+        if (activeDataMode !== 'stress') return;
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        spread.suspendEvent();
+        try {
+          activeStressOutlineGroups.forEach((group) => {
+            if (
+              group.summaryRow < startRow ||
+              group.summaryRow >= endRow ||
+              !isStressRowMaterialized(group.summaryRow)
+            )
+              return;
+            const col = stressHierarchyColumn(group);
+            const text = stressHierarchyText(group);
+            if (sheet.getValue(group.summaryRow, col) !== text)
+              sheet.setValue(group.summaryRow, col, text);
+          });
+        } finally {
+          spread.resumeEvent();
+        }
+      };
+
+      const updateCollapsedStressRanges = (
+        ranges: Array<{ start: number; end: number }>,
+      ) => {
+        ranges.sort((left, right) => left.start - right.start);
+        const merged: Array<{ start: number; end: number }> = [];
+        ranges.forEach((range) => {
+          const previous = merged.at(-1);
+          if (!previous || range.start > previous.end + 1) {
+            merged.push({ ...range });
+            return;
+          }
+          previous.end = Math.max(previous.end, range.end);
+        });
+        collapsedStressRanges = merged;
+      };
+
+      const refreshCollapsedStressRanges = () => {
+        updateCollapsedStressRanges(
+          activeStressOutlineGroups
+            .filter(isStressGroupCollapsed)
+            .map((group) => ({
+              start: group.detailStart,
+              end: group.detailStart + group.detailCount - 1,
+            })),
+        );
+      };
+
+      const syncStressOutlineSnapshot = () => {
+        let productExpanded = 0;
+        let productTotal = 0;
+        let regionExpanded = 0;
+        let regionTotal = 0;
+        const collapsedRanges: Array<{ start: number; end: number }> = [];
+        activeStressOutlineGroups.forEach((group) => {
+          const collapsed = isStressGroupCollapsed(group);
+          const expanded = !collapsed;
+          if (collapsed) {
+            collapsedRanges.push({
+              start: group.detailStart,
+              end: group.detailStart + group.detailCount - 1,
+            });
+          }
+          if (group.dimension === 'product') {
+            productTotal += 1;
+            if (expanded) productExpanded += 1;
+          } else {
+            regionTotal += 1;
+            if (expanded) regionExpanded += 1;
+          }
+        });
+        updateCollapsedStressRanges(collapsedRanges);
+        const hiddenRows = collapsedStressRanges.reduce(
+          (count, range) => count + range.end - range.start + 1,
+          0,
+        );
+        const visibleRows = Math.max(activeRows.length - hiddenRows, 0);
+        setOutlineSnapshot({
+          productExpanded,
+          productTotal,
+          regionExpanded,
+          regionTotal,
+          rowCount: visibleRows,
+        });
+        const collapsed = productExpanded + regionExpanded === 0;
+        rowGroupsCollapsedRef.current = collapsed;
+        setRowGroupsCollapsed(collapsed);
+        setDatasetLabel(
+          `${activeRows.length.toLocaleString(
+            'zh-CN',
+          )} 行（当前显示 ${visibleRows.toLocaleString('zh-CN')}） × ${
+            COLUMNS.length
+          } 列`,
+        );
+      };
+
       const syncGroupToolbarState = (isRowGroup: boolean) => {
         if (isRowGroup) {
+          if (activeDataMode === 'stress') {
+            syncStressOutlineSnapshot();
+            return;
+          }
           setRowGroupsCollapsed(rowGroupsCollapsedRef.current);
           return;
         }
@@ -779,6 +908,7 @@ export function useSpreadsheetController() {
         loadedStressPages.add(pageIndex);
         for (let row = startRow; row < startRow + rowCount; row += 1)
           loadedStressRows.delete(row);
+        refreshStressHierarchyNavigator(startRow, rowCount);
       };
 
       const writeStressRow = (row: number) => {
@@ -797,6 +927,7 @@ export function useSpreadsheetController() {
         configureCellTypes(row, 1);
         styleStatusCells(row, 1);
         loadedStressRows.add(row);
+        refreshStressHierarchyNavigator(row, 1);
       };
 
       const loadStressData = (
@@ -846,13 +977,28 @@ export function useSpreadsheetController() {
           viewportBottom >= topRow ? viewportBottom : topRow + STRESS_PAGE_SIZE,
         );
         const visibleRowsByPage = new Map<number, number[]>();
-        for (let row = topRow; row <= bottomRow; row += 1) {
-          if (sheet.getRowVisible(row, GC.Spread.Sheets.SheetArea.viewport)) {
-            const page = Math.floor(row / STRESS_PAGE_SIZE);
-            const rows = visibleRowsByPage.get(page) ?? [];
-            rows.push(row);
-            visibleRowsByPage.set(page, rows);
+        let rangeIndex = 0;
+        while (
+          rangeIndex < collapsedStressRanges.length &&
+          collapsedStressRanges[rangeIndex].end < topRow
+        )
+          rangeIndex += 1;
+        for (let row = topRow; row <= bottomRow; ) {
+          const hiddenRange = collapsedStressRanges[rangeIndex];
+          if (hiddenRange && row >= hiddenRange.start) {
+            if (row <= hiddenRange.end) {
+              row = hiddenRange.end + 1;
+              rangeIndex += 1;
+              continue;
+            }
+            rangeIndex += 1;
+            continue;
           }
+          const page = Math.floor(row / STRESS_PAGE_SIZE);
+          const rows = visibleRowsByPage.get(page) ?? [];
+          rows.push(row);
+          visibleRowsByPage.set(page, rows);
+          row += 1;
         }
         if (!visibleRowsByPage.size) {
           visibleRowsByPage.set(Math.floor(topRow / STRESS_PAGE_SIZE), [
@@ -907,13 +1053,23 @@ export function useSpreadsheetController() {
           activeRow >= 0 &&
           !sheet.getRowVisible(activeRow, GC.Spread.Sheets.SheetArea.viewport)
         ) {
-          for (nextRow = activeRow - 1; nextRow >= 0; nextRow -= 1) {
-            if (
-              sheet.getRowVisible(nextRow, GC.Spread.Sheets.SheetArea.viewport)
-            )
-              break;
+          if (activeDataMode === 'stress') {
+            const containingRange = collapsedStressRanges.find(
+              (range) => activeRow >= range.start && activeRow <= range.end,
+            );
+            nextRow = Math.max((containingRange?.start ?? 1) - 1, 0);
+          } else {
+            for (nextRow = activeRow - 1; nextRow >= 0; nextRow -= 1) {
+              if (
+                sheet.getRowVisible(
+                  nextRow,
+                  GC.Spread.Sheets.SheetArea.viewport,
+                )
+              )
+                break;
+            }
+            if (nextRow < 0) nextRow = 0;
           }
-          if (nextRow < 0) nextRow = 0;
         }
         if (
           activeCol >= 0 &&
@@ -953,6 +1109,8 @@ export function useSpreadsheetController() {
 
       const refreshAfterGroupChange = (isRowGroup: boolean) => {
         syncGroupToolbarState(isRowGroup);
+        if (isRowGroup && activeDataMode === 'stress')
+          refreshStressHierarchyNavigator();
         spread.invalidateLayout();
         if (isRowGroup && activeDataMode === 'stress') {
           window.clearTimeout(stressViewportTimer);
@@ -961,6 +1119,10 @@ export function useSpreadsheetController() {
         }
         normalizeActiveSelection();
         if (isRowGroup && activeDataMode === 'stress') {
+          updateSelected(
+            sheet.getActiveRowIndex(),
+            sheet.getActiveColumnIndex(),
+          );
           // Re-check after SpreadJS has committed its new viewport bounds.
           scheduleStressViewportLoad(sheet.getViewportTopRow(1));
         }
@@ -986,6 +1148,13 @@ export function useSpreadsheetController() {
       ) => {
         activeRows = rows;
         activeDataMode = stress ? 'stress' : 'regular';
+        activeStressOutlineGroups = stress
+          ? getStressRowOutlineGroups(rows)
+          : [];
+        stressGroupBySummaryRow = new Map(
+          activeStressOutlineGroups.map((group) => [group.summaryRow, group]),
+        );
+        collapsedStressRanges = [];
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
         sheet.suspendPaint();
@@ -1008,10 +1177,7 @@ export function useSpreadsheetController() {
             );
           loadedStressPages.clear();
           loadedStressRows.clear();
-          if (stress) {
-            writeStressPage(0);
-            writeStressPage(1);
-          } else {
+          if (!stress) {
             sheet.setArray(
               0,
               0,
@@ -1111,9 +1277,32 @@ export function useSpreadsheetController() {
           sheet.setRowHeight(2, 34, headerArea);
           if (!stress) configureCellTypes(0, rowCount);
 
-          // 行层级由产品列和区域列分别维护投影状态。原生 row outline
-          // 只能共享一套行可见性，无法表达两列互不干扰，因此这里不启用。
-          sheet.showRowOutline(false);
+          if (stress) {
+            // 大数据模式保持固定的 10 万物理行，仅用原生 Outline 切换
+            // 可见性；展开/收起不会重建数据数组或重写未进入视口的单元格。
+            sheet.rowOutlines.direction(
+              GC.Spread.Sheets.Outlines.OutlineDirection.backward,
+            );
+            activeStressOutlineGroups.forEach(({ detailStart, detailCount }) =>
+              sheet.rowOutlines.group(detailStart, detailCount),
+            );
+            for (
+              let level = sheet.rowOutlines.getMaxLevel();
+              level >= 0;
+              level -= 1
+            ) {
+              sheet.rowOutlines.expand(level, false);
+            }
+            sheet.showRowOutline(true);
+            refreshCollapsedStressRanges();
+            activeStressOutlineGroups
+              .filter((group) => group.level === 0)
+              .forEach((group) => writeStressRow(group.summaryRow));
+            refreshStressHierarchyNavigator();
+          } else {
+            // 常规模式由产品列和区域列分别维护独立的投影状态。
+            sheet.showRowOutline(false);
+          }
           // Keep each summary column visible and collapse only its detail columns.
           sheet.columnOutlines.direction(
             GC.Spread.Sheets.Outlines.OutlineDirection.backward,
@@ -1176,6 +1365,10 @@ export function useSpreadsheetController() {
         setDatasetLabel(
           `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
         );
+        if (stress) {
+          syncStressOutlineSnapshot();
+          scheduleStressViewportLoad(nextRow);
+        }
         setReady(true);
       };
 
@@ -1213,7 +1406,18 @@ export function useSpreadsheetController() {
         expanded: boolean,
       ) => {
         if (activeDataMode === 'stress') {
-          notify('10 万行压力数据为扁平视图，请先恢复常规数据');
+          const levels = dimension === 'product' ? [0, 1] : [2];
+          runOutlineBatch(true, () => {
+            const orderedLevels = expanded ? levels : [...levels].reverse();
+            orderedLevels.forEach((level) =>
+              sheet.rowOutlines.expand(level, expanded),
+            );
+          });
+          notify(
+            `${dimension === 'product' ? '事业群与产品线' : '区域树'}已全部${
+              expanded ? '展开' : '收起'
+            }`,
+          );
           return;
         }
         if (dimension === 'product') {
@@ -1240,6 +1444,19 @@ export function useSpreadsheetController() {
       };
 
       const resetOutline = () => {
+        if (activeDataMode === 'stress') {
+          runOutlineBatch(true, () => {
+            for (
+              let level = sheet.rowOutlines.getMaxLevel();
+              level >= 0;
+              level -= 1
+            ) {
+              sheet.rowOutlines.expand(level, false);
+            }
+          });
+          notify('已恢复大数据默认折叠状态，仅显示 10 个事业群');
+          return;
+        }
         productExpanded.clear();
         INITIAL_PRODUCT_EXPANDED.forEach((id) => productExpanded.add(id));
         regionExpandedByProduct.clear();
@@ -1278,7 +1495,7 @@ export function useSpreadsheetController() {
       const setViewAndRender = (nextView: DrillView) => {
         const previousDepth = activeView.length;
         if (activeDataMode === 'stress') {
-          notify('压力数据为扁平视图，请先恢复常规数据');
+          notify('10 万行模式使用表内分组展开，不提供下钻页面');
           return;
         }
         const previousView = activeView;
@@ -1320,7 +1537,28 @@ export function useSpreadsheetController() {
 
       const toggleHierarchyRow = (row: number, col: number) => {
         const node = activeRows[row];
-        if (!node || activeDataMode === 'stress') return;
+        if (!node) return;
+        if (activeDataMode === 'stress') {
+          const group = stressGroupBySummaryRow.get(row);
+          if (!group || col !== stressHierarchyColumn(group)) return;
+          ensureStressRowLoaded(row);
+          const expanded = isStressGroupCollapsed(group);
+          const groupInfo = sheet.rowOutlines.find(
+            group.detailStart,
+            group.level,
+          );
+          runOutlineBatch(true, () => {
+            sheet.rowOutlines.expandGroup(groupInfo, expanded);
+          });
+          notify(
+            `已${expanded ? '展开' : '收起'}${
+              group.dimension === 'product'
+                ? node.productLabel
+                : node.regionLabel
+            }`,
+          );
+          return;
+        }
         if (
           col === PRODUCT_HIERARCHY_COLUMN &&
           node.productBlockStart &&
@@ -1378,13 +1616,15 @@ export function useSpreadsheetController() {
         if (!totalCells) return [];
         const normalizedQuery = query.toLocaleLowerCase('zh-CN');
         const textOnlyQuery = /[A-Za-z\u3400-\u9fff]/u.test(query);
+        const searchableColumns = textOnlyQuery
+          ? [...STRESS_TEXT_SEARCH_COLUMNS]
+          : COLUMNS.map((_, col) => col);
         const matches: number[] = [];
-        for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
-          const inspected = cellIndex + 1;
-          if (inspected > 0 && inspected % 50_000 === 0) {
+        for (let row = 0; row < activeRows.length; row += 1) {
+          if (row > 0 && row % 5_000 === 0) {
             setSearchResult(
               `正在搜索全部 10 万行… ${Math.round(
-                (inspected / totalCells) * 100,
+                (row / activeRows.length) * 100,
               )}%`,
             );
             await new Promise<void>((resolve) =>
@@ -1392,12 +1632,10 @@ export function useSpreadsheetController() {
             );
             if (cancelled || searchRun !== activeSearchRun) return null;
           }
-          const row = Math.floor(cellIndex / columnCount);
-          const col = cellIndex % columnCount;
-          if (!textOnlyQuery || STRESS_TEXT_SEARCH_COLUMNS.has(col)) {
-            const stressDataLoaded =
-              loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-              loadedStressRows.has(row);
+          const stressDataLoaded =
+            loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
+            loadedStressRows.has(row);
+          for (const col of searchableColumns) {
             const text = stressDataLoaded
               ? `${sheet.getText(row, col)} ${
                   sheet.getFormula(row, col) ?? ''
@@ -1407,23 +1645,52 @@ export function useSpreadsheetController() {
                   col,
                   true,
                 ).toLocaleLowerCase('zh-CN');
-            if (text.includes(normalizedQuery)) matches.push(cellIndex);
+            if (text.includes(normalizedQuery))
+              matches.push(row * columnCount + col);
           }
         }
         return matches;
       };
 
+      const expandStressAncestors = (row: number) => {
+        const collapsedAncestors = activeStressOutlineGroups.filter(
+          (group) =>
+            row >= group.detailStart &&
+            row < group.detailStart + group.detailCount &&
+            isStressGroupCollapsed(group),
+        );
+        if (!collapsedAncestors.length) return false;
+        runOutlineBatch(true, () => {
+          collapsedAncestors
+            .sort((left, right) => left.level - right.level)
+            .forEach((group) => {
+              const groupInfo = sheet.rowOutlines.find(
+                group.detailStart,
+                group.level,
+              );
+              sheet.rowOutlines.expandGroup(groupInfo, true);
+            });
+        });
+        return true;
+      };
+
       const revealSearchMatch = (row: number, col: number) => {
+        let expandedHierarchy = false;
         if (!sheet.getRowVisible(row)) {
-          runOutlineBatch(true, () => {
-            for (
-              let level = 0;
-              level <= sheet.rowOutlines.getMaxLevel();
-              level += 1
-            ) {
-              sheet.rowOutlines.expand(level, true);
-            }
-          });
+          if (activeDataMode === 'stress') {
+            expandedHierarchy = expandStressAncestors(row);
+          } else {
+            runOutlineBatch(true, () => {
+              for (
+                let level = 0;
+                level <= sheet.rowOutlines.getMaxLevel();
+                level += 1
+              ) {
+                sheet.rowOutlines.expand(level, true);
+              }
+            });
+            expandedHierarchy = true;
+          }
         }
         if (!sheet.getColumnVisible(col)) {
           runOutlineBatch(false, () => {
@@ -1455,6 +1722,7 @@ export function useSpreadsheetController() {
         );
         updateSelected(row, col);
         calculateSelection(sheet, new GC.Spread.Sheets.Range(row, col, 1, 1));
+        return expandedHierarchy;
       };
 
       const revealRegularSearchMatch = (match: RegularSearchMatch) => {
@@ -1558,9 +1826,15 @@ export function useSpreadsheetController() {
             col,
           };
           ensureStressRowLoaded(row);
-          revealSearchMatch(row, col);
+          const expandedHierarchy = revealSearchMatch(row, col);
           setSearchResult(
-            searchStatus(stressSearchMatches.length, matchIndex, row, col),
+            searchStatus(
+              stressSearchMatches.length,
+              matchIndex,
+              row,
+              col,
+              expandedHierarchy,
+            ),
           );
           return;
         }
@@ -1687,7 +1961,30 @@ export function useSpreadsheetController() {
         toggleRowGroups: () => {
           const collapse = !rowGroupsCollapsedRef.current;
           if (activeDataMode === 'stress') {
-            notify('10 万行压力数据为扁平视图，请先恢复常规数据');
+            runOutlineBatch(true, () => {
+              if (collapse) {
+                for (
+                  let level = sheet.rowOutlines.getMaxLevel();
+                  level >= 0;
+                  level -= 1
+                ) {
+                  sheet.rowOutlines.expand(level, false);
+                }
+              } else {
+                for (
+                  let level = 0;
+                  level <= sheet.rowOutlines.getMaxLevel();
+                  level += 1
+                ) {
+                  sheet.rowOutlines.expand(level, true);
+                }
+              }
+            });
+            notify(
+              collapse
+                ? '已收起全部大数据业务层级'
+                : '已展开全部大数据业务层级',
+            );
             return;
           }
           getProductGroupIdsForView(activeView).forEach((productId) => {
@@ -1741,6 +2038,7 @@ export function useSpreadsheetController() {
             activeView = [];
             setView([]);
             renderProjectionRows();
+            releaseStressRecords();
             notify('已恢复常规业务数据');
             return;
           }
@@ -1753,7 +2051,6 @@ export function useSpreadsheetController() {
             void getStressRecordsAsync()
               .then((rows) => {
                 if (cancelled) return;
-                stressSourceById = new Map(rows.map((row) => [row.id, row]));
                 activeView = [];
                 setView([]);
                 renderRows(rows, true);
@@ -1975,7 +2272,7 @@ export function useSpreadsheetController() {
         );
         if (drillItem) {
           const node = activeRows[sheet.getActiveRowIndex()];
-          const drillable = canDrillNode(node);
+          const drillable = activeDataMode === 'regular' && canDrillNode(node);
           drillItem.disable = !drillable;
           drillItem.title = drillable ? undefined : '当前行没有下级数据';
         }
@@ -2080,11 +2377,15 @@ export function useSpreadsheetController() {
           if (isHierarchyField(column.field)) {
             spread.suspendEvent();
             try {
-              sheet.setValue(
-                args.row,
-                args.col,
-                viewRowCellValue(node, args.col),
-              );
+              const stressGroup =
+                activeDataMode === 'stress'
+                  ? stressGroupBySummaryRow.get(args.row)
+                  : undefined;
+              const nextValue =
+                stressGroup && args.col === stressHierarchyColumn(stressGroup)
+                  ? stressHierarchyText(stressGroup)
+                  : viewRowCellValue(node, args.col);
+              sheet.setValue(args.row, args.col, nextValue);
             } finally {
               spread.resumeEvent();
             }
@@ -2109,12 +2410,6 @@ export function useSpreadsheetController() {
             }
           }
           updateBusinessNode(node, column.field, nextValue);
-          const sourceNode =
-            activeDataMode === 'stress'
-              ? stressSourceById.get(node.id)
-              : undefined;
-          if (sourceNode && sourceNode !== node)
-            updateBusinessNode(sourceNode, column.field, nextValue);
           if (activeDataMode === 'regular') {
             const overrides =
               dataOverridesRef.current.get(node.id) ??
@@ -2193,6 +2488,7 @@ export function useSpreadsheetController() {
       window.clearTimeout(validationFlashTimer);
       actionsRef.current = null;
       workbook?.destroy();
+      releaseStressRecords();
     };
   }, [initializationAttempt]);
 
