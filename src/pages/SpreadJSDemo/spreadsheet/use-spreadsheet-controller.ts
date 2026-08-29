@@ -14,7 +14,6 @@ import {
   AVG_ORDER_COLUMN,
   COMPLETION_COLUMN,
   DECIMAL_COLUMN,
-  DRILLABLE_METRIC_COLUMNS,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
@@ -74,8 +73,6 @@ type CellChangedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.ICellChangedEventArgs;
 type CellClickArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.ICellClickEventArgs;
-type CellDoubleClickArgs =
-  import('@grapecity-software/spread-sheets').Spread.Sheets.ICellDoubleClickEventArgs;
 type SelectionChangedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.ISelectionChangedEventArgs;
 type RangeGroupStateChangedArgs =
@@ -95,6 +92,7 @@ export type SpreadsheetActions = {
   copy: () => void;
   autoFit: () => void;
   search: (query: string, direction: 1 | -1) => void;
+  cancelSearch: () => void;
   toggleColumn: (col: number, visible: boolean) => void;
   showAllColumns: () => void;
   setView: (view: DrillView) => void;
@@ -117,6 +115,15 @@ export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_CELL = 10;
 const ATTACHMENT_EXTENSION_PATTERN =
   /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
+
+type RegularSearchMatch = {
+  nodeId: string;
+  productId: string;
+  productParentId: string | null;
+  regionRootId: string;
+  regionDepth: 0 | 1;
+  col: number;
+};
 // A solid-color rounded badge with a white paperclip glyph (and an optional
 // count bubble) baked directly into the icon. A bare 13px outline icon on a
 // near-white button background had almost no contrast and just looked like
@@ -217,7 +224,9 @@ export function useSpreadsheetController() {
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResult, setSearchResult] = useState('输入关键词后定位');
+  const [searchResult, setSearchResult] =
+    useState('输入关键词，按 Enter 开始搜索');
+  const [searchBusy, setSearchBusy] = useState(false);
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [columnVisibility, setColumnVisibility] = useState(() =>
     COLUMNS.map(() => true),
@@ -258,6 +267,7 @@ export function useSpreadsheetController() {
     if (!panel && !searchOpen && !columnMenuOpen) return;
     const closeTransientUi = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      if (searchOpen) actionsRef.current?.cancelSearch();
       setPanel(null);
       setSearchOpen(false);
       setColumnMenuOpen(false);
@@ -270,6 +280,7 @@ export function useSpreadsheetController() {
         target.closest('.toolbar-popover-anchor')
       )
         return;
+      if (searchOpen) actionsRef.current?.cancelSearch();
       setSearchOpen(false);
       setColumnMenuOpen(false);
     };
@@ -300,7 +311,15 @@ export function useSpreadsheetController() {
     );
     let stressSourceById = new Map<string, ViewRow>();
     let activeDataMode: 'regular' | 'stress' = 'regular';
-    let activeSearch = { query: '', row: -1, col: -1 };
+    let activeSearch = {
+      query: '',
+      mode: 'regular' as 'regular' | 'stress',
+      matchIndex: -1,
+      row: -1,
+      col: -1,
+    };
+    let regularSearchMatches: RegularSearchMatch[] = [];
+    let stressSearchMatches: number[] = [];
     let activeSearchRun = 0;
     let toastTimer = 0;
     let stressLoadTimer = 0;
@@ -326,18 +345,55 @@ export function useSpreadsheetController() {
       return state;
     };
 
-    const buildRegularRows = () => {
-      const rows = createBusinessProjectionRows(
-        activeView,
-        productExpanded,
-        regionExpandedByProduct,
-      );
+    const applyRegularOverrides = (rows: ViewRow[]) => {
       rows.forEach((row) => {
         dataOverridesRef.current.get(row.id)?.forEach((value, field) => {
           updateBusinessNode(row, field, value);
         });
       });
       return rows;
+    };
+
+    const buildRegularRows = () =>
+      applyRegularOverrides(
+        createBusinessProjectionRows(
+          activeView,
+          productExpanded,
+          regionExpandedByProduct,
+        ),
+      );
+
+    const buildFullyExpandedRegularRows = () => {
+      const allProductGroups = new Set(getProductGroupIdsForView(activeView));
+      const allRegionGroups = new Map<string, Set<string>>();
+      getAllProductIdsForView(activeView).forEach((productId) => {
+        allRegionGroups.set(
+          productId,
+          new Set(getRegionGroupIdsForProduct(productId)),
+        );
+      });
+      return applyRegularOverrides(
+        createBusinessProjectionRows(
+          activeView,
+          allProductGroups,
+          allRegionGroups,
+        ),
+      );
+    };
+
+    const invalidateSearchSession = (message?: string) => {
+      activeSearchRun += 1;
+      setSearchBusy(false);
+      activeSearch = {
+        query: '',
+        mode: activeDataMode,
+        matchIndex: -1,
+        row: -1,
+        col: -1,
+      };
+      regularSearchMatches = [];
+      stressSearchMatches = [];
+      if (message) setSearchResult(message);
     };
 
     const notify = (message: string, tone: ToastTone = 'success') => {
@@ -930,7 +986,6 @@ export function useSpreadsheetController() {
       ) => {
         activeRows = rows;
         activeDataMode = stress ? 'stress' : 'regular';
-        activeSearch = { query: '', row: -1, col: -1 };
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
         sheet.suspendPaint();
@@ -1193,6 +1248,8 @@ export function useSpreadsheetController() {
       };
 
       const openPanelForSelection = (nextPanel: Exclude<PanelName, null>) => {
+        activeSearchRun += 1;
+        setSearchBusy(false);
         const row = sheet.getActiveRowIndex();
         const col = sheet.getActiveColumnIndex();
         updateSelected(row, col);
@@ -1234,6 +1291,9 @@ export function useSpreadsheetController() {
         }
         setView([...nextView]);
         setPanel(null);
+        invalidateSearchSession(
+          activeSearch.query ? '业务层级已变化，按 Enter 重新搜索' : undefined,
+        );
         renderRows(nextRows, false);
         syncProjectionSnapshot();
         const currentName = pathForView(nextView).at(-1);
@@ -1287,99 +1347,46 @@ export function useSpreadsheetController() {
         }
       };
 
-      const openDatePicker = (row: number, col: number) => {
-        if (row < 0 || col !== UPDATED_AT_COLUMN) return;
-        ensureStressRowLoaded(row);
-        spread.commandManager().execute({
-          cmd: 'openDateTimePicker',
-          sheetName: sheet.name(),
-          row,
-          col,
-          sheetArea: GC.Spread.Sheets.SheetArea.viewport,
+      const collectRegularSearchMatches = (query: string) => {
+        const normalizedQuery = query.toLocaleLowerCase('zh-CN');
+        const matches: RegularSearchMatch[] = [];
+        buildFullyExpandedRegularRows().forEach((row) => {
+          COLUMNS.forEach((_, col) => {
+            const text = stressCellSearchText(row, col, true).toLocaleLowerCase(
+              'zh-CN',
+            );
+            if (!text.includes(normalizedQuery)) return;
+            matches.push({
+              nodeId: row.id,
+              productId: row.productId,
+              productParentId: row.productParentId,
+              regionRootId: row.regionRootId,
+              regionDepth: row.regionDepth,
+              col,
+            });
+          });
         });
+        return matches;
       };
 
-      const searchCellBlock = (
+      const collectStressSearchMatches = async (
         query: string,
-        rowStart: number,
-        colStart: number,
-        rowEnd: number,
-        colEnd: number,
-      ) => {
-        if (rowStart > rowEnd || colStart > colEnd) return null;
-        const condition = new GC.Spread.Sheets.Search.SearchCondition();
-        condition.searchString = query;
-        condition.sheetArea = GC.Spread.Sheets.SheetArea.viewport;
-        condition.rowStart = rowStart;
-        condition.rowEnd = rowEnd;
-        condition.columnStart = colStart;
-        condition.columnEnd = colEnd;
-        condition.searchOrder = GC.Spread.Sheets.Search.SearchOrder.nOrder;
-        condition.searchTarget =
-          GC.Spread.Sheets.Search.SearchFoundFlags.cellText |
-          GC.Spread.Sheets.Search.SearchFoundFlags.cellFormula;
-        condition.searchFlags =
-          GC.Spread.Sheets.Search.SearchFlags.ignoreCase |
-          GC.Spread.Sheets.Search.SearchFlags.blockRange;
-        const result = sheet.search(condition);
-        if (
-          result.searchFoundFlag ===
-          GC.Spread.Sheets.Search.SearchFoundFlags.none
-        )
-          return null;
-        return { row: result.foundRowIndex, col: result.foundColumnIndex };
-      };
-
-      const findLastCellMatch = (
-        query: string,
-        rowStart: number,
-        colStart: number,
-        rowEnd: number,
-        colEnd: number,
-      ) => {
-        if (!searchCellBlock(query, rowStart, colStart, rowEnd, colEnd))
-          return null;
-
-        let firstRow = rowStart;
-        let lastRow = rowEnd;
-        while (firstRow < lastRow) {
-          const middleRow = Math.floor((firstRow + lastRow + 1) / 2);
-          if (searchCellBlock(query, middleRow, colStart, rowEnd, colEnd))
-            firstRow = middleRow;
-          else lastRow = middleRow - 1;
-        }
-
-        let firstCol = colStart;
-        let lastCol = colEnd;
-        while (firstCol < lastCol) {
-          const middleCol = Math.floor((firstCol + lastCol + 1) / 2);
-          if (searchCellBlock(query, firstRow, middleCol, firstRow, colEnd))
-            firstCol = middleCol;
-          else lastCol = middleCol - 1;
-        }
-        return searchCellBlock(query, firstRow, firstCol, firstRow, firstCol);
-      };
-
-      const findStressCellMatch = async (
-        query: string,
-        direction: 1 | -1,
-        queryChanged: boolean,
         searchRun: number,
       ) => {
         const columnCount = sheet.getColumnCount();
         const totalCells = activeRows.length * columnCount;
-        if (!totalCells) return null;
-        const currentIndex = activeSearch.row * columnCount + activeSearch.col;
-        let cellIndex = queryChanged
-          ? direction === 1
-            ? 0
-            : totalCells - 1
-          : (currentIndex + direction + totalCells) % totalCells;
-        const normalizedQuery = query.toLowerCase();
-        const includeFormattedNumber = /[,，%¥￥]/.test(query);
+        if (!totalCells) return [];
+        const normalizedQuery = query.toLocaleLowerCase('zh-CN');
         const textOnlyQuery = /[A-Za-z\u3400-\u9fff]/u.test(query);
-        for (let inspected = 0; inspected < totalCells; inspected += 1) {
+        const matches: number[] = [];
+        for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
+          const inspected = cellIndex + 1;
           if (inspected > 0 && inspected % 50_000 === 0) {
+            setSearchResult(
+              `正在搜索全部 10 万行… ${Math.round(
+                (inspected / totalCells) * 100,
+              )}%`,
+            );
             await new Promise<void>((resolve) =>
               requestAnimationFrame(() => resolve()),
             );
@@ -1394,17 +1401,16 @@ export function useSpreadsheetController() {
             const text = stressDataLoaded
               ? `${sheet.getText(row, col)} ${
                   sheet.getFormula(row, col) ?? ''
-                } ${sheet.getValue(row, col) ?? ''}`.toLowerCase()
+                } ${sheet.getValue(row, col) ?? ''}`.toLocaleLowerCase('zh-CN')
               : stressCellSearchText(
                   activeRows[row],
                   col,
-                  includeFormattedNumber,
-                ).toLowerCase();
-            if (text.includes(normalizedQuery)) return { row, col };
+                  true,
+                ).toLocaleLowerCase('zh-CN');
+            if (text.includes(normalizedQuery)) matches.push(cellIndex);
           }
-          cellIndex = (cellIndex + direction + totalCells) % totalCells;
         }
-        return null;
+        return matches;
       };
 
       const revealSearchMatch = (row: number, col: number) => {
@@ -1451,90 +1457,161 @@ export function useSpreadsheetController() {
         calculateSelection(sheet, new GC.Spread.Sheets.Range(row, col, 1, 1));
       };
 
+      const revealRegularSearchMatch = (match: RegularSearchMatch) => {
+        let expandedHierarchy = false;
+        if (
+          match.productParentId &&
+          !productExpanded.has(match.productParentId)
+        ) {
+          productExpanded.add(match.productParentId);
+          expandedHierarchy = true;
+        }
+        if (match.regionDepth > 0) {
+          const state = extensionStateFor(match.productId);
+          if (!state.has(match.regionRootId)) {
+            state.add(match.regionRootId);
+            expandedHierarchy = true;
+          }
+        }
+        if (expandedHierarchy) {
+          renderRows(buildRegularRows(), false, {
+            nodeId: match.nodeId,
+            productId: match.productId,
+            col: match.col,
+          });
+          syncProjectionSnapshot();
+        }
+        const row = activeRows.findIndex((item) => item.id === match.nodeId);
+        if (row < 0) return null;
+        revealSearchMatch(row, match.col);
+        return { row, expandedHierarchy };
+      };
+
+      const searchStatus = (
+        total: number,
+        index: number,
+        row: number,
+        col: number,
+        expandedHierarchy = false,
+      ) =>
+        `共 ${total.toLocaleString('zh-CN')} 个匹配 · ${(
+          index + 1
+        ).toLocaleString('zh-CN')}/${total.toLocaleString(
+          'zh-CN',
+        )} · ${columnName(col)}${row + 1}${
+          expandedHierarchy ? ' · 已自动展开层级' : ''
+        }`;
+
       const search = async (query: string, direction: 1 | -1) => {
         const trimmed = query.trim();
         if (!trimmed) {
           setSearchResult('请输入搜索关键词');
           return;
         }
-        const rowCount = sheet.getRowCount();
         const colCount = sheet.getColumnCount();
-        const lastRow = rowCount - 1;
-        const lastCol = colCount - 1;
         const queryChanged =
           activeSearch.query !== trimmed ||
-          activeSearch.row < 0 ||
-          activeSearch.col < 0;
+          activeSearch.mode !== activeDataMode;
         if (activeDataMode === 'stress') {
-          const searchRun = ++activeSearchRun;
-          setSearchResult('正在搜索 10 万行…');
-          const stressMatch = await findStressCellMatch(
-            trimmed,
-            direction,
-            queryChanged,
-            searchRun,
-          );
-          if (cancelled || searchRun !== activeSearchRun) return;
-          if (!stressMatch) {
-            activeSearch = { query: trimmed, row: -1, col: -1 };
-            setSearchResult('未找到匹配项');
+          if (queryChanged) {
+            const searchRun = ++activeSearchRun;
+            setSearchBusy(true);
+            setSearchResult('正在搜索全部 10 万行… 0%');
+            const matches = await collectStressSearchMatches(
+              trimmed,
+              searchRun,
+            );
+            if (searchRun === activeSearchRun) setSearchBusy(false);
+            if (cancelled || searchRun !== activeSearchRun || !matches) return;
+            stressSearchMatches = matches;
+            regularSearchMatches = [];
+            activeSearch = {
+              query: trimmed,
+              mode: 'stress',
+              matchIndex: -1,
+              row: -1,
+              col: -1,
+            };
+          }
+          if (!stressSearchMatches.length) {
+            setSearchResult('共 0 个匹配');
             notify(`所有 10 万行、${colCount} 列中均未找到匹配项`);
             return;
           }
+          const matchIndex =
+            activeSearch.matchIndex < 0
+              ? direction === 1
+                ? 0
+                : stressSearchMatches.length - 1
+              : (activeSearch.matchIndex +
+                  direction +
+                  stressSearchMatches.length) %
+                stressSearchMatches.length;
+          const cellIndex = stressSearchMatches[matchIndex];
+          const row = Math.floor(cellIndex / colCount);
+          const col = cellIndex % colCount;
           activeSearch = {
             query: trimmed,
-            row: stressMatch.row,
-            col: stressMatch.col,
+            mode: 'stress',
+            matchIndex,
+            row,
+            col,
           };
-          ensureStressRowLoaded(stressMatch.row);
-          revealSearchMatch(stressMatch.row, stressMatch.col);
+          ensureStressRowLoaded(row);
+          revealSearchMatch(row, col);
           setSearchResult(
-            `匹配于 ${columnName(stressMatch.col)}${stressMatch.row + 1}`,
+            searchStatus(stressSearchMatches.length, matchIndex, row, col),
           );
           return;
         }
-        const cursor = queryChanged
-          ? { row: 0, col: direction === 1 ? -1 : 0 }
-          : { row: activeSearch.row, col: activeSearch.col };
-
-        const match =
-          direction === 1
-            ? searchCellBlock(
-                trimmed,
-                cursor.row,
-                cursor.col + 1,
-                cursor.row,
-                lastCol,
-              ) ??
-              searchCellBlock(trimmed, cursor.row + 1, 0, lastRow, lastCol) ??
-              searchCellBlock(trimmed, 0, 0, cursor.row - 1, lastCol) ??
-              searchCellBlock(trimmed, cursor.row, 0, cursor.row, cursor.col)
-            : findLastCellMatch(
-                trimmed,
-                cursor.row,
-                0,
-                cursor.row,
-                cursor.col - 1,
-              ) ??
-              findLastCellMatch(trimmed, 0, 0, cursor.row - 1, lastCol) ??
-              findLastCellMatch(trimmed, cursor.row + 1, 0, lastRow, lastCol) ??
-              findLastCellMatch(
-                trimmed,
-                cursor.row,
-                cursor.col,
-                cursor.row,
-                lastCol,
-              );
-
-        if (!match) {
-          activeSearch = { query: trimmed, row: -1, col: -1 };
-          setSearchResult('未找到匹配项');
-          notify('所有单元格中均未找到匹配项');
+        if (queryChanged) {
+          regularSearchMatches = collectRegularSearchMatches(trimmed);
+          stressSearchMatches = [];
+          activeSearch = {
+            query: trimmed,
+            mode: 'regular',
+            matchIndex: -1,
+            row: -1,
+            col: -1,
+          };
+        }
+        if (!regularSearchMatches.length) {
+          setSearchResult('共 0 个匹配');
+          notify('当前业务层级（含已折叠内容）中未找到匹配项');
           return;
         }
-        activeSearch = { query: trimmed, row: match.row, col: match.col };
-        revealSearchMatch(match.row, match.col);
-        setSearchResult(`匹配于 ${columnName(match.col)}${match.row + 1}`);
+        const matchIndex =
+          activeSearch.matchIndex < 0
+            ? direction === 1
+              ? 0
+              : regularSearchMatches.length - 1
+            : (activeSearch.matchIndex +
+                direction +
+                regularSearchMatches.length) %
+              regularSearchMatches.length;
+        const match = regularSearchMatches[matchIndex];
+        const revealed = revealRegularSearchMatch(match);
+        if (!revealed) {
+          invalidateSearchSession('数据结构已变化，请重新搜索');
+          notify('无法定位该结果，请重新搜索', 'error');
+          return;
+        }
+        activeSearch = {
+          query: trimmed,
+          mode: 'regular',
+          matchIndex,
+          row: revealed.row,
+          col: match.col,
+        };
+        setSearchResult(
+          searchStatus(
+            regularSearchMatches.length,
+            matchIndex,
+            revealed.row,
+            match.col,
+            revealed.expandedHierarchy,
+          ),
+        );
       };
 
       actionsRef.current = {
@@ -1579,6 +1656,10 @@ export function useSpreadsheetController() {
           notify(`已按内容适配全部 ${columnCount} 列宽`);
         },
         search,
+        cancelSearch: () => {
+          activeSearchRun += 1;
+          setSearchBusy(false);
+        },
         toggleColumn: (col, visible) => {
           if (col < HIERARCHY_COLUMN_COUNT) return;
           sheet.setColumnVisible(col, visible);
@@ -1651,7 +1732,8 @@ export function useSpreadsheetController() {
         setOutlineDimension,
         resetOutline,
         loadDataMode: (mode) => {
-          activeSearchRun += 1;
+          invalidateSearchSession('输入关键词，按 Enter 开始搜索');
+          setSearchQuery('');
           window.clearTimeout(stressLoadTimer);
           stressLoadTimer = 0;
           if (mode === 'regular') {
@@ -1926,20 +2008,6 @@ export function useSpreadsheetController() {
             toggleHierarchyRow(args.row, args.col);
             return;
           }
-          openDatePicker(args.row, args.col);
-        },
-      );
-      sheet.bind(
-        GC.Spread.Sheets.Events.CellDoubleClick,
-        (_sender: unknown, args: CellDoubleClickArgs) => {
-          if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
-          const node = activeRows[args.row];
-          if (!node || !DRILLABLE_METRIC_COLUMNS.has(args.col)) return;
-          // Exploratory double-clicks on leaf-level rows are common and
-          // shouldn't interrupt the user with an error toast — silently
-          // do nothing when there is nothing to drill into.
-          if (!canDrillNode(node)) return;
-          drillRow(args.row);
         },
       );
       spread.bind(
@@ -2080,6 +2148,11 @@ export function useSpreadsheetController() {
             key,
             [nextItem, ...(historyRef.current.get(key) ?? [])].slice(0, 30),
           );
+          invalidateSearchSession(
+            activeSearch.query
+              ? '数据已更新，按 Enter 刷新搜索结果'
+              : undefined,
+          );
           updateSelected(args.row, args.col);
         },
       );
@@ -2158,6 +2231,7 @@ export function useSpreadsheetController() {
     setSearchQuery,
     searchResult,
     setSearchResult,
+    searchBusy,
     columnMenuOpen,
     setColumnMenuOpen,
     columnVisibility,

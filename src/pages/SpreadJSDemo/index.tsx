@@ -254,7 +254,7 @@ function IntegratedOutlineControls({
     >
       <OutlineControlCard
         dimension="product"
-        title="第一折叠列 · 产品树"
+        title="产品层级"
         description="家具 / 办公用品 / 技术产品；属性列跟随产品"
         expanded={snapshot.productExpanded}
         total={snapshot.productTotal}
@@ -263,7 +263,7 @@ function IntegratedOutlineControls({
       />
       <OutlineControlCard
         dimension="region"
-        title="第二折叠列 · 区域树"
+        title="区域层级"
         description="每个产品分别维护区域展开状态"
         expanded={snapshot.regionExpanded}
         total={snapshot.regionTotal}
@@ -313,6 +313,7 @@ export default function SpreadJSDemoPage() {
     setSearchQuery,
     searchResult,
     setSearchResult,
+    searchBusy,
     columnMenuOpen,
     setColumnMenuOpen,
     columnVisibility,
@@ -391,7 +392,10 @@ export default function SpreadJSDemoPage() {
                 aria-controls="sheet-search-popover"
                 className={searchOpen ? 'is-active' : ''}
                 onClick={() => {
-                  setSearchOpen((open) => !open);
+                  setSearchOpen((open) => {
+                    if (open) actionsRef.current?.cancelSearch();
+                    return !open;
+                  });
                   setColumnMenuOpen(false);
                 }}
               >
@@ -403,12 +407,14 @@ export default function SpreadJSDemoPage() {
                   anchorRef={searchAnchorRef}
                   query={searchQuery}
                   result={searchResult}
+                  busy={searchBusy}
                   onQueryChange={(query) => {
+                    actionsRef.current?.cancelSearch();
                     setSearchQuery(query);
                     setSearchResult(
                       query.trim()
-                        ? '按 Enter 查找下一个，Shift + Enter 查找上一个'
-                        : '输入关键词后定位',
+                        ? '按 Enter 搜索全部层级，Shift + Enter 反向搜索'
+                        : '输入关键词，按 Enter 开始搜索',
                     );
                   }}
                   onSearch={(direction) =>
@@ -428,6 +434,7 @@ export default function SpreadJSDemoPage() {
                 className={columnMenuOpen ? 'is-active' : ''}
                 onClick={() => {
                   setColumnMenuOpen((open) => !open);
+                  if (searchOpen) actionsRef.current?.cancelSearch();
                   setSearchOpen(false);
                 }}
               >
@@ -449,8 +456,15 @@ export default function SpreadJSDemoPage() {
 
             <button
               type="button"
-              disabled={tableBusy}
+              disabled={tableBusy || dataMode !== 'regular'}
               aria-label={rowGroupsCollapsed ? '展开全部行组' : '收起全部行组'}
+              title={
+                dataMode === 'regular'
+                  ? rowGroupsCollapsed
+                    ? '展开全部产品与区域层级'
+                    : '收起全部产品与区域层级'
+                  : '压力数据为扁平视图，不支持行层级折叠'
+              }
               onClick={() => actionsRef.current?.toggleRowGroups()}
               className={rowGroupsCollapsed ? 'is-active' : ''}
             >
@@ -627,7 +641,7 @@ export default function SpreadJSDemoPage() {
                 </button>
               </div>
               <small>
-                单击层级箭头展开 / 收起 · 双击指标单元格下钻 · 右键打开业务菜单
+                单击层级单元格展开 / 收起 · 选中汇总行后下钻 · 右键打开业务菜单
               </small>
             </div>
 

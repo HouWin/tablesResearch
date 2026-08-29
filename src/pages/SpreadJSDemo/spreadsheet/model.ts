@@ -69,6 +69,7 @@ export type ViewRow = BusinessNode & {
   level: number;
   hasChildren?: boolean;
   productId: string;
+  productParentId: string | null;
   productLabel: string;
   productAttribute: string;
   productDepth: 0 | 1;
@@ -77,6 +78,7 @@ export type ViewRow = BusinessNode & {
   productBlockStart: boolean;
   productRowSpan: number;
   regionId: string;
+  regionRootId: string;
   regionLabel: string;
   regionDepth: 0 | 1;
   regionIsGroup: boolean;
@@ -142,9 +144,9 @@ export const AGGREGATE_MODES = [
 ] as const satisfies readonly AggregateMode[];
 
 export const COLUMNS: ColumnDefinition[] = [
-  { field: 'productHierarchy', label: '第一列 · 产品树', width: 178 },
-  { field: 'productAttribute', label: '第二列 · 产品属性', width: 144 },
-  { field: 'regionHierarchy', label: '第三列 · 区域树', width: 168 },
+  { field: 'productHierarchy', label: '产品层级', width: 178 },
+  { field: 'productAttribute', label: '产品属性', width: 144 },
+  { field: 'regionHierarchy', label: '区域层级', width: 168 },
   { field: 'revenue', label: '净收入', width: 112 },
   { field: 'productRevenue', label: '商品收入', width: 108 },
   { field: 'serviceRevenue', label: '服务收入', width: 108 },
@@ -234,7 +236,7 @@ export const FEATURES = [
   ['自定义统计', 'SUM / AVG / COUNT / MIN / MAX'],
   ['单元格历史', '业务扩展'],
   ['数据追踪', '业务扩展'],
-  ['快速搜索', '表内定位'],
+  ['快速搜索', '全层级计数 / 自动展开定位'],
   ['显示 / 隐藏列', '原生'],
   ['单元格附件', '稳定 ID 元数据 + CellButton'],
   ['大数据', '10 万行 × 16 列'],
@@ -771,6 +773,7 @@ const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
 type VisibleProductNode = {
   node: BusinessNode;
   id: string;
+  parentId: string | null;
   label: string;
   attribute: string;
   depth: 0 | 1;
@@ -780,6 +783,7 @@ type VisibleProductNode = {
 
 type RegionProjectionNode = {
   id: string;
+  rootId: string;
   label: string;
   depth: 0 | 1;
   isGroup: boolean;
@@ -840,6 +844,7 @@ function getVisibleProducts(
     const rootNode: VisibleProductNode = {
       node: root,
       id: root.id,
+      parentId: null,
       label: root.name,
       attribute: productAttributeFor(root),
       depth: 0,
@@ -853,6 +858,7 @@ function getVisibleProducts(
         (child): VisibleProductNode => ({
           node: child,
           id: child.id,
+          parentId: root.id,
           label: child.name,
           attribute: productAttributeFor(child),
           depth: 1,
@@ -936,6 +942,7 @@ function getVisibleRegions(
     const expanded = expandedIds.has(root.id);
     const rootNode: RegionProjectionNode = {
       id: root.id,
+      rootId: root.id,
       label: root.label,
       depth: 0,
       isGroup: root.children.length > 0,
@@ -948,6 +955,7 @@ function getVisibleRegions(
       ...root.children.map(
         (child): RegionProjectionNode => ({
           id: child.id,
+          rootId: root.id,
           label: child.label,
           depth: 1,
           isGroup: false,
@@ -1040,6 +1048,7 @@ export function createBusinessProjectionRows(
         level: product.depth,
         hasChildren: product.isGroup,
         productId: product.id,
+        productParentId: product.parentId,
         productLabel: product.label,
         productAttribute: product.attribute,
         productDepth: product.depth,
@@ -1048,6 +1057,7 @@ export function createBusinessProjectionRows(
         productBlockStart: index === 0,
         productRowSpan: regions.length,
         regionId: region.id,
+        regionRootId: region.rootId,
         regionLabel: region.label,
         regionDepth: region.depth,
         regionIsGroup: region.isGroup,
@@ -1086,13 +1096,13 @@ export function getBusinessProjectionSummary(
   regionExpandedByProduct: ExtensionExpansionState,
 ): OutlineSnapshot {
   const productGroupIds = getProductGroupIdsForView(view);
-  const products = getVisibleProducts(view, productExpanded);
-  const regionGroups = products.flatMap((product) =>
-    getRegionRoots(product.node).map((region) => ({
-      productId: product.id,
+  const regionGroups = getAllProductIdsForView(view).flatMap((productId) => {
+    const product = findBusinessNode(BUSINESS_DATA, productId);
+    return (product ? getRegionRoots(product) : []).map((region) => ({
+      productId,
       regionId: region.id,
-    })),
-  );
+    }));
+  });
   return {
     productExpanded: productGroupIds.filter((id) => productExpanded.has(id))
       .length,
@@ -1207,6 +1217,7 @@ function createStressRecord(index: number): ViewRow {
     level: isRegion ? 0 : isCity ? 1 : 2,
     hasChildren: false,
     productId,
+    productParentId: null,
     productLabel: `压力产品线 ${String(Math.floor(index / 1_000) + 1).padStart(
       3,
       '0',
@@ -1218,6 +1229,7 @@ function createStressRecord(index: number): ViewRow {
     productBlockStart: true,
     productRowSpan: 1,
     regionId: `stress-region-${regionIndex}-${cityIndex}`,
+    regionRootId: `stress-region-${regionIndex}-${cityIndex}`,
     regionLabel: name,
     regionDepth: isRegion ? 0 : 1,
     regionIsGroup: false,

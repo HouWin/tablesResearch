@@ -143,12 +143,14 @@ export function SearchPopover({
   anchorRef,
   query,
   result,
+  busy,
   onQueryChange,
   onSearch,
 }: {
   anchorRef: RefObject<HTMLElement>;
   query: string;
   result: string;
+  busy: boolean;
   onQueryChange: (query: string) => void;
   onSearch: (direction: 1 | -1) => void;
 }) {
@@ -166,9 +168,10 @@ export function SearchPopover({
       id="sheet-search-popover"
       className="toolbar-popover search-popover"
       role="search"
-      aria-label="当前数据集搜索"
+      aria-label="搜索全部业务层级"
+      aria-busy={busy}
     >
-      <label htmlFor="sheet-search">当前数据集搜索</label>
+      <label htmlFor="sheet-search">搜索全部业务层级（包括已折叠内容）</label>
       <div className="search-input-row">
         <Search size={15} />
         <input
@@ -178,28 +181,49 @@ export function SearchPopover({
           aria-describedby="sheet-search-result"
           onChange={(event) => onQueryChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') onSearch(event.shiftKey ? -1 : 1);
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (busy) return;
+            onSearch(event.shiftKey ? -1 : 1);
           }}
           placeholder="搜索任意单元格内容…"
         />
+        {query ? (
+          <button
+            type="button"
+            onClick={() => onQueryChange('')}
+            aria-label="清空搜索"
+            title="清空搜索"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
         <button
           type="button"
-          disabled={!query.trim()}
+          disabled={busy || !query.trim()}
           onClick={() => onSearch(-1)}
           aria-label="上一个匹配"
+          title="上一个匹配（Shift + Enter）"
         >
           <ChevronLeft size={15} />
         </button>
         <button
           type="button"
-          disabled={!query.trim()}
+          disabled={busy || !query.trim()}
           onClick={() => onSearch(1)}
           aria-label="下一个匹配"
+          title="下一个匹配（Enter）"
         >
           <ChevronRight size={15} />
         </button>
       </div>
-      <small id="sheet-search-result" aria-live="polite">
+      <small
+        id="sheet-search-result"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {result}
       </small>
     </div>
