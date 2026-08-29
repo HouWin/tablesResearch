@@ -790,7 +790,10 @@ export default function SpreadJSDemoPage() {
             <div className="selected-card">
               <span>{selected?.node.name}</span>
               <strong>{selected?.text || '空单元格'}</strong>
-              <small>仅记录值修改，不记录排序、筛选、折叠或列宽。</small>
+              <small>
+                已记录 {selectedHistory.length}{' '}
+                次变化；覆盖编辑、粘贴、清空、撤销与重做。
+              </small>
             </div>
             <div className="history-list">
               {selectedHistory.length ? (
@@ -815,7 +818,7 @@ export default function SpreadJSDemoPage() {
                 <div className="empty-state">
                   <History size={22} />
                   <b>暂无值变化</b>
-                  <span>编辑当前单元格后，历史会立即记录。</span>
+                  <span>编辑、粘贴或清空当前单元格后，历史会立即记录。</span>
                 </div>
               )}
             </div>

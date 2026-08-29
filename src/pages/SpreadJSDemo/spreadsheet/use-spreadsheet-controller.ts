@@ -88,6 +88,24 @@ type ClipboardChangedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IClipboardChangedEventArgs;
 type ClipboardPastingArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IClipboardPastingEventArgs;
+type ClipboardPastedArgs =
+  import('@grapecity-software/spread-sheets').Spread.Sheets.IClipboardPastedEventArgs;
+type RangeChangedArgs =
+  import('@grapecity-software/spread-sheets').Spread.Sheets.IRangeChangedEventArgs;
+
+type ClipboardHistoryCell = {
+  row: number;
+  col: number;
+  oldValue: unknown;
+  oldFormula: string;
+};
+
+type TrackedHistoryCell = {
+  nodeId: string;
+  field: BusinessField;
+  row: number;
+  col: number;
+};
 
 export type SpreadsheetActions = {
   undo: () => void;
@@ -334,6 +352,13 @@ export function useSpreadsheetController() {
     const loadedStressPages = new Set<number>();
     const loadedStressRows = new Set<number>();
     let validationFlashTimer = 0;
+    let clipboardHistoryTimer = 0;
+    let clipboardHistorySource: string | null = null;
+    let clipboardHistorySnapshot: ClipboardHistoryCell[] | null = null;
+    let commandHistorySource: '撤销' | '重做' | null = null;
+    let commandHistoryDiffInProgress = false;
+    const trackedHistoryCells = new Map<string, TrackedHistoryCell>();
+    const cellFormulaState = new Map<string, string>();
     const renderedAttachmentCells = new Set<string>();
     let validationFlashCell: {
       row: number;
@@ -500,6 +525,84 @@ export function useSpreadsheetController() {
           ]);
       };
 
+      const historyValuesEqual = (left: unknown, right: unknown) => {
+        if (Object.is(left, right)) return true;
+        if (left instanceof Date && right instanceof Date)
+          return left.getTime() === right.getTime();
+        return false;
+      };
+
+      const appendCellHistory = (
+        row: number,
+        col: number,
+        oldValue: unknown,
+        newValue: unknown,
+        source: string,
+      ) => {
+        if (historyValuesEqual(oldValue, newValue)) return false;
+        const node = activeRows[row];
+        const column = COLUMNS[col];
+        if (!node || !column || isHierarchyField(column.field)) return false;
+        const key = stableCellKey(node.id, column.field);
+        trackedHistoryCells.set(key, {
+          nodeId: node.id,
+          field: column.field,
+          row,
+          col,
+        });
+        if (commandHistoryDiffInProgress) return false;
+        const nextHistory = [
+          {
+            id: crypto.randomUUID(),
+            oldValue,
+            newValue,
+            source,
+            createdAt: Date.now(),
+          },
+          ...(historyRef.current.get(key) ?? []),
+        ];
+        historyRef.current.set(key, nextHistory);
+        if (
+          panelRef.current === 'history' &&
+          sheet.getActiveRowIndex() === row &&
+          sheet.getActiveColumnIndex() === col
+        ) {
+          setSelectedHistory([...nextHistory]);
+        }
+        return true;
+      };
+
+      const captureTrackedHistoryCells = () => {
+        const snapshot: ClipboardHistoryCell[] = [];
+        trackedHistoryCells.forEach((tracked, key) => {
+          let row = tracked.row;
+          if (activeRows[row]?.id !== tracked.nodeId)
+            row = activeRows.findIndex((item) => item.id === tracked.nodeId);
+          const col =
+            COLUMNS[tracked.col]?.field === tracked.field
+              ? tracked.col
+              : COLUMNS.findIndex((column) => column.field === tracked.field);
+          if (row < 0 || col < 0) return;
+          trackedHistoryCells.set(key, { ...tracked, row, col });
+          snapshot.push({
+            row,
+            col,
+            oldValue: sheet.getValue(row, col),
+            oldFormula: sheet.getFormula(row, col) ?? '',
+          });
+        });
+        return snapshot;
+      };
+
+      const historySourceForChange = (args: CellChangedArgs) => {
+        if (commandHistorySource) return commandHistorySource;
+        if (args.isUndo) return '撤销';
+        if (clipboardHistorySource) return clipboardHistorySource;
+        if (args.propertyName === 'formula') return '公式编辑';
+        if (args.newValue == null || args.newValue === '') return '清空单元格';
+        return '单元格编辑';
+      };
+
       const calculateSelection = (
         worksheet: Worksheet,
         range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
@@ -653,6 +756,139 @@ export function useSpreadsheetController() {
             cell.backColor('#fee9e8').foreColor('#b13b3b');
           else cell.backColor('#fff4da').foreColor('#8a5a16');
         }
+      };
+
+      const commitBusinessCellValue = (
+        row: number,
+        col: number,
+        oldValue: unknown,
+        requestedValue: unknown,
+        source: string,
+      ) => {
+        const node = activeRows[row];
+        const column = COLUMNS[col];
+        if (!node || !column || isHierarchyField(column.field)) return false;
+
+        const previousStatus = node.status;
+        const previousVerified = node.verified;
+        let nextValue = requestedValue;
+        if (
+          column.field === 'adjustmentFactor' &&
+          typeof nextValue === 'number'
+        )
+          nextValue = roundToTwoDecimals(nextValue);
+
+        updateBusinessNode(node, column.field, nextValue);
+        const committedValue = viewRowCellValue(node, col);
+        if (!historyValuesEqual(sheet.getValue(row, col), committedValue)) {
+          spread.suspendEvent();
+          try {
+            sheet.setValue(row, col, committedValue);
+          } finally {
+            spread.resumeEvent();
+          }
+        }
+
+        if (activeDataMode === 'regular') {
+          const overrides =
+            dataOverridesRef.current.get(node.id) ??
+            new Map<BusinessField, unknown>();
+          overrides.set(column.field, committedValue);
+          if (column.field === 'status' || column.field === 'verified') {
+            overrides.set('status', node.status);
+            overrides.set('verified', node.verified);
+          }
+          dataOverridesRef.current.set(node.id, overrides);
+        }
+
+        if (column.field === 'status' || column.field === 'verified') {
+          spread.suspendEvent();
+          try {
+            sheet.setValue(row, STATUS_COLUMN, node.status);
+            sheet.setValue(row, VERIFIED_COLUMN, node.verified);
+          } finally {
+            spread.resumeEvent();
+          }
+          styleStatusCells(row, 1);
+        }
+
+        const recorded = appendCellHistory(
+          row,
+          col,
+          oldValue,
+          committedValue,
+          source,
+        );
+        if (col !== STATUS_COLUMN && previousStatus !== node.status) {
+          appendCellHistory(
+            row,
+            STATUS_COLUMN,
+            previousStatus,
+            node.status,
+            `${source} · 联动更新`,
+          );
+        }
+        if (col !== VERIFIED_COLUMN && previousVerified !== node.verified) {
+          appendCellHistory(
+            row,
+            VERIFIED_COLUMN,
+            previousVerified,
+            node.verified,
+            `${source} · 联动更新`,
+          );
+        }
+        return recorded;
+      };
+
+      const captureClipboardHistory = (
+        range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
+        sourceRowCount = 0,
+        sourceColCount = 0,
+      ) => {
+        const startRow = Math.max(range.row, 0);
+        const startCol = Math.max(range.col, 0);
+        const requestedRowCount =
+          range.row < 0
+            ? sheet.getRowCount()
+            : Math.max(range.rowCount, sourceRowCount);
+        const requestedColCount =
+          range.col < 0
+            ? sheet.getColumnCount()
+            : Math.max(range.colCount, sourceColCount);
+        const endRow = Math.min(
+          activeRows.length,
+          startRow + Math.max(requestedRowCount, 0),
+        );
+        const endCol = Math.min(
+          COLUMNS.length,
+          startCol + Math.max(requestedColCount, 0),
+        );
+        const snapshot: ClipboardHistoryCell[] = [];
+        for (let row = startRow; row < endRow; row += 1) {
+          for (let col = startCol; col < endCol; col += 1) {
+            snapshot.push({
+              row,
+              col,
+              oldValue: sheet.getValue(row, col),
+              oldFormula: sheet.getFormula(row, col) ?? '',
+            });
+          }
+        }
+        return snapshot;
+      };
+
+      const rangeHistorySource = (args: RangeChangedArgs) => {
+        if (args.isUndo) return '撤销';
+        const action = GC.Spread.Sheets.RangeChangedAction;
+        const sources: Partial<Record<number, string>> = {
+          [action.clear]: '清空单元格',
+          [action.dragDrop]: '拖放移动',
+          [action.dragFill]: '拖拽填充',
+          [action.paste]: '粘贴',
+          [action.setArrayFormula]: '数组公式',
+          [action.evaluateFormula]: '公式重算',
+        };
+        return sources[args.action] ?? null;
       };
 
       const isStressRowMaterialized = (row: number) =>
@@ -1888,27 +2124,149 @@ export function useSpreadsheetController() {
         );
       };
 
+      const runHistoryCommand = <T>(
+        source: '撤销' | '重做',
+        command: () => T,
+      ) => {
+        const before = captureTrackedHistoryCells();
+        const previousSource = commandHistorySource;
+        commandHistorySource = source;
+        commandHistoryDiffInProgress = true;
+        let result: T;
+        try {
+          result = command();
+        } finally {
+          commandHistoryDiffInProgress = false;
+          commandHistorySource = previousSource;
+        }
+        let changedCount = 0;
+        before.forEach(({ row, col, oldValue, oldFormula }) => {
+          const newValue = sheet.getValue(row, col);
+          const newFormula = sheet.getFormula(row, col) ?? '';
+          if (oldFormula !== newFormula) {
+            if (
+              appendCellHistory(
+                row,
+                col,
+                oldFormula,
+                newFormula,
+                `${source} · 公式`,
+              )
+            )
+              changedCount += 1;
+            const node = activeRows[row];
+            const column = COLUMNS[col];
+            if (node && column) {
+              const key = stableCellKey(node.id, column.field);
+              if (newFormula) cellFormulaState.set(key, newFormula);
+              else cellFormulaState.delete(key);
+            }
+          }
+          if (
+            !historyValuesEqual(oldValue, newValue) &&
+            commitBusinessCellValue(row, col, oldValue, newValue, source)
+          )
+            changedCount += 1;
+        });
+        if (changedCount) {
+          invalidateSearchSession(
+            activeSearch.query
+              ? '数据已更新，按 Enter 刷新搜索结果'
+              : undefined,
+          );
+          const activeRow = sheet.getActiveRowIndex();
+          const activeCol = sheet.getActiveColumnIndex();
+          updateSelected(activeRow, activeCol);
+          const range = sheet.getSelections().at(-1);
+          if (range) calculateSelection(sheet, range);
+        }
+        return result;
+      };
+
+      const performUndo = () => {
+        if (!spread.undoManager().canUndo()) {
+          notify('暂无可撤销的单元格操作');
+          return false;
+        }
+        const succeeded = runHistoryCommand('撤销', () =>
+          spread.undoManager().undo(),
+        );
+        notify(
+          succeeded ? '已撤销上一次单元格操作' : '撤销失败',
+          succeeded ? 'success' : 'error',
+        );
+        return succeeded;
+      };
+
+      const performRedo = () => {
+        if (!spread.undoManager().canRedo()) {
+          notify('暂无可重做的单元格操作');
+          return false;
+        }
+        const succeeded = runHistoryCommand('重做', () =>
+          spread.undoManager().redo(),
+        );
+        notify(
+          succeeded ? '已重做上一次单元格操作' : '重做失败',
+          succeeded ? 'success' : 'error',
+        );
+        return succeeded;
+      };
+
+      const commandManager = spread.commandManager();
+      commandManager.register('historyUndo', {
+        canUndo: false,
+        execute: performUndo,
+      });
+      commandManager.register('historyRedo', {
+        canUndo: false,
+        execute: performRedo,
+      });
+      const commandKey = GC.Spread.Commands.Key;
+      commandManager.setShortcutKey(
+        'historyUndo',
+        commandKey.z,
+        true,
+        false,
+        false,
+        false,
+      );
+      commandManager.setShortcutKey(
+        'historyUndo',
+        commandKey.z,
+        false,
+        false,
+        false,
+        true,
+      );
+      commandManager.setShortcutKey(
+        'historyRedo',
+        commandKey.y,
+        true,
+        false,
+        false,
+        false,
+      );
+      commandManager.setShortcutKey(
+        'historyRedo',
+        commandKey.z,
+        true,
+        true,
+        false,
+        false,
+      );
+      commandManager.setShortcutKey(
+        'historyRedo',
+        commandKey.z,
+        false,
+        true,
+        false,
+        true,
+      );
+
       actionsRef.current = {
-        undo: () => {
-          if (!spread.undoManager().canUndo()) {
-            notify('暂无可撤销的单元格操作');
-            return;
-          }
-          spread
-            .commandManager()
-            .execute({ cmd: 'undo', sheetName: sheet.name() });
-          notify('已撤销上一次单元格操作');
-        },
-        redo: () => {
-          if (!spread.undoManager().canRedo()) {
-            notify('暂无可重做的单元格操作');
-            return;
-          }
-          spread
-            .commandManager()
-            .execute({ cmd: 'redo', sheetName: sheet.name() });
-          notify('已重做上一次单元格操作');
-        },
+        undo: performUndo,
+        redo: performRedo,
         copy: () => {
           spread
             .commandManager()
@@ -2323,7 +2681,22 @@ export function useSpreadsheetController() {
       spread.bind(
         GC.Spread.Sheets.Events.ClipboardPasting,
         (_sender: unknown, args: ClipboardPastingArgs) => {
+          window.clearTimeout(clipboardHistoryTimer);
           const text = args.pasteData.text ?? '';
+          const matrix = clipboardTextToMatrix(text);
+          clipboardHistorySnapshot = captureClipboardHistory(
+            args.cellRange,
+            Math.max(args.fromRange?.rowCount ?? 0, matrix.length),
+            Math.max(
+              args.fromRange?.colCount ?? 0,
+              ...matrix.map((row) => row.length),
+            ),
+          );
+          clipboardHistorySource = args.isCutting
+            ? '剪切粘贴'
+            : args.fromSheet || args.fromRange
+            ? '复制粘贴'
+            : '外部粘贴';
           const shouldContinue = CLIPBOARD_CALLBACKS.onPasting?.({
             sheetName: args.sheetName,
             range: describeClipboardRange(args.cellRange),
@@ -2331,7 +2704,89 @@ export function useSpreadsheetController() {
             data: clipboardTextToMatrix(text),
             isCutting: args.isCutting,
           });
-          if (shouldContinue === false) args.cancel = true;
+          if (shouldContinue === false) {
+            args.cancel = true;
+            clipboardHistorySource = null;
+            clipboardHistorySnapshot = null;
+            return;
+          }
+          clipboardHistoryTimer = window.setTimeout(() => {
+            clipboardHistorySource = null;
+          }, 30_000);
+        },
+      );
+      spread.bind(
+        GC.Spread.Sheets.Events.ClipboardPasted,
+        (_sender: unknown, _args: ClipboardPastedArgs) => {
+          window.clearTimeout(clipboardHistoryTimer);
+          const snapshot = clipboardHistorySnapshot;
+          const source = clipboardHistorySource ?? '粘贴';
+          clipboardHistorySnapshot = null;
+          let changedCount = 0;
+          let blockedHierarchyChange = false;
+          spread.suspendPaint();
+          try {
+            snapshot?.forEach(({ row, col, oldValue, oldFormula }) => {
+              const column = COLUMNS[col];
+              const newValue = sheet.getValue(row, col);
+              const newFormula = sheet.getFormula(row, col) ?? '';
+              if (!column) return;
+              if (isHierarchyField(column.field)) {
+                if (
+                  !historyValuesEqual(oldValue, newValue) ||
+                  oldFormula !== newFormula
+                ) {
+                  spread.suspendEvent();
+                  try {
+                    sheet.setFormula(row, col, oldFormula);
+                    if (!oldFormula) sheet.setValue(row, col, oldValue);
+                  } finally {
+                    spread.resumeEvent();
+                  }
+                  blockedHierarchyChange = true;
+                }
+                return;
+              }
+              if (oldFormula !== newFormula) {
+                if (
+                  appendCellHistory(
+                    row,
+                    col,
+                    oldFormula,
+                    newFormula,
+                    `${source} · 公式`,
+                  )
+                )
+                  changedCount += 1;
+                const key = stableCellKey(activeRows[row].id, column.field);
+                if (newFormula) cellFormulaState.set(key, newFormula);
+                else cellFormulaState.delete(key);
+              }
+              if (
+                !historyValuesEqual(oldValue, newValue) &&
+                commitBusinessCellValue(row, col, oldValue, newValue, source)
+              )
+                changedCount += 1;
+            });
+          } finally {
+            spread.resumePaint();
+          }
+          if (changedCount) {
+            invalidateSearchSession(
+              activeSearch.query
+                ? '粘贴数据已更新，按 Enter 刷新搜索结果'
+                : undefined,
+            );
+          }
+          if (blockedHierarchyChange)
+            notify('已跳过层级列；层级名称请从业务数据源维护');
+          updateSelected(
+            sheet.getActiveRowIndex(),
+            sheet.getActiveColumnIndex(),
+          );
+          clipboardHistoryTimer = window.setTimeout(() => {
+            clipboardHistorySource = null;
+          });
         },
       );
       sheet.bind(
@@ -2369,8 +2824,14 @@ export function useSpreadsheetController() {
       sheet.bind(
         GC.Spread.Sheets.Events.CellChanged,
         (_sender: unknown, args: CellChangedArgs) => {
-          if (args.propertyName !== 'value' || args.row < 0 || args.col < 0)
+          if (
+            (args.propertyName !== 'value' &&
+              args.propertyName !== 'formula') ||
+            args.row < 0 ||
+            args.col < 0
+          )
             return;
+          if (clipboardHistorySnapshot) return;
           const node = activeRows[args.row];
           const column = COLUMNS[args.col];
           if (!node || !column) return;
@@ -2393,55 +2854,33 @@ export function useSpreadsheetController() {
             updateSelected(args.row, args.col);
             return;
           }
-          let nextValue = args.newValue;
-          if (
-            column.field === 'adjustmentFactor' &&
-            typeof nextValue === 'number'
-          ) {
-            const rounded = roundToTwoDecimals(nextValue);
-            if (rounded !== nextValue) {
-              spread.suspendEvent();
-              try {
-                sheet.setValue(args.row, args.col, rounded);
-              } finally {
-                spread.resumeEvent();
-              }
-              nextValue = rounded;
-            }
+          const historySource = historySourceForChange(args);
+          if (args.propertyName === 'formula') {
+            appendCellHistory(
+              args.row,
+              args.col,
+              args.oldValue,
+              args.newValue,
+              historySource,
+            );
+            const key = stableCellKey(node.id, column.field);
+            const nextFormula = String(args.newValue ?? '');
+            if (nextFormula) cellFormulaState.set(key, nextFormula);
+            else cellFormulaState.delete(key);
+            invalidateSearchSession(
+              activeSearch.query
+                ? '公式已更新，按 Enter 刷新搜索结果'
+                : undefined,
+            );
+            updateSelected(args.row, args.col);
+            return;
           }
-          updateBusinessNode(node, column.field, nextValue);
-          if (activeDataMode === 'regular') {
-            const overrides =
-              dataOverridesRef.current.get(node.id) ??
-              new Map<BusinessField, unknown>();
-            overrides.set(column.field, nextValue);
-            if (column.field === 'status' || column.field === 'verified') {
-              overrides.set('status', node.status);
-              overrides.set('verified', node.verified);
-            }
-            dataOverridesRef.current.set(node.id, overrides);
-          }
-          if (column.field === 'status' || column.field === 'verified') {
-            spread.suspendEvent();
-            try {
-              sheet.setValue(args.row, STATUS_COLUMN, node.status);
-              sheet.setValue(args.row, VERIFIED_COLUMN, node.verified);
-            } finally {
-              spread.resumeEvent();
-            }
-            styleStatusCells(args.row, 1);
-          }
-          const key = stableCellKey(node.id, column.field);
-          const nextItem: HistoryItem = {
-            id: crypto.randomUUID(),
-            oldValue: args.oldValue,
-            newValue: nextValue,
-            source: args.isUndo ? '撤销 / 重做' : '单元格编辑',
-            createdAt: Date.now(),
-          };
-          historyRef.current.set(
-            key,
-            [nextItem, ...(historyRef.current.get(key) ?? [])].slice(0, 30),
+          commitBusinessCellValue(
+            args.row,
+            args.col,
+            args.oldValue,
+            args.newValue,
+            historySource,
           );
           invalidateSearchSession(
             activeSearch.query
@@ -2449,6 +2888,99 @@ export function useSpreadsheetController() {
               : undefined,
           );
           updateSelected(args.row, args.col);
+        },
+      );
+      sheet.bind(
+        GC.Spread.Sheets.Events.RangeChanged,
+        (_sender: unknown, args: RangeChangedArgs) => {
+          if (commandHistoryDiffInProgress || clipboardHistorySnapshot) return;
+          const source = rangeHistorySource(args);
+          if (!source) return;
+
+          const changedCells = args.changedCells.length
+            ? args.changedCells
+            : Array.from(
+                { length: Math.max(args.rowCount, 0) },
+                (_, rowOffset) =>
+                  Array.from(
+                    { length: Math.max(args.colCount, 0) },
+                    (__, colOffset) => ({
+                      row: args.row + rowOffset,
+                      col: args.col + colOffset,
+                    }),
+                  ),
+              ).flat();
+          const seen = new Set<string>();
+          let changedCount = 0;
+          let blockedHierarchyChange = false;
+          spread.suspendPaint();
+          try {
+            changedCells.forEach(({ row, col }) => {
+              const coordinate = `${row}:${col}`;
+              if (seen.has(coordinate)) return;
+              seen.add(coordinate);
+              const node = activeRows[row];
+              const column = COLUMNS[col];
+              if (!node || !column) return;
+              const newValue = sheet.getValue(row, col);
+              const newFormula = sheet.getFormula(row, col) ?? '';
+              if (isHierarchyField(column.field)) {
+                const expectedValue = viewRowCellValue(node, col);
+                if (!historyValuesEqual(expectedValue, newValue)) {
+                  spread.suspendEvent();
+                  try {
+                    sheet.setFormula(row, col, '');
+                    sheet.setValue(row, col, expectedValue);
+                  } finally {
+                    spread.resumeEvent();
+                  }
+                  blockedHierarchyChange = true;
+                }
+                return;
+              }
+
+              const key = stableCellKey(node.id, column.field);
+              const oldFormula = cellFormulaState.get(key) ?? '';
+              if (oldFormula !== newFormula) {
+                if (
+                  appendCellHistory(
+                    row,
+                    col,
+                    oldFormula,
+                    newFormula,
+                    `${source} · 公式`,
+                  )
+                )
+                  changedCount += 1;
+                if (newFormula) cellFormulaState.set(key, newFormula);
+                else cellFormulaState.delete(key);
+              }
+
+              const oldValue = viewRowCellValue(node, col);
+              if (
+                !historyValuesEqual(oldValue, newValue) &&
+                commitBusinessCellValue(row, col, oldValue, newValue, source)
+              )
+                changedCount += 1;
+            });
+          } finally {
+            spread.resumePaint();
+          }
+          if (changedCount) {
+            invalidateSearchSession(
+              activeSearch.query
+                ? '数据已更新，按 Enter 刷新搜索结果'
+                : undefined,
+            );
+            updateSelected(
+              sheet.getActiveRowIndex(),
+              sheet.getActiveColumnIndex(),
+            );
+            const range = sheet.getSelections().at(-1);
+            if (range) calculateSelection(sheet, range);
+          }
+          if (blockedHierarchyChange)
+            notify('已跳过层级列；层级名称请从业务数据源维护');
         },
       );
       sheet.bind(
@@ -2486,6 +3018,10 @@ export function useSpreadsheetController() {
       window.clearTimeout(stressLoadTimer);
       window.clearTimeout(stressViewportTimer);
       window.clearTimeout(validationFlashTimer);
+      window.clearTimeout(clipboardHistoryTimer);
+      clipboardHistorySnapshot = null;
+      trackedHistoryCells.clear();
+      cellFormulaState.clear();
       actionsRef.current = null;
       workbook?.destroy();
       releaseStressRecords();
