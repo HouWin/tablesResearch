@@ -51,7 +51,7 @@ export const buildTreeColumns = (config: ETableTreeConfig) => {
       id: item.field,
       title: item.title,
       width: item.width,
-      editable: lockDims ? false : undefined,
+      editable: item.editable ?? (lockDims ? false : undefined),
     })),
   ];
   if (config.attribute) {
@@ -479,6 +479,33 @@ export const flattenTreeData = (
       const hasAttributes = Boolean(node.attributes?.length);
       const collapsed = isNodeCollapsed(node);
 
+      // lite 大数据紧凑：叶子 1 行，无城市明细 / Region toggle
+      if (
+        treeUI &&
+        config.compactLiteRows &&
+        !hasChildren &&
+        hasAttributes
+      ) {
+        const primary = node.attributes![0];
+        if (labelField) {
+          path[labelField] = formatTreeLabel(node.label, depth);
+        }
+        if (node.data) {
+          Object.assign(path, node.data);
+        }
+        const regionLabel = formatTreeLabel(primary.label, 0, { expandable: false });
+        rows.push({
+          id: node.id,
+          data: buildData(path, regionLabel, {
+            ...primary.values,
+            ...node.values,
+          }),
+          style: resolveRowStyle(depth),
+        });
+        currentRow += 1;
+        return;
+      }
+
       // treeUI：叶子节点 Region 写在 values[attributeField] 或 attributes[0] 同行展示
       if (treeUI && !hasChildren && hasAttributes) {
         const primary = node.attributes![0];
@@ -632,8 +659,10 @@ export const flattenTreeData = (
 
       let regionLabel = '';
       if (primaryRegion) {
+        const regionExpandable =
+          !config.compactLiteRows && hasRegionDetails;
         regionLabel = formatTreeLabel(primaryRegion.label, 0, {
-          expandable: hasRegionDetails,
+          expandable: regionExpandable,
           collapsed: regionCollapsed,
         });
       } else if (attributeField && node.values?.[attributeField] !== undefined) {
@@ -658,7 +687,7 @@ export const flattenTreeData = (
 
       // 1) Region 明细（Central / West / South 或 primary.children）
       let regionGroup: ETableRowGroup | null = null;
-      if (treeUI && hasRegionDetails && primaryRegion) {
+      if (treeUI && hasRegionDetails && primaryRegion && !config.compactLiteRows) {
         const regionDetailStart = currentRow;
         const regionNested: ETableRowGroup[] = [];
         primaryRegion.children?.forEach((detail) => {

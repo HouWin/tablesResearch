@@ -14,6 +14,12 @@ import { flattenTreeData } from './tree';
 import { ASYNC_RENDER_ROW_THRESHOLD, LARGE_TREE_FLAT_ROW_THRESHOLD } from './treeDataGenerator';
 import { setupTreeCellCollapse } from './treeCollapse';
 import type { ETableTreeCollapseApi } from './treeCollapse';
+import {
+  setupTreeViewport,
+  TREE_VIEWPORT_THRESHOLD,
+  TREE_VIEWPORT_WINDOW_SIZE,
+} from './treeViewport';
+import type { TreeViewportStats } from './treeViewport';
 import type { ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
@@ -32,8 +38,10 @@ import {
 import {
   customizeContextMenu,
   defaultContextMenuItems,
+  disableContextMenu,
   NATIVE_CONTEXT_MENU_HIDE_CONFIG,
   setupCommentContextMenuGuard,
+  setupContextMenuBlock,
 } from './contextMenu';
 import {
   applyInitialAttachments,
@@ -222,10 +230,14 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   // Worksheet
   const worksheetRef = useRef<any>(null);
   const treeCollapseApiRef = useRef<ETableTreeCollapseApi | null>(null);
+  const logicalRowResolverRef = useRef<((projectedDataRow: number) => number | null) | null>(
+    null,
+  );
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
   const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
+  const treeViewportStatsRef = useRef<TreeViewportStats | null>(null);
 
   const buildDataTrace = (cell?: string): ETableDataTraceNode | null => {
     const worksheet = worksheetRef.current;
@@ -260,7 +272,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       const value = range.getValue?.();
       const leaf = leafColumnsRef.current[column];
       const dataRow = row - headerDepthRef.current;
-      const crumb = treeCollapseApiRef.current?.getBreadcrumb(dataRow) || [];
+      const logicalRow = logicalRowResolverRef.current?.(dataRow) ?? dataRow;
+      const crumb = treeCollapseApiRef.current?.getBreadcrumb(logicalRow) || [];
       const history = cellHistoryApiRef.current?.getCellHistory(target) || [];
       const children: ETableDataTraceNode[] = [
         {
@@ -550,7 +563,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         const range = worksheet?.getSelection?.()?.getActiveRange?.();
         const sheetRow = range?.getRow?.() ?? 0;
         const dataRow = sheetRow - headerDepthRef.current;
-        return treeCollapseApiRef.current?.getBreadcrumb(dataRow) || [];
+        const logicalRow = logicalRowResolverRef.current?.(dataRow) ?? dataRow;
+        return treeCollapseApiRef.current?.getBreadcrumb(logicalRow) || [];
       } catch {
         return [];
       }
@@ -600,6 +614,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     getVirtualRenderStats() {
       return virtualLoaderRef.current?.getStats() ?? null;
     },
+    getTreeViewportStats() {
+      return treeViewportStatsRef.current;
+    },
   }), []);
 
   // 初始化 Univer
@@ -612,6 +629,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     if (needsFlatten && (flattenPreparing || !flattened)) {
       return;
     }
+    const useTreeViewport =
+      treeUI && rows.length >= TREE_VIEWPORT_THRESHOLD && treeToggles.length > 0;
     // 防止重复初始化
     if (univerAPIRef.current) {
       return;
@@ -670,7 +689,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     // 创建 Workbook（按数据规模预置行列数，便于 Canvas 虚拟滚动骨架）
     const { maxDepth: headerDepth } = buildHeaderLayout(columns);
     const leafCount = flattenColumns(columns).length;
-    const sheetRowCount = Math.max(1000, headerDepth + rows.length + 10);
+    const sheetRowCount = useTreeViewport
+      ? headerDepth + TREE_VIEWPORT_WINDOW_SIZE + 10
+      : Math.max(1000, headerDepth + rows.length + 10);
     const sheetColCount = Math.max(20, leafCount + 2);
     const workbook = univerAPI.createWorkbook({
       name,
@@ -732,19 +753,26 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     renderRowHeights(worksheet, 0, maxDepth, defaultRowHeight);
     const isAsyncRender = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
     const isLargeData = rows.length >= LARGE_TREE_FLAT_ROW_THRESHOLD;
-    const useLazyVirtual = virtualScroll && rows.length >= VIRTUAL_LAZY_THRESHOLD;
+    // 树形大数据：视口投影（工作表固定窗口行数）；否则 hideRows 折叠
+    // 平铺表：视口按页懒写入
+    const useLazyVirtual =
+      virtualScroll && rows.length >= VIRTUAL_LAZY_THRESHOLD && !treeUI && !useTreeViewport;
     let cancelled = false;
     let disposeVirtualLoader: (() => void) | undefined;
     let virtualLoader: VirtualDataLoader | null = null;
+    let treeViewportStats: TreeViewportStats | null = null;
     let disposeTreeCollapse: (() => void) | undefined;
     let disposeReadonly: (() => void) | undefined;
     let historyApi: ReturnType<typeof setupCellHistory> | null = null;
     let disposeFindDialogConstraint: (() => void) | undefined;
     let disposeCommentContextMenuGuard: (() => void) | undefined;
+    let disposeContextMenuBlock: (() => void) | undefined;
 
     const finishInit = async () => {
-      // 6. 渲染数据（懒虚拟 / 异步分片 / 全量）
-      if (useLazyVirtual) {
+      // 6. 渲染数据（树视口投影 / 懒虚拟 / 异步分片 / 全量）
+      if (useTreeViewport) {
+        // 数据由 setupTreeViewport 按可见窗口写入，跳过全量 setValues
+      } else if (useLazyVirtual) {
         virtualLoader = createVirtualDataLoader({
           univerAPI,
           worksheet,
@@ -765,7 +793,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       } else if (isAsyncRender) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
-          skipRowBackgrounds: Boolean(treeConfig?.liteMode),
+          skipRowBackgrounds: Boolean(treeConfig?.liteMode) || isLargeData,
         });
       } else {
         renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
@@ -779,20 +807,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           readonlyDataRows.push(index);
         }
       }
-      // 6.5 列类型：懒虚拟按页写入；其余路径一次性应用
-      if (!useLazyVirtual) {
+      // 6.5 列类型：懒虚拟按页写入；树视口在投影时写入；其余路径一次性应用
+      if (!useLazyVirtual && !useTreeViewport) {
         applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
           skipValidation: isLargeData,
           readonlyDataRows,
         });
       }
-      // 7. 设置数据行高（异步 / 懒虚拟路径已单独处理）
-      if (rows.length && !isAsyncRender && !useLazyVirtual) {
+      // 7. 设置数据行高（树视口 / 异步 / 懒虚拟路径已单独处理）
+      if (rows.length && !isAsyncRender && !useLazyVirtual && !useTreeViewport) {
         renderRowHeights(worksheet, maxDepth, rows.length, defaultRowHeight);
       }
       // 8. 自定义合并（lite 大数据：首屏跳过，Region 展开时按索引懒合并）
       const lazyLiteMerges = Boolean(treeConfig?.liteMode) && isLargeData;
-      if (merges.length > 0 && !lazyLiteMerges) {
+      if (merges.length > 0 && !lazyLiteMerges && !useTreeViewport) {
         if (isAsyncRender) {
           await renderMergesAsync(worksheet, merges, maxDepth);
         } else {
@@ -812,7 +840,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         worksheet.setFrozenColumns(freezeColumns);
       }
       // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
-      if (isAsyncRender) {
+      if (isAsyncRender && !isLargeData) {
         await new Promise<void>((resolve) => {
           window.requestAnimationFrame(() => resolve());
         });
@@ -823,7 +851,35 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       const collapseBatchSize =
         treeToggles.length >= 10_000 ? 500 : treeToggles.length >= 2000 ? 250 : 100;
       let collapseReady: Promise<void> = Promise.resolve();
-      if (treeUI && treeToggles.length) {
+      if (useTreeViewport && treeToggles.length) {
+        const api = setupTreeViewport(
+          univerAPI,
+          worksheet,
+          rows,
+          rowGroups,
+          treeToggles,
+          leafColumns,
+          maxDepth,
+          {
+            defaultRowHeight,
+            merges,
+            skipMerges: Boolean(treeConfig?.skipMerges) || lazyLiteMerges,
+            onProjected: (stats) => {
+              treeViewportStats = stats;
+              treeViewportStatsRef.current = stats;
+            },
+          },
+        );
+        treeCollapseApiRef.current = api;
+        logicalRowResolverRef.current = api.getLogicalDataRow;
+        collapseReady = api.ready;
+        disposeTreeCollapse = () => {
+          api.dispose();
+          treeCollapseApiRef.current = null;
+          logicalRowResolverRef.current = null;
+          treeViewportStatsRef.current = null;
+        };
+      } else if (treeUI && treeToggles.length) {
         const api = setupTreeCellCollapse(
           univerAPI,
           worksheet,
@@ -831,7 +887,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           treeToggles,
           maxDepth,
           {
-            ...(isAsyncRender
+            ...(isLargeData
               ? {
                   batchedInit: true,
                   initBatchSize: collapseBatchSize,
@@ -862,23 +918,39 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           .map((column, index) => (column.editable === false ? index : -1))
           .filter((index) => index >= 0),
       );
-      // treeUI 默认锁定 dimensions + attribute 对应列
+      // treeUI 默认锁定 dimensions + attribute 对应列（列配置 editable: true 时除外）
       if (treeUI && treeConfig) {
         const lockFields = new Set([
           ...treeConfig.dimensions.map((item) => item.field),
           ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
         ]);
         leafColumns.forEach((column, index) => {
-          if (lockFields.has(column.id)) {
+          if (lockFields.has(column.id) && column.editable !== true) {
             readonlyColumnSet.add(index);
           }
         });
       }
+      const dimensionFieldSet = new Set(treeConfig?.dimensions.map((item) => item.field) ?? []);
+      const editableOnReadonlyRowColumns = leafColumns
+        .map((column, index) =>
+          column.editable === true && dimensionFieldSet.has(column.id) ? index : -1,
+        )
+        .filter((index) => index >= 0);
       const readonlyColumns = [...readonlyColumnSet];
       disposeReadonly = setupReadonlyCells(univerAPI, {
         headerRowCount: maxDepth,
         readonlyColumns,
-        readonlyDataRows,
+        editableOnReadonlyRowColumns,
+        readonlyDataRows: useTreeViewport ? undefined : readonlyDataRows,
+        isReadonlyDataRow: useTreeViewport
+          ? (dataRow) => {
+              const logical = logicalRowResolverRef.current?.(dataRow);
+              if (logical == null) {
+                return false;
+              }
+              return Boolean(rows[logical]?.readonly);
+            }
+          : undefined,
       });
       // 10. 列分组
       createColumnOutlines(worksheet, columnGroups);
@@ -887,6 +959,17 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (cancelled) {
         return;
       }
+
+      const renderMs = Math.round(performance.now() - renderStartedAt);
+      onReady?.({
+        univerAPI,
+        workbook,
+        worksheet,
+        renderMs,
+        rowCount: rows.length,
+        virtualRender: virtualLoader?.getStats() ?? null,
+        treeViewport: treeViewportStats,
+      });
 
       const setupSecondaryFeatures = () => {
         if (cancelled) {
@@ -1004,10 +1087,17 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           } catch (error) {
             console.warn('[Table] register context menu failed', error);
           }
+        } else if (containerRef.current) {
+          try {
+            disableContextMenu(univerAPI);
+            disposeContextMenuBlock = setupContextMenuBlock(containerRef.current);
+          } catch (error) {
+            console.warn('[Table] disable context menu failed', error);
+          }
         }
       };
 
-      if (isAsyncRender) {
+      if (isAsyncRender || isLargeData) {
         if (typeof requestIdleCallback === 'function') {
           requestIdleCallback(setupSecondaryFeatures, { timeout: 500 });
         } else {
@@ -1016,16 +1106,6 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       } else {
         setupSecondaryFeatures();
       }
-
-      const renderMs = Math.round(performance.now() - renderStartedAt);
-      onReady?.({
-        univerAPI,
-        workbook,
-        worksheet,
-        renderMs,
-        rowCount: rows.length,
-        virtualRender: virtualLoader?.getStats() ?? null,
-      });
     };
 
     void finishInit();
@@ -1060,6 +1140,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         console.warn('[Table] dispose comment context menu guard failed', error);
       }
       try {
+        disposeContextMenuBlock?.();
+      } catch (error) {
+        console.warn('[Table] dispose context menu block failed', error);
+      }
+      try {
         disposeFindDialogConstraint?.();
       } catch (error) {
         console.warn('[Table] dispose find dialog constraint failed', error);
@@ -1072,59 +1157,17 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       univerAPIRef.current = null;
       workbookRef.current = null;
       worksheetRef.current = null;
+      logicalRowResolverRef.current = null;
     };
   }, [needsFlatten, flattenPreparing, flattened]);
 
-  // 注册icon图标
+  // 注册 icon 图标（与右键菜单注册分离，避免关闭菜单后仍被二次注册）
   useEffect(() => {
     const univerAPI = univerAPIRef.current;
-    const worksheet = worksheetRef.current;
-    if (univerAPI && worksheet) {
+    if (univerAPI) {
       registerAllIcons(univerAPI);
-      customizeContextMenu(univerAPI, worksheet, defaultContextMenuItems, {
-        onUploadAttachment: async (file, cell) => {
-          if (onUploadAttachmentRef.current) {
-            return onUploadAttachmentRef.current(file, cell);
-          }
-          return defaultUploadAttachment(file);
-        },
-        onAttachmentsChange: (cell, files) => {
-          onAttachmentsChangeRef.current?.(cell, files);
-        },
-        onViewCellHistory: (cell) => {
-          onViewCellHistoryRef.current?.(cell);
-        },
-        onViewDataTrace: (cell) => {
-          onViewDataTraceRef.current?.(cell);
-        },
-        onDrillDown: () => {
-          treeCollapseApiRef.current?.drillDown();
-        },
-        onDrillUp: () => {
-          treeCollapseApiRef.current?.drillUp();
-        },
-        onQuickSearch: () => {
-          openQuickSearch(univerAPI);
-        },
-        onUndo: async () => {
-          try {
-            const ok = await univerAPI?.undo?.();
-            message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
-          } catch {
-            message.warning('撤销失败');
-          }
-        },
-        onRedo: async () => {
-          try {
-            const ok = await univerAPI?.redo?.();
-            message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
-          } catch {
-            message.warning('重做失败');
-          }
-        },
-      });
     }
-  }, [univerAPIRef.current, worksheetRef.current]);
+  }, [needsFlatten, flattenPreparing, flattened]);
 
   return (
     <div

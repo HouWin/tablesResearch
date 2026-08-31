@@ -1,6 +1,8 @@
 import type { VirtualRenderStats } from './virtualRender';
+import type { TreeViewportStats } from './treeViewport';
 
 export type { VirtualRenderStats } from './virtualRender';
+export type { TreeViewportStats } from './treeViewport';
 
 export type ETablePrimitive = string | number | boolean | null | undefined;
 
@@ -322,7 +324,7 @@ export interface ETableTreeColumnGroup {
  */
 export interface ETableTreeConfig {
   /** 维度列（不含属性列） */
-  dimensions: Array<{ field: string; title: string; width?: number }>;
+  dimensions: Array<{ field: string; title: string; width?: number; editable?: boolean }>;
   /** 属性列（可选；行内属性展开。与 measureGroups 列维度互斥场景下不要混用） */
   attribute?: { field: string; title: string; width?: number };
   /**
@@ -404,6 +406,11 @@ export interface ETableTreeConfig {
    * liteMode 下仍允许品类/子品类在单个 Region 块内纵向合并（与树形演示一致）。
    */
   skipMerges?: boolean;
+  /**
+   * lite 大数据：每个叶子仅 1 行，不生成城市明细与 Region 折叠 toggle。
+   * 显著减少行数与 hideRows 调用，仅保留品类级展开/收起。
+   */
+  compactLiteRows?: boolean;
 }
 
 /** 分组统计字段 */
@@ -591,6 +598,8 @@ export interface ETableProps {
     rowCount?: number;
     /** 懒虚拟写入状态（仅行数 ≥ 5000 且开启 virtualScroll 时有值） */
     virtualRender?: VirtualRenderStats | null;
+    /** 树形视口投影状态（大数据 treeUI 自动启用） */
+    treeViewport?: TreeViewportStats | null;
   }) => void;
 }
 
@@ -679,4 +688,6 @@ export interface ETableRef {
   getDataTrace(cell?: string): ETableDataTraceNode | null;
   /** 懒虚拟写入统计（未启用时返回 null） */
   getVirtualRenderStats(): VirtualRenderStats | null;
+  /** 树形视口投影统计（未启用时返回 null） */
+  getTreeViewportStats(): TreeViewportStats | null;
 }

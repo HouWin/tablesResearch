@@ -998,6 +998,7 @@ const collectCustomMenuIds = (items: ETableContextMenuConfig[]): string[] => {
 export const hideNativeContextMenus = (
   univerAPI: any,
   keepIds: string[] = [],
+  options?: { hideCustom?: boolean },
 ) => {
   if (!univerAPI) {
     return;
@@ -1019,6 +1020,7 @@ export const hideNativeContextMenus = (
     }
 
     const keepSet = new Set(keepIds);
+    const hideCustom = options?.hideCustom ?? false;
     const positions = [
       'contextMenu.mainArea',
       'contextMenu.colHeader',
@@ -1033,7 +1035,8 @@ export const hideNativeContextMenus = (
           return;
         }
         const key = schema.key as string;
-        const keep = keepSet.has(key) || key?.startsWith?.('etable-');
+        const keep =
+          keepSet.has(key) || (!hideCustom && key?.startsWith?.('etable-'));
 
         if (schema.item && !keep) {
           // 强制隐藏原生菜单项
@@ -1064,6 +1067,30 @@ export const hideNativeContextMenus = (
   } catch (error) {
     console.warn('[ETable] hideNativeContextMenus failed', error);
   }
+};
+
+/**
+ * 完全禁用右键菜单（含自定义 etable-* 项与 Univer 原生项）。
+ */
+export const disableContextMenu = (univerAPI: any) => {
+  const hide = () => hideNativeContextMenus(univerAPI, [], { hideCustom: true });
+  requestAnimationFrame(hide);
+  setTimeout(hide, 300);
+  setTimeout(hide, 1000);
+};
+
+/**
+ * 在表格容器上拦截右键，避免菜单被再次唤起。
+ */
+export const setupContextMenuBlock = (container: HTMLElement) => {
+  const onContextMenuCapture = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  container.addEventListener('contextmenu', onContextMenuCapture, true);
+  return () => {
+    container.removeEventListener('contextmenu', onContextMenuCapture, true);
+  };
 };
 
 /**

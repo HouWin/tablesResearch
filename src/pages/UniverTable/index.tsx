@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Breadcrumb,
@@ -31,6 +31,8 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PlusOutlined,
+  FullscreenOutlined,
+  FullscreenExitOutlined,
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
@@ -275,7 +277,7 @@ const buildHeaderColumns = (extraMeasures: ETableColumn[] = []): ETableColumn[] 
         title: 'rowTree',
         children: [
           { id: 'category', title: '品类', width: 180, editable: false },
-          { id: 'subcategory', title: '子品类', width: 120, editable: false },
+          { id: 'subcategory', title: '子品类', width: 120, editable: true },
         ],
       },
     ],
@@ -364,7 +366,7 @@ const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig =
     defaultCollapsed: true,
     dimensions: [
       { field: 'category', title: '品类', width: 180 },
-      { field: 'subcategory', title: '子品类', width: 120 },
+      { field: 'subcategory', title: '子品类', width: 120, editable: true },
     ],
     attribute: { field: 'region', title: '区域', width: 140 },
     headerColumns: buildHeaderColumns(extraMeasures),
@@ -639,8 +641,11 @@ const countNodes = (nodes: ETableTreeNode[]): number =>
     0,
   );
 
+const TABLE_VIEW_HEIGHT = 560;
+
 const UniverTablePage = () => {
   const tableRef = useRef<ETableRef>(null);
+  const tableShellRef = useRef<HTMLDivElement>(null);
   const [dataScale, setDataScale] = useState<DataScale>('tree');
   const [scaledTreeData, setScaledTreeData] = useState<ETableTreeNode[] | null>(
     null,
@@ -665,6 +670,53 @@ const UniverTablePage = () => {
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [addedColumns, setAddedColumns] = useState<ETableColumn[]>([]);
   const [addColumnKey, setAddColumnKey] = useState<string | undefined>();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [viewportRange, setViewportRange] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const active =
+        document.fullscreenElement ??
+        (document as Document & { webkitFullscreenElement?: Element })
+          .webkitFullscreenElement;
+      setIsFullscreen(active === tableShellRef.current);
+      window.dispatchEvent(new Event('resize'));
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreen);
+    };
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const shell = tableShellRef.current;
+    if (!shell) {
+      return;
+    }
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element;
+      webkitExitFullscreen?: () => Promise<void>;
+    };
+    const active = doc.fullscreenElement ?? doc.webkitFullscreenElement;
+    try {
+      if (active) {
+        if (doc.exitFullscreen) {
+          await doc.exitFullscreen();
+        } else {
+          await doc.webkitExitFullscreen?.();
+        }
+      } else if (shell.requestFullscreen) {
+        await shell.requestFullscreen();
+      } else {
+        await (shell as HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> })
+          .webkitRequestFullscreen?.();
+      }
+    } catch {
+      message.warning('全屏切换失败，请检查浏览器权限');
+    }
+  }, []);
 
   const isDemoTree = dataScale === 'tree';
   const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
@@ -805,19 +857,33 @@ const UniverTablePage = () => {
     [gridLines, freezeHeader, contextMenu, virtualScroll, isDemoTree, targetRowCount],
   );
 
+  const refreshViewportRange = useCallback(() => {
+    const stats = tableRef.current?.getTreeViewportStats();
+    if (!stats?.enabled || stats.visibleLogicalRows <= stats.windowSize) {
+      setViewportRange(null);
+      return;
+    }
+    setViewportRange(
+      `视口投影：显示第 ${stats.displayRangeStart.toLocaleString()}–${stats.displayRangeEnd.toLocaleString()} 行，共 ${stats.visibleLogicalRows.toLocaleString()} 行（滚到底部自动翻页）`,
+    );
+  }, []);
+
   const refreshBreadcrumb = () => {
     setBreadcrumb(tableRef.current?.getBreadcrumb() || []);
+    refreshViewportRange();
   };
 
   const handleExpandAll = () => {
     tableRef.current?.expandAllRows();
     message.success('已展开全部行组');
+    window.setTimeout(refreshViewportRange, 0);
     refreshBreadcrumb();
   };
 
   const handleCollapseAll = () => {
     tableRef.current?.collapseAllRows();
     message.success('已折叠全部行组');
+    window.setTimeout(refreshViewportRange, 0);
     refreshBreadcrumb();
   };
 
@@ -1003,7 +1069,7 @@ const UniverTablePage = () => {
               description={
                 isDemoTree
                   ? '品类列同列缩进折叠（▶/▼）；区域列可展开城市明细。Sales 为数字列，Profit 为下拉，Date 为日期列。右键可查看历史、数据追踪、上钻下钻、快速搜索。'
-                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。虚拟滚动开启时 Canvas 只画可视区；≥5000 行按页懒写入。品类与子项行的区域列均可展开明细；默认折叠。`
+                  : `当前约 ${stats.sheetRows.toLocaleString()} 行。≥5000 行启用视口投影：左侧序号为展开后的行号，滚到底部自动加载下一页。${viewportRange ? ` ${viewportRange}` : ''}`
               }
               type={!isDemoTree && targetRowCount >= 500000 ? 'warning' : 'info'}
               showIcon
@@ -1120,7 +1186,7 @@ const UniverTablePage = () => {
             {loading ? (
               <div
                 style={{
-                  height: 560,
+                  height: TABLE_VIEW_HEIGHT,
                   display: 'flex',
                   justifyContent: 'center',
                   alignItems: 'center',
@@ -1129,7 +1195,32 @@ const UniverTablePage = () => {
                 <Spin size="large" tip={`生成树形数据中… ${progress}%`} />
               </div>
             ) : isDemoTree || scaledTreeData ? (
-              <div style={{ height: 560, overflow: 'hidden', position: 'relative' }}>
+              <div
+                ref={tableShellRef}
+                style={{
+                  height: isFullscreen ? '100%' : TABLE_VIEW_HEIGHT,
+                  overflow: 'hidden',
+                  position: 'relative',
+                  background: '#fff',
+                }}
+              >
+                <Tooltip title={isFullscreen ? '退出全屏 (Esc)' : '全屏表格'}>
+                  <Button
+                    type="default"
+                    size="small"
+                    icon={
+                      isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />
+                    }
+                    onClick={() => void toggleFullscreen()}
+                    style={{
+                      position: 'absolute',
+                      top: 8,
+                      right: 8,
+                      zIndex: 20,
+                      opacity: 0.92,
+                    }}
+                  />
+                </Tooltip>
                 {tableRendering && (
                   <div
                     style={{
@@ -1162,6 +1253,7 @@ const UniverTablePage = () => {
                         message.info(`表格渲染完成，耗时 ${ms.toLocaleString()} ms`);
                       }
                     }
+                    window.setTimeout(refreshViewportRange, 0);
                   }}
                   onCellChange={(record: ETableCellChangeRecord) => {
                     setTracks((prev) => [record, ...prev].slice(0, 200));
@@ -1178,7 +1270,7 @@ const UniverTablePage = () => {
             ) : (
               <div
                 style={{
-                  height: 560,
+                  height: TABLE_VIEW_HEIGHT,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',

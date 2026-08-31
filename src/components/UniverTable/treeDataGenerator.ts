@@ -194,7 +194,11 @@ const getLeafMeasureValues = (node: ETableTreeNode): Record<string, ETablePrimit
 export const estimateLiteTreeFlatRows = (
   categoryCount: number,
   leafPerCategory: number,
-): number => categoryCount * (3 + leafPerCategory * 3);
+  compact = false,
+): number =>
+  compact
+    ? categoryCount * (1 + leafPerCategory)
+    : categoryCount * (3 + leafPerCategory * 3);
 
 /**
  * 根据目标展平行数规划 Category 数量与子项数量。
@@ -270,6 +274,7 @@ export const generateScaledTreeData = (
             children[leafIndex] = {
               id: `leaf-${categoryIndex}-${leafIndex}`,
               label: leafName,
+              collapsed: true,
               data: { subcategory: '华东' },
               attributes: regionAttributesLite(
                 `leaf-${categoryIndex}-${leafIndex}`,

@@ -15,6 +15,10 @@ export const setupReadonlyCells = (
      * 用于分组汇总行、总计行等。
      */
     readonlyDataRows?: number[];
+    /** 汇总行等行级只读时仍允许编辑的列（如子品类） */
+    editableOnReadonlyRowColumns?: number[];
+    /** 视口投影等动态行映射场景下的只读判断 */
+    isReadonlyDataRow?: (dataRow: number) => boolean;
     /** 数据总行数（含表头）；用于判断是否在表内 */
     totalRows?: number;
     totalColumns?: number;
@@ -26,6 +30,8 @@ export const setupReadonlyCells = (
 
   const readonlyColSet = new Set(options.readonlyColumns);
   const readonlyDataRowSet = new Set(options.readonlyDataRows ?? []);
+  const editableOnReadonlyRowColSet = new Set(options.editableOnReadonlyRowColumns ?? []);
+  const resolveReadonlyDataRow = options.isReadonlyDataRow;
   const headerRowCount = Math.max(0, options.headerRowCount);
 
   const isReadonly = (row: number, column: number) => {
@@ -36,7 +42,12 @@ export const setupReadonlyCells = (
       return true;
     }
     const dataRow = row - headerRowCount;
-    if (readonlyDataRowSet.has(dataRow)) {
+    const rowReadonly =
+      Boolean(resolveReadonlyDataRow?.(dataRow)) || readonlyDataRowSet.has(dataRow);
+    if (rowReadonly) {
+      if (editableOnReadonlyRowColSet.has(column)) {
+        return false;
+      }
       return true;
     }
     return readonlyColSet.has(column);

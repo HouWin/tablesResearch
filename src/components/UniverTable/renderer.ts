@@ -17,6 +17,85 @@ import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
  */
 type UniverWorksheet = any;
 
+/** 激活单元格并恢复选区边框（树形折叠等程序化操作后调用） */
+export const focusSheetCell = (
+  worksheet: UniverWorksheet,
+  workbook: any,
+  row: number,
+  column: number,
+) => {
+  try {
+    workbook?.showSelection?.();
+  } catch {
+    // ignore
+  }
+  try {
+    worksheet?.getRange?.(row, column, 1, 1)?.activate?.();
+  } catch {
+    // ignore
+  }
+  try {
+    workbook?.showSelection?.();
+  } catch {
+    // ignore
+  }
+};
+
+/** 立即恢复选区，并在下一帧再补一次（覆盖 merge / hideRows 后的延迟重绘） */
+export const restoreSheetCellSelection = (
+  worksheet: UniverWorksheet,
+  workbook: any,
+  row: number,
+  column: number,
+) => {
+  focusSheetCell(worksheet, workbook, row, column);
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => focusSheetCell(worksheet, workbook, row, column));
+  }
+};
+
+/**
+ * hideRows / merge 等操作会把选区扩大到合并区域；先透明选区，操作后立刻回到单格。
+ */
+export const suppressSelectionFlashDuring = (
+  worksheet: UniverWorksheet,
+  workbook: any,
+  anchor: { row: number; column: number } | null | undefined,
+  run: () => void | Promise<void>,
+): void | Promise<void> => {
+  if (anchor) {
+    try {
+      workbook?.transparentSelection?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  const finish = () => {
+    if (!anchor) {
+      return;
+    }
+    restoreSheetCellSelection(worksheet, workbook, anchor.row, anchor.column);
+  };
+
+  try {
+    const result = run();
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      return (result as Promise<void>).then(
+        () => finish(),
+        (error) => {
+          finish();
+          throw error;
+        },
+      );
+    }
+    finish();
+  } catch (error) {
+    finish();
+    throw error;
+  }
+};
+
 const yieldToMain = () =>
   new Promise<void>((resolve) => {
     if (typeof requestIdleCallback === 'function') {
@@ -646,6 +725,236 @@ export const reapplyMergesForRowSpan = (
   });
 };
 
+type ProjectedMergeRange = {
+  row: number;
+  column: number;
+  rowSpan: number;
+  columnSpan: number;
+};
+
+export type PlannedProjectedMerge = ProjectedMergeRange & {
+  logicalRow: number;
+};
+
+const logicalMergeSignature = (merge: PlannedProjectedMerge) =>
+  `${merge.logicalRow}:${merge.column}:${merge.rowSpan}:${merge.columnSpan}`;
+
+const breakApartProjectedMergeAt = (
+  worksheet: UniverWorksheet,
+  dataStartRow: number,
+  range: ProjectedMergeRange,
+) => {
+  if (range.rowSpan <= 1 && range.columnSpan <= 1) {
+    return;
+  }
+  try {
+    worksheet
+      .getRange(
+        dataStartRow + range.row,
+        range.column,
+        range.rowSpan,
+        range.columnSpan,
+      )
+      .breakApart?.();
+  } catch {
+    // ignore broken merge cleanup
+  }
+};
+
+/**
+ * 在重绘行前解除已删除或位置变化的 merge（按逻辑锚点，避免误拆其他分组）。
+ */
+export const breakStaleProjectedMerges = (
+  worksheet: UniverWorksheet,
+  dataStartRow: number,
+  previous: PlannedProjectedMerge[],
+  next: PlannedProjectedMerge[],
+) => {
+  if (!worksheet || !previous.length) {
+    return;
+  }
+  const nextByLogical = new Map(
+    next.map((merge) => [logicalMergeSignature(merge), merge]),
+  );
+
+  previous.forEach((prev) => {
+    const nextMerge = nextByLogical.get(logicalMergeSignature(prev));
+    if (!nextMerge) {
+      breakApartProjectedMergeAt(worksheet, dataStartRow, prev);
+      return;
+    }
+    if (
+      prev.row !== nextMerge.row ||
+      prev.rowSpan !== nextMerge.rowSpan ||
+      prev.column !== nextMerge.column ||
+      prev.columnSpan !== nextMerge.columnSpan
+    ) {
+      breakApartProjectedMergeAt(worksheet, dataStartRow, prev);
+    }
+  });
+};
+
+/**
+ * 解除逻辑上已不存在、但物理位置仍残留的 merge（按逻辑锚点比较，避免行号偏移误拆）。
+ */
+export const breakRemovedProjectedMerges = (
+  worksheet: UniverWorksheet,
+  dataStartRow: number,
+  previous: PlannedProjectedMerge[],
+  next: PlannedProjectedMerge[],
+) => {
+  if (!worksheet || !previous.length) {
+    return;
+  }
+  const nextLogical = new Set(next.map(logicalMergeSignature));
+  previous.forEach((range) => {
+    if (nextLogical.has(logicalMergeSignature(range))) {
+      return;
+    }
+    breakApartProjectedMergeAt(worksheet, dataStartRow, range);
+  });
+};
+
+/**
+ * 解除视口投影区域内上一次写入的合并，避免 reproject 后残留错位 merge。
+ */
+export const breakApartProjectedMerges = (
+  worksheet: UniverWorksheet,
+  dataStartRow: number,
+  ranges: ProjectedMergeRange[],
+) => {
+  if (!worksheet || !ranges.length) {
+    return;
+  }
+  ranges.forEach((range) => {
+    breakApartProjectedMergeAt(worksheet, dataStartRow, range);
+  });
+};
+
+/**
+ * 视口投影：将逻辑行 merge 映射到当前窗口内的物理行，并垂直居中。
+ * 仅当 merge 覆盖的逻辑行在 slice 中连续出现时才应用。
+ */
+export const planProjectedMerges = (
+  merges: ETableMerge[],
+  projectedLogicalRows: number[],
+): PlannedProjectedMerge[] => {
+  if (!merges.length || !projectedLogicalRows.length) {
+    return [];
+  }
+
+  const logicalToProjected = new Map<number, number>();
+  projectedLogicalRows.forEach((logicalRow, projectedIndex) => {
+    logicalToProjected.set(logicalRow, projectedIndex);
+  });
+
+  const planned: PlannedProjectedMerge[] = [];
+  const seen = new Set<string>();
+
+  merges.forEach((merge) => {
+    if (merge.rowSpan <= 1) {
+      return;
+    }
+
+    const key = `${merge.row}:${merge.column}`;
+    if (seen.has(key)) {
+      return;
+    }
+
+    const projectedStart = logicalToProjected.get(merge.row);
+    if (projectedStart === undefined) {
+      return;
+    }
+
+    const logicalEnd = merge.row + merge.rowSpan;
+    for (let logicalRow = merge.row + 1; logicalRow < logicalEnd; logicalRow += 1) {
+      const projected = logicalToProjected.get(logicalRow);
+      if (projected !== projectedStart + (logicalRow - merge.row)) {
+        return;
+      }
+    }
+
+    seen.add(key);
+    planned.push({
+      row: projectedStart,
+      column: merge.column,
+      rowSpan: merge.rowSpan,
+      columnSpan: merge.columnSpan,
+      logicalRow: merge.row,
+    });
+  });
+
+  return planned;
+};
+
+export const applyProjectedMerges = (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[],
+  dataStartRow: number,
+  projectedLogicalRows: number[],
+  previousMerges: PlannedProjectedMerge[] = [],
+): PlannedProjectedMerge[] => {
+  if (!worksheet || !merges.length || !projectedLogicalRows.length) {
+    return [];
+  }
+
+  const applied: PlannedProjectedMerge[] = [];
+  const planned = planProjectedMerges(merges, projectedLogicalRows);
+  const prevByLogical = new Map(
+    previousMerges.map((merge) => [logicalMergeSignature(merge), merge]),
+  );
+
+  planned.forEach((projectedRange) => {
+    const logicalKey = logicalMergeSignature(projectedRange);
+    const prevMerge = prevByLogical.get(logicalKey);
+
+    if (
+      prevMerge &&
+      prevMerge.row === projectedRange.row &&
+      prevMerge.column === projectedRange.column &&
+      prevMerge.rowSpan === projectedRange.rowSpan &&
+      prevMerge.columnSpan === projectedRange.columnSpan
+    ) {
+      applied.push(projectedRange);
+      return;
+    }
+
+    if (prevMerge) {
+      const alreadyAtTarget =
+        prevMerge.row === projectedRange.row &&
+        prevMerge.column === projectedRange.column &&
+        prevMerge.rowSpan === projectedRange.rowSpan &&
+        prevMerge.columnSpan === projectedRange.columnSpan;
+      if (!alreadyAtTarget) {
+        breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
+      }
+    }
+
+    const sourceMerge = merges.find(
+      (merge) =>
+        merge.row === projectedRange.logicalRow &&
+        merge.column === projectedRange.column,
+    );
+    if (!sourceMerge) {
+      return;
+    }
+
+    const projectedMerge: ETableMerge = {
+      ...sourceMerge,
+      row: projectedRange.row,
+    };
+
+    try {
+      applyMerge(worksheet, projectedMerge, dataStartRow, { preserveValue: true });
+      applied.push(projectedRange);
+    } catch (error) {
+      console.warn('[ETable] projected merge failed', { merge: projectedMerge, error });
+    }
+  });
+
+  return applied;
+};
+
 const applyMerge = (
   worksheet: UniverWorksheet,
   merge: ETableMerge,
@@ -676,11 +985,36 @@ const applyMerge = (
     return;
   }
 
+  const topLeft = worksheet.getRange(startRow, merge.column, 1, 1);
+
+  if (merge.rowSpan > 1) {
+    if (merge.value !== undefined && !options?.preserveValue) {
+      topLeft.setValue(toMergedCellPayload(merge.value));
+    } else if (options?.preserveValue) {
+      try {
+        const raw = topLeft.getValue?.() ?? topLeft.getCellData?.()?.v;
+        const cellValue =
+          raw !== null && typeof raw === 'object' && 'v' in raw
+            ? (raw as { v?: unknown }).v
+            : raw;
+        topLeft.setValue({
+          v: cellValue ?? merge.value ?? null,
+          s: {
+            ...((raw !== null && typeof raw === 'object' && 's' in raw
+              ? (raw as { s?: Record<string, unknown> }).s
+              : {}) || {}),
+            vt: VerticalAlign.MIDDLE,
+          },
+        });
+      } catch {
+        // ignore style patch after merge
+      }
+    }
+    return;
+  }
+
   if (merge.value !== undefined && !options?.preserveValue) {
-    const topLeft = worksheet.getRange(startRow, merge.column, 1, 1);
-    topLeft.setValue(
-      merge.rowSpan > 1 ? toMergedCellPayload(merge.value) : merge.value,
-    );
+    range.setValue(merge.value);
   }
 };
 
