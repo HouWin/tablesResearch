@@ -1,5 +1,5 @@
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
-import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan, restoreSheetCellSelection, suppressSelectionFlashDuring } from './renderer';
+import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
 
 const LARGE_TOGGLE_COUNT = 200;
@@ -188,7 +188,7 @@ const setRowsCollapsed = (
     anchorRow: number;
     afterReapply?: () => void;
   },
-  rowOptions?: { deferMergeFix?: boolean; onMergeFixDone?: () => void },
+  rowOptions?: { deferMergeFix?: boolean },
 ) => {
   if (group.count <= 0) {
     return;
@@ -221,13 +221,9 @@ const setRowsCollapsed = (
           mergeFix.afterReapply?.();
         };
         if (rowOptions?.deferMergeFix) {
-          requestAnimationFrame(() => {
-            runMergeFix();
-            rowOptions?.onMergeFixDone?.();
-          });
+          requestAnimationFrame(runMergeFix);
         } else {
           runMergeFix();
-          rowOptions?.onMergeFixDone?.();
         }
       }
     }
@@ -421,7 +417,6 @@ export const setupTreeCellCollapse = (
       anchorRow: number;
       afterReapply?: () => void;
     },
-    rowOptions?: { onMergeFixDone?: () => void },
   ) => {
     if (!collapsed && ensureDataRows) {
       if (useBatchToggle && group.count > 200) {
@@ -433,32 +428,8 @@ export const setupTreeCellCollapse = (
     }
     setRowsCollapsed(worksheet, dataStartRow, group, collapsed, mergeFix, {
       deferMergeFix: useBatchToggle,
-      onMergeFixDone: rowOptions?.onMergeFixDone,
     });
   };
-
-  const getWorkbook = () => {
-    try {
-      return univerAPI.getActiveWorkbook?.();
-    } catch {
-      return null;
-    }
-  };
-
-  /** merge / hideRows 等程序化操作会扩大选区，树形展开后恢复到点击的单格 */
-  const showSelectionBorder = () => {
-    getWorkbook()?.showSelection?.();
-  };
-
-  const restoreClickedCellSelection = () => {
-    if (!lastClickedSheetCell) {
-      return;
-    }
-    const { row, column } = lastClickedSheetCell;
-    restoreSheetCellSelection(worksheet, getWorkbook(), row, column);
-  };
-
-  let lastClickedSheetCell: { row: number; column: number } | null = null;
 
   const groupMap = new Map(
     collectGroups(rowGroups).map((group) => [group.id, group]),
@@ -707,11 +678,7 @@ export const setupTreeCellCollapse = (
   const applyCollapsed = (
     groupId: string,
     collapsed: boolean,
-    applyOptions?: {
-      skipLabel?: boolean;
-      skipNestedRegionReset?: boolean;
-      onMergeFixDone?: () => void;
-    },
+    applyOptions?: { skipLabel?: boolean; skipNestedRegionReset?: boolean },
   ): void | Promise<void> => {
     const toggle = toggleByGroupId.get(groupId);
     if (!toggle) {
@@ -752,7 +719,6 @@ export const setupTreeCellCollapse = (
       !collapsed && toggle.kind === 'region'
         ? mergeFixForRegion(toggle.row, group)
         : undefined,
-      { onMergeFixDone: applyOptions?.onMergeFixDone },
     );
   };
 
@@ -853,37 +819,12 @@ export const setupTreeCellCollapse = (
     };
 
     const runToggle = async () => {
-      const anchor = lastClickedSheetCell;
-      const workbook = getWorkbook();
-      const restore = () => {
-        if (anchor) {
-          restoreSheetCellSelection(worksheet, workbook, anchor.row, anchor.column);
-        }
-      };
-      const deferRestore = useBatchToggle && toggle.kind === 'region' && !next;
-
-      if (anchor) {
-        try {
-          workbook?.transparentSelection?.();
-        } catch {
-          // ignore
-        }
-      }
-
-      try {
-        if (toggle.kind === 'category' && useBatchToggle) {
-          await runCategoryBody();
-        } else {
-          const result = applyCollapsed(groupId, next, {
-            onMergeFixDone: deferRestore ? restore : undefined,
-          });
-          if (result instanceof Promise) {
-            await result;
-          }
-        }
-      } finally {
-        if (!deferRestore) {
-          restore();
+      if (toggle.kind === 'category' && useBatchToggle) {
+        await runCategoryBody();
+      } else {
+        const result = applyCollapsed(groupId, next);
+        if (result instanceof Promise) {
+          await result;
         }
       }
     };
@@ -906,22 +847,6 @@ export const setupTreeCellCollapse = (
   };
 
   const expandAll = () => {
-    const anchor = lastClickedSheetCell;
-    const workbook = getWorkbook();
-    const restore = () => {
-      if (anchor) {
-        restoreSheetCellSelection(worksheet, workbook, anchor.row, anchor.column);
-      }
-    };
-
-    if (anchor) {
-      try {
-        workbook?.transparentSelection?.();
-      } catch {
-        // ignore
-      }
-    }
-
     categoryToggles.forEach((toggle) => {
       applyCollapsed(toggle.groupId, false);
     });
@@ -935,7 +860,6 @@ export const setupTreeCellCollapse = (
             setRowsCollapsed(worksheet, dataStartRow, group, true);
           }
         });
-      restore();
       return;
     }
 
@@ -944,21 +868,13 @@ export const setupTreeCellCollapse = (
         (toggle) => toggle.kind === 'region' && collapsedState.get(toggle.groupId),
       );
       await batchHideRegionToggles(collapsedRegions);
-      restore();
     });
   };
 
   const collapseAll = () => {
-    void suppressSelectionFlashDuring(
-      worksheet,
-      getWorkbook(),
-      lastClickedSheetCell,
-      () => {
-        categoryToggles.forEach((toggle) => {
-          applyCollapsed(toggle.groupId, true, { skipLabel: false });
-        });
-      },
-    );
+    categoryToggles.forEach((toggle) => {
+      applyCollapsed(toggle.groupId, true, { skipLabel: false });
+    });
   };
 
   const groupCoverIntervals = toggles
@@ -1090,7 +1006,6 @@ export const setupTreeCellCollapse = (
       });
 
   let disposable: { dispose?: () => void } | null = null;
-  let rowHeaderDisposable: { dispose?: () => void } | null = null;
   try {
     disposable = univerAPI.addEvent(univerAPI.Event.CellClicked, (params: any) => {
       const row = params?.row ?? params?.location?.row;
@@ -1098,33 +1013,21 @@ export const setupTreeCellCollapse = (
       if (typeof row !== 'number' || typeof column !== 'number') {
         return;
       }
-      lastClickedSheetCell = { row, column };
       const dataRow = row - dataStartRow;
       const hit =
         dataRow >= 0 ? toggleByCell.get(`${dataRow}:${column}`) : undefined;
       if (hit) {
         toggleGroup(hit.groupId);
-        return;
       }
-      restoreSheetCellSelection(worksheet, getWorkbook(), row, column);
     });
   } catch (error) {
     console.warn('[ETable] bind tree cell collapse failed', error);
-  }
-
-  try {
-    rowHeaderDisposable = univerAPI.addEvent(univerAPI.Event.RowHeaderClick, () => {
-      showSelectionBorder();
-    });
-  } catch {
-    // RowHeaderClick 在部分版本不可用
   }
 
   return {
     dispose: () => {
       try {
         disposable?.dispose?.();
-        rowHeaderDisposable?.dispose?.();
       } catch {
         // ignore
       }

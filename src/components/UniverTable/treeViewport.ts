@@ -5,7 +5,6 @@ import {
   breakRemovedProjectedMerges,
   breakStaleProjectedMerges,
   buildMergeIndexByAnchorRow,
-  restoreSheetCellSelection,
   planProjectedMerges,
   type PlannedProjectedMerge,
 } from './renderer';
@@ -197,7 +196,6 @@ export const setupTreeViewport = (
     ? buildMergeIndexByAnchorRow(sheetMerges)
     : new Map<number, ETableMerge[]>();
   let lastProjectedMerges: PlannedProjectedMerge[] = [];
-  let pendingFocusCell: { row: number; column: number } | null = null;
 
   const groupMap = new Map(
     collectGroups(rowGroups).map((group) => [group.id, group]),
@@ -489,23 +487,16 @@ export const setupTreeViewport = (
     });
   };
 
-  const scheduleFocusRestore = (row: number, column: number) => {
-    restoreSheetCellSelection(worksheet, getWorkbook(), row, column);
-  };
-
   const reproject = (scrollOptions?: {
     scrollRow?: number;
     preserveScroll?: boolean;
-    focusCell?: { row: number; column: number };
   }) => {
     if (disposed) {
       return;
     }
 
-    const focusCell = scrollOptions?.focusCell;
     const shouldPreserveScroll =
-      !focusCell &&
-      (scrollOptions?.preserveScroll ?? scrollOptions?.scrollRow === undefined);
+      scrollOptions?.preserveScroll ?? scrollOptions?.scrollRow === undefined;
     const scrollAnchor = shouldPreserveScroll ? captureScrollAnchor() : null;
 
     const prevSlice = projectedToLogical;
@@ -521,13 +512,6 @@ export const setupTreeViewport = (
     const mergesForSlice = collectMergesForSlice(slice);
     const plannedMerges = planProjectedMerges(mergesForSlice, slice);
 
-    if (focusCell) {
-      try {
-        getWorkbook()?.transparentSelection?.();
-      } catch {
-        // ignore
-      }
-    }
     breakStaleProjectedMerges(worksheet, dataStartRow, prevMerges, plannedMerges);
 
     projectedToLogical = slice;
@@ -604,17 +588,12 @@ export const setupTreeViewport = (
       restoreScrollAnchor(scrollAnchor);
     }
 
-    if (focusCell) {
-      scheduleFocusRestore(focusCell.row, focusCell.column);
-    }
-
     options?.onProjected?.(getStats());
   };
 
   const refresh = (scrollOptions?: {
     scrollRow?: number;
     preserveScroll?: boolean;
-    focusCell?: { row: number; column: number };
   }) => {
     scrollAdjustLock = true;
     recomputeVisible();
@@ -649,11 +628,7 @@ export const setupTreeViewport = (
     });
   };
 
-  const applyCollapsed = (
-    groupId: string,
-    collapsed: boolean,
-    focusCell?: { row: number; column: number },
-  ) => {
+  const applyCollapsed = (groupId: string, collapsed: boolean) => {
     const toggle = toggleByGroupId.get(groupId);
     if (!toggle) {
       return;
@@ -667,7 +642,7 @@ export const setupTreeViewport = (
     } else if (toggle.kind === 'region') {
       ensureLogicalRowInWindow(toggle.row);
     }
-    refresh({ focusCell });
+    refresh();
   };
 
   const toggleGroup = (groupId: string) => {
@@ -675,9 +650,7 @@ export const setupTreeViewport = (
     if (!toggle) {
       return;
     }
-    const focusCell = pendingFocusCell;
-    pendingFocusCell = null;
-    applyCollapsed(groupId, !collapsedState.get(groupId), focusCell ?? undefined);
+    applyCollapsed(groupId, !collapsedState.get(groupId));
   };
 
   const groupCoverIntervals = toggles
@@ -878,15 +851,6 @@ export const setupTreeViewport = (
 
   let cellDisposable: { dispose?: () => void } | null = null;
   let scrollDisposable: { dispose?: () => void } | null = null;
-  let rowHeaderDisposable: { dispose?: () => void } | null = null;
-
-  const getWorkbook = () => {
-    try {
-      return univerAPI.getActiveWorkbook?.();
-    } catch {
-      return null;
-    }
-  };
 
   recomputeVisible();
   reproject();
@@ -898,12 +862,7 @@ export const setupTreeViewport = (
       if (typeof row !== 'number' || typeof column !== 'number') {
         return;
       }
-      pendingFocusCell = { row, column };
       handleToggleCellActivation(row, column);
-      if (pendingFocusCell) {
-        scheduleFocusRestore(row, column);
-        pendingFocusCell = null;
-      }
     });
   } catch (error) {
     console.warn('[ETable] bind viewport tree cell collapse failed', error);
@@ -915,14 +874,6 @@ export const setupTreeViewport = (
         scheduleScrollAdjust();
       });
     }
-  } catch {
-    // ignore
-  }
-
-  try {
-    rowHeaderDisposable = univerAPI.addEvent(univerAPI.Event.RowHeaderClick, () => {
-      getWorkbook()?.showSelection?.();
-    });
   } catch {
     // ignore
   }
@@ -941,7 +892,6 @@ export const setupTreeViewport = (
       try {
         cellDisposable?.dispose?.();
         scrollDisposable?.dispose?.();
-        rowHeaderDisposable?.dispose?.();
       } catch {
         // ignore
       }

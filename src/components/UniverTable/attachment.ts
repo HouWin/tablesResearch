@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import type { ETableAttachment, ETableAttachmentFile } from './types';
-import { Modal, message } from 'antd';
+import { Button, Modal, message } from 'antd';
 
 /** 写入单元格 customMetaData 的 key */
 export const ATTACHMENT_META_KEY = 'etableAttachments';
@@ -204,16 +204,17 @@ export const showAttachmentsModal = (cell: string, files: ETableAttachmentFile[]
             key: file.id,
             style: {
               display: 'flex',
-              alignItems: 'center',
+              alignItems: 'flex-start',
               justifyContent: 'space-between',
               gap: 12,
               padding: '8px 0',
               borderBottom: '1px solid #f0f0f0',
+              flexWrap: 'nowrap',
             },
           },
           createElement(
             'div',
-            { style: { minWidth: 0 } },
+            { style: { flex: 1, minWidth: 0 } },
             createElement(
               'div',
               { style: { fontWeight: 500, wordBreak: 'break-all' } },
@@ -221,13 +222,21 @@ export const showAttachmentsModal = (cell: string, files: ETableAttachmentFile[]
             ),
             createElement(
               'div',
-              { style: { color: '#8c8c8c', fontSize: 12 } },
+              { style: { color: '#8c8c8c', fontSize: 12, wordBreak: 'break-all' } },
               [formatFileSize(file.size), file.mimeType].filter(Boolean).join(' · '),
             ),
           ),
           createElement(
-            'a',
-            { href: file.url, target: '_blank', rel: 'noreferrer', download: file.name },
+            Button,
+            {
+              type: 'link',
+              size: 'small',
+              href: file.url,
+              target: '_blank',
+              rel: 'noreferrer',
+              download: file.name,
+              style: { flexShrink: 0, padding: 0, height: 'auto', lineHeight: '22px' },
+            },
             '下载',
           ),
         ),
