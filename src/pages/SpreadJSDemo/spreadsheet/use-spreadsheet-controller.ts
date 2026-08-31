@@ -7,6 +7,7 @@ import {
   describeClipboardRange,
 } from './clipboard';
 import {
+  BUSINESS_DATA,
   COLUMNS,
   COLUMN_GROUPS,
   COLUMN_HEADER_GROUPS,
@@ -110,6 +111,14 @@ type TrackedHistoryCell = {
   col: number;
 };
 
+function logRegularSourceData() {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log(
+    '[SpreadJS Demo] 常规模式原始业务数据 BUSINESS_DATA：',
+    BUSINESS_DATA,
+  );
+}
+
 export type SpreadsheetActions = {
   undo: () => void;
   redo: () => void;
@@ -179,6 +188,7 @@ function isAcceptedAttachment(file: File) {
 export function useSpreadsheetController() {
   const hostRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<SpreadsheetActions | null>(null);
+  const regularSourceLoggedRef = useRef(false);
   const panelRef = useRef<PanelName>(null);
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
   const rowGroupsCollapsedRef = useRef(false);
@@ -1450,6 +1460,10 @@ export function useSpreadsheetController() {
           scheduleStressViewportLoad(nextRow);
         }
         setReady(true);
+        if (!stress && !regularSourceLoggedRef.current) {
+          regularSourceLoggedRef.current = true;
+          logRegularSourceData();
+        }
       };
 
       const currentCellIdentity = () => {
