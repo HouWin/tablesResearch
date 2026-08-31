@@ -200,28 +200,14 @@ export const PRODUCT_ATTRIBUTE_COLUMN = 1;
 export const REGION_HIERARCHY_COLUMN = 2;
 export const HIERARCHY_COLUMN_COUNT = 3;
 export const REVENUE_COLUMN = 3;
-export const PRODUCT_REVENUE_COLUMN = 4;
 export const SERVICE_REVENUE_COLUMN = 5;
 export const ORDERS_COLUMN = 6;
-export const ONLINE_ORDERS_COLUMN = 7;
-export const OFFLINE_ORDERS_COLUMN = 8;
 export const AVG_ORDER_COLUMN = 9;
 export const COMPLETION_COLUMN = 10;
-export const OWNER_COLUMN = 11;
 export const STATUS_COLUMN = 12;
 export const VERIFIED_COLUMN = 13;
 export const UPDATED_AT_COLUMN = 14;
 export const DECIMAL_COLUMN = 15;
-export const DRILLABLE_METRIC_COLUMNS = new Set([
-  REVENUE_COLUMN,
-  PRODUCT_REVENUE_COLUMN,
-  SERVICE_REVENUE_COLUMN,
-  ORDERS_COLUMN,
-  ONLINE_ORDERS_COLUMN,
-  OFFLINE_ORDERS_COLUMN,
-  AVG_ORDER_COLUMN,
-  COMPLETION_COLUMN,
-]);
 export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
@@ -1409,22 +1395,9 @@ function applyStressGroupSummaries(rows: ViewRow[]) {
   });
 }
 
-export function createStressRecords(size = STRESS_ROW_COUNT): ViewRow[] {
-  const rows = Array.from({ length: size }, (_, index) =>
-    createStressRecord(index),
-  );
-  applyStressGroupSummaries(rows);
-  return rows;
-}
-
 let stressRecordsCache: ViewRow[] | null = null;
 let stressRecordsPromise: Promise<ViewRow[]> | null = null;
 let stressRecordsCacheEpoch = 0;
-
-export function getStressRecords() {
-  stressRecordsCache ??= createStressRecords();
-  return stressRecordsCache;
-}
 
 export async function getStressRecordsAsync() {
   if (stressRecordsCache) return stressRecordsCache;
