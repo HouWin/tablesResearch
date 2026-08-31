@@ -67,12 +67,21 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(1px);
+  background: #fff;
 }
 
 .jss-page__sheet.is-loading {
   pointer-events: none;
+}
+
+.jss-page__sheet.is-loading :global(.jss_container) {
+  visibility: hidden;
+}
+
+.jss-page__sheet.is-loading :global(.jtabs),
+.jss-page__sheet.is-loading :global(.jss_tabs),
+.jss-page__sheet.is-loading :global([class*='jtabs']) {
+  visibility: hidden;
 }
 
 .jss-page__sheet :global(.jss_container) {

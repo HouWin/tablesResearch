@@ -62,6 +62,31 @@ const outlineLoadBridge = {
   restoreTab: () => {},
 };
 
+/** 与 Spreadsheet 内 Worksheet 声明顺序一致 */
+const WORKSHEET_TAB_INDEX: Record<string, number> = {
+  订单明细: 0,
+  透视分析: 1,
+  透视源数据: 2,
+  透视底表: 3,
+};
+
+function resolvePinnedTabIndex(
+  list: any[],
+  target: { index: number; name: string },
+) {
+  let idx = target.index;
+  if (idx >= 0 && idx < list.length) {
+    const ws = list[idx];
+    const name = ws?.options?.worksheetName || ws?.getWorksheetName?.();
+    if (name === target.name) return idx;
+  }
+  return list.findIndex(
+    (ws) =>
+      ws?.options?.worksheetName === target.name ||
+      ws?.getWorksheetName?.() === target.name,
+  );
+}
+
 /** expand_all / collapse_all 不在 Material Icons 字体中，用 SVG 还原官方造型 */
 const OUTLINE_TOOLBAR_SVG = {
   expand_all:
@@ -644,39 +669,22 @@ function JspreadsheetPageInner() {
     spreadsheet.current = null;
   }, []);
 
-  const openWorksheetByName = useCallback((name: string) => {
-    const list = getWorksheetList(spreadsheet);
-    if (!list.length) return null;
-    const idx = list.findIndex(
-      (ws) =>
-        ws?.options?.worksheetName === name || ws?.getWorksheetName?.() === name,
-    );
-    const parent = list[0]?.parent;
-    if (idx >= 0 && parent?.openWorksheet) {
-      try {
-        parent.openWorksheet(idx, true);
-      } catch {
-        // ignore
-      }
-    }
-    return idx >= 0 ? list[idx] : getWorksheetByName(spreadsheet, name);
-  }, []);
-
-  const openOrderWorksheet = useCallback(
-    () => openWorksheetByName('订单明细'),
-    [openWorksheetByName],
-  );
-
-  const captureActiveWorksheet = useCallback(() => {
+  /** remount 后恢复到指定工作表（订单明细 / 透视源数据切换数据量时用） */
+  const pinWorksheetTab = useCallback((name: string) => {
     restoreWorksheetRef.current = {
-      index: getActiveWorksheetIndex(spreadsheet),
-      name: getActiveWorksheetName(spreadsheet),
+      index: WORKSHEET_TAB_INDEX[name] ?? -1,
+      name,
     };
+    outlineTabLockRef.current = true;
+    outlineTabGuardRef.current = false;
   }, []);
 
-  const restoreActiveWorksheet = useCallback(() => {
+  const restoreActiveWorksheet = useCallback((onDone?: (ok: boolean) => void) => {
     const target = restoreWorksheetRef.current;
-    if (!target) return;
+    if (!target) {
+      onDone?.(false);
+      return;
+    }
 
     const markTabRestored = () => {
       if (outlineTabLockRef.current) {
@@ -690,14 +698,7 @@ function JspreadsheetPageInner() {
       const parent = list[0]?.parent;
       if (!parent?.openWorksheet) return false;
 
-      let idx = target.index;
-      if (idx < 0 || idx >= list.length) {
-        idx = list.findIndex(
-          (ws) =>
-            ws?.options?.worksheetName === target.name ||
-            ws?.getWorksheetName?.() === target.name,
-        );
-      }
+      const idx = resolvePinnedTabIndex(list, target);
       if (idx < 0) return false;
 
       const activeIdx =
@@ -714,6 +715,11 @@ function JspreadsheetPageInner() {
 
       try {
         parent.openWorksheet(idx, true);
+        const nowActive =
+          typeof parent.getWorksheetActive === 'function'
+            ? parent.getWorksheetActive()
+            : -1;
+        if (nowActive !== idx) return false;
         markTabRestored();
         if (!outlineTabLockRef.current) {
           restoreWorksheetRef.current = null;
@@ -724,21 +730,25 @@ function JspreadsheetPageInner() {
       }
     };
 
-    if (tryRestore()) return;
-
-    let attempts = 0;
-    const retry = () => {
-      if (!restoreWorksheetRef.current) return;
-      if (tryRestore() || attempts >= 40) {
-        if (attempts >= 40 && !outlineTabLockRef.current) {
-          restoreWorksheetRef.current = null;
-        }
+    const poll = (attempts = 0) => {
+      if (!restoreWorksheetRef.current) {
+        onDone?.(false);
         return;
       }
-      attempts += 1;
-      window.setTimeout(retry, 50);
+      if (tryRestore()) {
+        onDone?.(true);
+        return;
+      }
+      // 十万行 remount 后 worksheet 创建较慢，锁定期间持续重试（最多约 120s）
+      const maxAttempts = outlineTabLockRef.current ? 2400 : 40;
+      if (attempts >= maxAttempts) {
+        onDone?.(false);
+        return;
+      }
+      window.setTimeout(() => poll(attempts + 1), 50);
     };
-    window.setTimeout(retry, 0);
+
+    poll();
   }, []);
 
   const finishOutlineLoad = useCallback(
@@ -755,16 +765,33 @@ function JspreadsheetPageInner() {
       setOutlineLoadInfo(
         `透视源数据 ${pending.rows.toLocaleString()} 行 · 总耗时 ${total}ms`,
       );
-      setOutlineBusy(false);
-      restoreActiveWorksheet();
-      outlineTabLockRef.current = false;
-      outlineTabGuardRef.current = false;
-      restoreWorksheetRef.current = null;
-      try {
-        message.success(`透视源数据已加载 ${pending.rows.toLocaleString()} 行`);
-      } catch {
-        // ignore
-      }
+      restoreActiveWorksheet((ok) => {
+        if (!ok) {
+          restoreActiveWorksheet((ok2) => {
+            if (!ok2) {
+              try {
+                message.warning('页签恢复可能未完成，请手动切到「透视源数据」');
+              } catch {
+                // ignore
+              }
+            }
+            setOutlineBusy(false);
+            outlineTabLockRef.current = false;
+            outlineTabGuardRef.current = false;
+            restoreWorksheetRef.current = null;
+          });
+          return;
+        }
+        setOutlineBusy(false);
+        outlineTabLockRef.current = false;
+        outlineTabGuardRef.current = false;
+        restoreWorksheetRef.current = null;
+        try {
+          message.success(`透视源数据已加载 ${pending.rows.toLocaleString()} 行`);
+        } catch {
+          // ignore
+        }
+      });
     },
     [message, restoreActiveWorksheet],
   );
@@ -777,14 +804,19 @@ function JspreadsheetPageInner() {
       orderLoadPendingRef.current = null;
       const total = Math.round(performance.now() - pending.t0);
       setOrderLoadInfo(`${pending.count.toLocaleString()} 行 · 总耗时 ${total}ms`);
-      setOrderBusy(false);
-      try {
-        message.success(`订单明细已加载 ${pending.count.toLocaleString()} 行`);
-      } catch {
-        // ignore
-      }
+      restoreActiveWorksheet(() => {
+        setOrderBusy(false);
+        outlineTabLockRef.current = false;
+        outlineTabGuardRef.current = false;
+        restoreWorksheetRef.current = null;
+        try {
+          message.success(`订单明细已加载 ${pending.count.toLocaleString()} 行`);
+        } catch {
+          // ignore
+        }
+      });
     },
-    [message],
+    [message, restoreActiveWorksheet],
   );
 
   useEffect(() => {
@@ -802,6 +834,32 @@ function JspreadsheetPageInner() {
     };
   }, [finishOutlineLoad, restoreActiveWorksheet]);
 
+  /** 大数据 remount + 折叠 init 期间，防止页签被引擎拉回默认 sheet */
+  useEffect(() => {
+    if (!sheetBusy) return undefined;
+    const timer = window.setInterval(() => {
+      const target = restoreWorksheetRef.current;
+      if (!target) return;
+      const list = getWorksheetList(spreadsheet);
+      if (!list.length) return;
+      const parent = list[0]?.parent;
+      if (!parent?.openWorksheet || typeof parent.getWorksheetActive !== 'function') return;
+      const idx = resolvePinnedTabIndex(list, target);
+      if (idx < 0) return;
+      if (parent.getWorksheetActive() === idx) {
+        if (outlineTabLockRef.current) outlineTabGuardRef.current = true;
+        return;
+      }
+      try {
+        parent.openWorksheet(idx, true);
+        if (outlineTabLockRef.current) outlineTabGuardRef.current = true;
+      } catch {
+        // ignore
+      }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [sheetBusy, sheetNonce]);
+
   const handleOrderScaleChange = useCallback(
     (value: OrderScale) => {
       if (sheetBusy) return;
@@ -812,6 +870,7 @@ function JspreadsheetPageInner() {
       setOrderBusy(true);
       setOrderScale(value);
       setOrderLoadInfo(`正在生成 ${count.toLocaleString()} 行订单明细…`);
+      pinWorksheetTab('订单明细');
 
       window.setTimeout(() => {
         if (token !== orderLoadTokenRef.current) return;
@@ -827,13 +886,11 @@ function JspreadsheetPageInner() {
           destroySpreadsheet();
           setOrderData(data);
           setSheetNonce((n) => n + 1);
-
-          window.setTimeout(() => {
-            if (token !== orderLoadTokenRef.current) return;
-            openOrderWorksheet();
-          }, 0);
         } catch (err) {
           orderLoadPendingRef.current = null;
+          outlineTabLockRef.current = false;
+          outlineTabGuardRef.current = false;
+          restoreWorksheetRef.current = null;
           destroySpreadsheet();
           setOrderScale('2000');
           setOrderData(buildSeedRows(2000));
@@ -848,7 +905,7 @@ function JspreadsheetPageInner() {
         }
       }, 50);
     },
-    [sheetBusy, orderScale, destroySpreadsheet, openOrderWorksheet, message],
+    [sheetBusy, orderScale, destroySpreadsheet, pinWorksheetTab, message],
   );
 
   const handleOutlineScaleChange = useCallback(
@@ -864,9 +921,7 @@ function JspreadsheetPageInner() {
       setOutlineBusy(true);
       setOutlineScale(value);
       setOutlineLoadInfo(`正在生成透视源数据（${label}）…`);
-      outlineTabLockRef.current = true;
-      outlineTabGuardRef.current = false;
-      captureActiveWorksheet();
+      pinWorksheetTab('透视源数据');
 
       window.setTimeout(() => {
         if (token !== outlineLoadTokenRef.current) return;
@@ -919,22 +974,44 @@ function JspreadsheetPageInner() {
         }
       }, 50);
     },
-    [outlineScale, destroySpreadsheet, message, finishOutlineLoad, captureActiveWorksheet],
+    [outlineScale, destroySpreadsheet, message, finishOutlineLoad, pinWorksheetTab],
+  );
+
+  const handleCreateWorksheet = useCallback(
+    (ws: any, options: { worksheetName?: string }, position: number) => {
+      if (!outlineTabLockRef.current) return;
+      const target = restoreWorksheetRef.current;
+      if (!target) return;
+      const name = options?.worksheetName || ws?.getWorksheetName?.();
+      if (name !== target.name && position !== target.index) return;
+      restoreActiveWorksheet();
+    },
+    [restoreActiveWorksheet],
   );
 
   const handleBeforeOpenWorksheet = useCallback((_ws: any, index: number) => {
     if (!outlineTabLockRef.current || !outlineTabGuardRef.current) return;
     const target = restoreWorksheetRef.current;
     if (!target) return;
-    if (index === target.index) return;
+    const list = getWorksheetList(spreadsheet);
+    const targetIdx = resolvePinnedTabIndex(list, target);
+    if (targetIdx < 0) return;
+    if (index === targetIdx) return;
     return false;
   }, []);
 
   const handleOpenWorksheet = useCallback(
     (_ws: any, index: number) => {
-      if (!outlineTabLockRef.current || !outlineTabGuardRef.current) return;
+      if (!outlineTabLockRef.current) return;
       const target = restoreWorksheetRef.current;
-      if (!target || index === target.index) return;
+      if (!target) return;
+      const list = getWorksheetList(spreadsheet);
+      const targetIdx = resolvePinnedTabIndex(list, target);
+      if (targetIdx < 0) return;
+      if (index === targetIdx) {
+        outlineTabGuardRef.current = true;
+        return;
+      }
       window.requestAnimationFrame(() => restoreActiveWorksheet());
     },
     [restoreActiveWorksheet],
@@ -1486,31 +1563,86 @@ function JspreadsheetPageInner() {
       }
     };
 
+    const applyRegionVisibilityInSpan = (ws: any, from: number, to: number) => {
+      for (let r = from; r <= to; r += 1) {
+        if (regionByRow.has(r)) applyOneRegion(ws, r);
+      }
+    };
+
     const applyCategoryVisibilityDemo = (ws: any, row: number) => {
       const meta = ws.rows?.[row];
       if (!meta?.group) return;
       const span = Number(meta.group) || 0;
       const open = !!meta.state;
-      if (!open) {
-        meta.state = false;
-        if (outlinePerf) {
-          // perf：closeRowGroup 批量收起；展开前需 showRow 清 hide
-          for (let i = row + 1; i <= row + span; i += 1) setRowVisible(ws, i, true);
+
+      /** 10万+：Category 用 setRowGroup；hideRow 仅用于 Region 州明细 */
+      if (outlinePerf) {
+        if (!open) {
+          meta.state = false;
+          // 须先清 span 内 hideRow，再 setRowGroup(false)（与 expand 对称）
+          for (let i = row + 1; i <= row + span; i += 1) {
+            hiddenRows.delete(i);
+            try {
+              ws.showRow?.(i);
+            } catch {
+              // ignore
+            }
+          }
           try {
-            ws.closeRowGroup?.(row);
+            ws.setRowGroup?.(row, span, false, true);
+          } catch {
+            try {
+              ws.closeRowGroup?.(row);
+            } catch {
+              // ignore
+            }
+          }
+          meta.state = false;
+          try {
+            ws.updateSelectionFromCoords?.(0, row, 0, row);
           } catch {
             // ignore
           }
-          meta.state = false;
-        } else {
-          // 非 perf：引擎层保持 open，语义收起只靠 hideRow（勿 closeRowGroup，否则 showRow 无效）
+          return;
+        }
+        meta.state = true;
+        // 先清 hideRow，再以 open 状态重建行组（closeRowGroup 后单独 openRowGroup 常无效）
+        for (let i = row + 1; i <= row + span; i += 1) {
+          hiddenRows.delete(i);
+          try {
+            ws.showRow?.(i);
+          } catch {
+            // ignore
+          }
+        }
+        try {
+          ws.setRowGroup?.(row, span, true, true);
+        } catch {
           try {
             ws.openRowGroup?.(row);
           } catch {
             // ignore
           }
-          meta.state = false;
         }
+        meta.state = true;
+        applyRegionVisibilityInSpan(ws, row, row + span);
+        try {
+          ws.updateSelectionFromCoords?.(0, row, 0, row);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      if (!open) {
+        meta.state = false;
+        // 非 perf：引擎层保持 open，语义收起只靠 hideRow（勿 closeRowGroup，否则 showRow 无效）
+        try {
+          ws.openRowGroup?.(row);
+        } catch {
+          // ignore
+        }
+        meta.state = false;
         for (let i = row + 1; i <= row + span; i += 1) setRowVisible(ws, i, false);
         return;
       }
@@ -1682,12 +1814,19 @@ function JspreadsheetPageInner() {
         if (disposed || initToken !== sheetNonce) return;
         const end = Math.min(idx + batchSize, collapsed.length);
         for (; idx < end; idx += 1) {
+          const catRow = collapsed[idx];
+          const span = Number(ws.rows?.[catRow]?.group) || 0;
           try {
-            ws.closeRowGroup?.(collapsed[idx]);
+            if (span > 0) ws.setRowGroup?.(catRow, span, false, true);
+            else ws.closeRowGroup?.(catRow);
           } catch {
-            // ignore
+            try {
+              ws.closeRowGroup?.(catRow);
+            } catch {
+              // ignore
+            }
           }
-          if (ws.rows?.[collapsed[idx]]) ws.rows[collapsed[idx]].state = false;
+          if (ws.rows?.[catRow]) ws.rows[catRow].state = false;
         }
         if (idx < collapsed.length) {
           const ric = (window as any).requestIdleCallback as
@@ -1995,6 +2134,11 @@ function JspreadsheetPageInner() {
 
         const catStart = findCategoryStart(ws, row);
         if (catStart >= 0 && !ws.rows[catStart]?.state) {
+          if (outlinePerf) {
+            // perf 下 Category 已 closeRowGroup，须先展开 Category
+            paint(ws, root, table);
+            return;
+          }
           applyRegionWhenCategoryCollapsed(ws, catStart);
           ws.rows[catStart].state = false;
           const span = Number(ws.rows[catStart]?.group) || 0;
@@ -2768,10 +2912,11 @@ function JspreadsheetPageInner() {
                 finishOrderLoad(orderPending.token);
                 return;
               }
-              if (outlineLoadPendingRef.current) {
+              if (outlineLoadPendingRef.current || outlineTabLockRef.current) {
                 restoreActiveWorksheet();
               }
             }}
+            oncreateworksheet={handleCreateWorksheet}
             onbeforeopenworksheet={handleBeforeOpenWorksheet}
             onopenworksheet={handleOpenWorksheet}
             onchange={(
