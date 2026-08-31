@@ -95,7 +95,7 @@ export type OutlineSnapshot = {
   rowCount: number;
 };
 
-export type StressRowOutlineGroup = {
+type StressAggregationRange = {
   summaryRow: number;
   detailStart: number;
   detailCount: number;
@@ -1298,8 +1298,8 @@ function createStressRecord(index: number): ViewRow {
   };
 }
 
-export function getStressRowOutlineGroups(rows: ViewRow[]) {
-  const groups: StressRowOutlineGroup[] = [];
+function getStressAggregationRanges(rows: ViewRow[]) {
+  const groups: StressAggregationRange[] = [];
   let openProductSummary = -1;
   let openRegionSummary = -1;
   const closeGroup = (
@@ -1339,7 +1339,7 @@ export function getStressRowOutlineGroups(rows: ViewRow[]) {
 }
 
 function applyStressGroupSummaries(rows: ViewRow[]) {
-  getStressRowOutlineGroups(rows).forEach((group) => {
+  getStressAggregationRanges(rows).forEach((group) => {
     const summary = rows[group.summaryRow];
     const endRow = group.detailStart + group.detailCount;
     let leafCount = 0;
@@ -1393,6 +1393,327 @@ function applyStressGroupSummaries(rows: ViewRow[]) {
       (adjustmentFactor / leafCount).toFixed(2),
     );
   });
+}
+
+type StressProjectionRegion = {
+  id: string;
+  label: string;
+  summaryRows: ViewRow[];
+  details: ViewRow[];
+};
+
+type StressProjectionProduct = {
+  id: string;
+  parentId: string | null;
+  label: string;
+  attribute: string;
+  depth: 0 | 1;
+  isGroup: boolean;
+  summary: ViewRow;
+  regions: StressProjectionRegion[];
+  children: StressProjectionProduct[];
+};
+
+type StressProjectionIndex = {
+  roots: StressProjectionProduct[];
+  productGroups: string[];
+  allProducts: string[];
+  productsById: Map<string, StressProjectionProduct>;
+};
+
+const stressProjectionIndexCache = new WeakMap<
+  ViewRow[],
+  StressProjectionIndex
+>();
+
+function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
+  const cached = stressProjectionIndexCache.get(rows);
+  if (cached) return cached;
+
+  const roots: StressProjectionProduct[] = [];
+  const productGroups: string[] = [];
+  const allProducts: string[] = [];
+  const productsById = new Map<string, StressProjectionProduct>();
+
+  for (
+    let groupStart = 0;
+    groupStart < rows.length;
+    groupStart += STRESS_BUSINESS_GROUP_SIZE
+  ) {
+    const groupSummary = rows[groupStart];
+    if (!groupSummary) break;
+    const groupEnd = Math.min(
+      rows.length,
+      groupStart + STRESS_BUSINESS_GROUP_SIZE,
+    );
+    const categoryRegions = new Map<string, StressProjectionRegion>();
+    const children: StressProjectionProduct[] = [];
+
+    for (
+      let productStart = groupStart + 1;
+      productStart < groupEnd;
+      productStart += STRESS_PRODUCT_LINE_SIZE
+    ) {
+      const productSummary = rows[productStart];
+      if (!productSummary) break;
+      const productEnd = Math.min(
+        groupEnd,
+        productStart + STRESS_PRODUCT_LINE_SIZE,
+      );
+      const regions: StressProjectionRegion[] = [];
+
+      for (
+        let regionStart = productStart;
+        regionStart < productEnd;
+        regionStart += STRESS_REGION_SIZE
+      ) {
+        const regionSummary = rows[regionStart];
+        if (!regionSummary) break;
+        const regionEnd = Math.min(
+          productEnd,
+          regionStart + STRESS_REGION_SIZE,
+        );
+        const details = rows.slice(regionStart + 1, regionEnd);
+        const region: StressProjectionRegion = {
+          id: regionSummary.regionRootId,
+          label: regionSummary.regionLabel,
+          summaryRows: [regionSummary],
+          details,
+        };
+        regions.push(region);
+
+        const categoryRegionId = `${groupSummary.productId}:region-${
+          regions.length - 1
+        }`;
+        let categoryRegion = categoryRegions.get(region.label);
+        if (!categoryRegion) {
+          categoryRegion = {
+            id: categoryRegionId,
+            label: region.label,
+            summaryRows: [],
+            details: [],
+          };
+          categoryRegions.set(region.label, categoryRegion);
+        }
+        categoryRegion.summaryRows.push(regionSummary);
+        // 事业群区域展开到产品线汇总即可；明细记录仍由对应产品线的
+        // 区域节点展开。这样与常规模式的“父级聚合、子级明细”一致，
+        // 也避免同一批 10 万条事实在父子产品下重复投影。
+        categoryRegion.details.push({
+          ...regionSummary,
+          id: `${regionSummary.id}:category-detail`,
+          name: productSummary.productLabel,
+          regionLabel: productSummary.productLabel,
+        });
+      }
+
+      const product: StressProjectionProduct = {
+        id: productSummary.productId,
+        parentId: groupSummary.productId,
+        label: productSummary.productLabel,
+        attribute: productSummary.productAttribute,
+        depth: 1,
+        isGroup: false,
+        summary: productSummary,
+        regions,
+        children: [],
+      };
+      children.push(product);
+      allProducts.push(product.id);
+      productsById.set(product.id, product);
+    }
+
+    const root: StressProjectionProduct = {
+      id: groupSummary.productId,
+      parentId: null,
+      label: groupSummary.productLabel,
+      attribute: groupSummary.productAttribute,
+      depth: 0,
+      isGroup: children.length > 0,
+      summary: groupSummary,
+      regions: [...categoryRegions.values()],
+      children,
+    };
+    roots.push(root);
+    productGroups.push(root.id);
+    allProducts.push(root.id);
+    productsById.set(root.id, root);
+  }
+
+  const index = { roots, productGroups, allProducts, productsById };
+  stressProjectionIndexCache.set(rows, index);
+  return index;
+}
+
+function stressRegionSummary(
+  product: StressProjectionProduct,
+  region: StressProjectionRegion,
+) {
+  const fallback =
+    region.summaryRows[0] ?? region.details[0] ?? product.summary;
+  return {
+    ...fallback,
+    ...aggregateBusinessNodes(
+      region.summaryRows.length ? region.summaryRows : region.details,
+      fallback,
+    ),
+  };
+}
+
+function projectStressProduct(
+  product: StressProjectionProduct,
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+) {
+  const expandedRegions =
+    regionExpandedByProduct.get(product.id) ?? new Set<string>();
+  const rows = product.regions.flatMap((region) => {
+    const summary = stressRegionSummary(product, region);
+    const expanded = expandedRegions.has(region.id);
+    const root: ViewRow = {
+      ...summary,
+      id: `${product.id}::${region.id}`,
+      name: `${product.label} / ${region.label}`,
+      hierarchyRole: product.isGroup ? 'category' : 'subcategory',
+      children: undefined,
+      level: product.depth,
+      hasChildren: product.isGroup,
+      productId: product.id,
+      productParentId: product.parentId,
+      productLabel: product.label,
+      productAttribute: product.attribute,
+      productDepth: product.depth,
+      productIsGroup: product.isGroup,
+      productExpanded: product.isGroup && productExpanded.has(product.id),
+      productBlockStart: false,
+      productRowSpan: 1,
+      regionId: region.id,
+      regionRootId: region.id,
+      regionLabel: region.label,
+      regionDepth: 0,
+      regionIsGroup: region.details.length > 0,
+      regionExpanded: expanded,
+    };
+    if (!expanded) return [root];
+    return [
+      root,
+      ...region.details.map(
+        (detail): ViewRow => ({
+          ...detail,
+          id: `${product.id}::${region.id}::${detail.id}`,
+          name: `${product.label} / ${detail.regionLabel}`,
+          hierarchyRole: 'detail',
+          children: undefined,
+          level: product.depth,
+          hasChildren: false,
+          productId: product.id,
+          productParentId: product.parentId,
+          productLabel: product.label,
+          productAttribute: product.attribute,
+          productDepth: product.depth,
+          productIsGroup: product.isGroup,
+          productExpanded: product.isGroup && productExpanded.has(product.id),
+          productBlockStart: false,
+          productRowSpan: 1,
+          regionId: `${region.id}:detail:${detail.id}`,
+          regionRootId: region.id,
+          regionLabel: detail.regionLabel,
+          regionDepth: 1,
+          regionIsGroup: false,
+          regionExpanded: false,
+        }),
+      ),
+    ];
+  });
+  if (!rows.length) return rows;
+  rows[0].productBlockStart = true;
+  rows[0].productRowSpan = rows.length;
+  return rows;
+}
+
+/**
+ * 10 万条底层记录的可见行投影。这里刻意复用常规模式的交互语义：
+ * 产品列和区域列分别维护展开状态，任一列变化都只重建可见行，不借助
+ * 整行 Outline 隐藏另一列的数据。
+ */
+export function createStressProjectionRows(
+  sourceRows: ViewRow[],
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+) {
+  const index = buildStressProjectionIndex(sourceRows);
+  return index.roots.flatMap((root) => {
+    const products = productExpanded.has(root.id)
+      ? [root, ...root.children]
+      : [root];
+    return products.flatMap((product) =>
+      projectStressProduct(product, productExpanded, regionExpandedByProduct),
+    );
+  });
+}
+
+export function getStressProductGroupIds(sourceRows: ViewRow[]) {
+  return buildStressProjectionIndex(sourceRows).productGroups;
+}
+
+export function getStressAllProductIds(sourceRows: ViewRow[]) {
+  return buildStressProjectionIndex(sourceRows).allProducts;
+}
+
+export function getStressRegionGroupIdsForProduct(
+  sourceRows: ViewRow[],
+  productId: string,
+) {
+  return (
+    buildStressProjectionIndex(sourceRows).productsById.get(productId)
+      ?.regions ?? []
+  ).map((region) => region.id);
+}
+
+export function getStressProjectionSummary(
+  sourceRows: ViewRow[],
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+): OutlineSnapshot {
+  const index = buildStressProjectionIndex(sourceRows);
+  const regionGroups = index.allProducts.flatMap((productId) =>
+    (index.productsById.get(productId)?.regions ?? []).map((region) => ({
+      productId,
+      regionId: region.id,
+    })),
+  );
+  const rowCount = index.roots.reduce((total, root) => {
+    const products = productExpanded.has(root.id)
+      ? [root, ...root.children]
+      : [root];
+    return (
+      total +
+      products.reduce(
+        (productTotal, product) =>
+          productTotal +
+          product.regions.reduce(
+            (regionTotal, region) =>
+              regionTotal +
+              1 +
+              (regionExpandedByProduct.get(product.id)?.has(region.id)
+                ? region.details.length
+                : 0),
+            0,
+          ),
+        0,
+      )
+    );
+  }, 0);
+  return {
+    productExpanded: index.productGroups.filter((id) => productExpanded.has(id))
+      .length,
+    productTotal: index.productGroups.length,
+    regionExpanded: regionGroups.filter(({ productId, regionId }) =>
+      regionExpandedByProduct.get(productId)?.has(regionId),
+    ).length,
+    regionTotal: regionGroups.length,
+    rowCount,
+  };
 }
 
 let stressRecordsCache: ViewRow[] | null = null;

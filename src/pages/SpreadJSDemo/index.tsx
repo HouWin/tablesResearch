@@ -273,7 +273,7 @@ function IntegratedOutlineControls({
         title="区域层级"
         description={
           dataMode === 'stress'
-            ? '约 1,000 个区域组；折叠状态不影响产品层级'
+            ? '每个事业群 / 产品线独立维护区域状态'
             : '每个产品分别维护区域展开状态'
         }
         expanded={snapshot.regionExpanded}
@@ -288,7 +288,7 @@ function IntegratedOutlineControls({
         onClick={onReset}
         title={
           dataMode === 'stress'
-            ? '收起全部层级，仅显示事业群汇总'
+            ? '恢复产品树与区域树全部收起'
             : '恢复产品树默认展开、区域树全部收起'
         }
       >
