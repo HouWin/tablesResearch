@@ -15,6 +15,7 @@ import {
   GitBranch,
   History,
   Info,
+  LockKeyhole,
   MessageSquareText,
   Paperclip,
   Redo2,
@@ -44,6 +45,7 @@ import {
   displayValue,
   formatMoney,
   formatStatistic,
+  getCellEditability,
   pathForView,
   type DataMode,
   type OutlineDimension,
@@ -343,6 +345,9 @@ export default function SpreadJSDemoPage() {
   } = useSpreadsheetController();
   const canDrillSelected =
     dataMode === 'regular' && canDrillNode(selected?.node);
+  const selectedEditability = selected
+    ? getCellEditability(selected.node, selected.col)
+    : null;
   const lineageDetails = getLineageDetails(selected);
   const searchAnchorRef = useRef<HTMLDivElement>(null);
   const columnAnchorRef = useRef<HTMLDivElement>(null);
@@ -352,7 +357,6 @@ export default function SpreadJSDemoPage() {
     overflow: toolbarOverflow,
     scroll: scrollToolbar,
   } = useToolbarOverflow();
-
   return (
     <div className="spreadjs-demo-page">
       <main className="demo-shell">
@@ -681,6 +685,15 @@ export default function SpreadJSDemoPage() {
               <span className="formula-value">
                 {selected?.text || '选择单元格查看内容'}
               </span>
+              {selectedEditability && !selectedEditability.editable && (
+                <span
+                  className="cell-readonly-badge"
+                  title={selectedEditability.reason}
+                >
+                  <LockKeyhole size={10} />
+                  只读
+                </span>
+              )}
               <span className="selected-field">
                 {selected?.node.name ?? '—'} · {selected?.fieldLabel ?? '—'}
               </span>

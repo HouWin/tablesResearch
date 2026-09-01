@@ -103,9 +103,34 @@ DrillView 路径
 - 更新日期选择器；
 - 调整系数数值校验；
 - 状态与“已核验”字段联动；
-- 层级列只负责展开、折叠，禁止直接编辑。
+- 收入、商品收入、服务收入与客单价保持计算一致；
+- 订单数、线上订单、线下订单与客单价保持计算一致；
+- 层级列、产品属性、自动计算的客单价和所有汇总数据只读。
 
-所有业务值修改最终进入 `commitBusinessCellValue()`。这里负责规范化值、更新业务对象、保存常规模式覆盖值、处理字段联动并写入历史。
+`getCellEditability()` 是唯一的可编辑策略入口。只有能够唯一映射到一个底层叶子明细的业务单元格才允许编辑；区域汇总、产品汇总以及由多个明细合并出的城市数据都不能直接改写。控制器同时使用 SpreadJS 单元格锁定、`EditStarting` 和粘贴前校验执行这套规则，不能只依赖灰色样式。
+
+所有业务值修改最终批量进入 `commitBusinessCellValues()`：
+
+```text
+单格编辑 / 粘贴 / 清空 / 撤销 / 重做
+  ↓ getCellEditability()
+定位唯一底层 BusinessNode 叶子
+  ↓ updateBusinessNode()
+更新直接字段及收入、订单、状态等同级联动字段
+  ↓ createBusinessProjectionRows() / createStressProjectionRows()
+重新聚合区域、产品及事业群
+  ↓ 比较修改前后的 ViewRow[]
+刷新所有受影响单元格，并记录直接修改、字段联动、汇总联动
+```
+
+具体规则如下：
+
+- 修改净收入：按修改前占比同步分摊商品收入和服务收入，并重算客单价；
+- 修改商品收入或服务收入：重算净收入和客单价；
+- 修改订单数：按修改前占比同步分摊线上和线下订单，并重算客单价；
+- 修改线上订单或线下订单：重算订单数和客单价；
+- 修改状态或“已核验”：双向同步另一字段；
+- 任一叶子明细变化：`recalculateBusinessHierarchy()` 先回写 `BUSINESS_DATA` 中的全部祖先节点，再重新计算可见区域、产品和事业群的收入、订单、加权达成率、核验状态、最近更新日期和平均调整系数。
 
 ### 1.5 撤销、重做和单元格历史
 
@@ -117,9 +142,12 @@ DrillView 路径
 - 清空；
 - 拖拽填充、拖放移动；
 - 撤销和重做；
-- 状态字段的联动变化。
+- 同级字段联动；
+- 区域、产品及事业群的汇总联动。
 
 粘贴场景在 `ClipboardPasting` 中保存操作前快照，在 `ClipboardPasted` 中比较新旧值。批量范围操作由 `RangeChanged` 兜底。
+
+开发环境中，每次成功修改还会输出折叠的控制台分组 `[SpreadJS Demo][单元格修改]`，其中包含操作来源、时间、模式、A1 地址、业务行 ID、产品、区域、字段、修改前后值、变化类型，以及底层明细节点的完整前后快照。生产构建不会输出这些调试日志。
 
 ### 1.6 快速搜索
 
@@ -308,7 +336,8 @@ ViewRow[]
 | `EnterCell` | 更新当前单元格和抽屉内容 |
 | `SelectionChanged` | 重算选区统计 |
 | `CellClick` | 处理产品列和区域列折叠 |
-| `ClipboardPasting` | 保存粘贴前快照 |
+| `EditStarting` | 按统一策略阻止汇总、派生和层级字段编辑 |
+| `ClipboardPasting` | 校验整个目标区域并保存粘贴前快照 |
 | `ClipboardPasted` | 提交粘贴结果并记录历史 |
 | `ValidationError` | 拦截非法调整系数 |
 | `CellChanged` | 提交单格编辑和公式变化 |
@@ -350,7 +379,7 @@ effect cleanup 负责：
 | 状态类型 | 保存位置 | 示例 |
 | --- | --- | --- |
 | 需要更新 React UI 的状态 | React `useState` | 当前选中项、搜索结果、抽屉、Toast |
-| React 事件需要读取但不应触发渲染 | React `useRef` | `actionsRef`、附件、历史、批注、覆盖值 |
+| React 事件需要读取但不应触发渲染 | React `useRef` | `actionsRef`、附件、历史、批注 |
 | 仅属于 Workbook 生命周期的可变状态 | `useEffect` 闭包 | `activeRows`、展开集合、已加载压力页 |
 | 表格引擎内部状态 | SpreadJS | 单元格值、选区、UndoManager、Outline |
 
@@ -410,7 +439,7 @@ index.tsx 增加按钮或面板
 
 建议将下面几类内存 Map 抽象成单独的数据仓库或 API 层：
 
-- `dataOverridesRef`：单元格业务值；
+- `BUSINESS_DATA` / 压力数据叶子节点：业务明细；
 - `commentsRef`：批注；
 - `historyRef`：审计历史；
 - `attachmentsRef`：附件元数据。
@@ -438,10 +467,11 @@ http://localhost:8000/spreadjs-demo/business
 1. `start()`：观察 Workbook 初始化；
 2. `renderRows()`：观察二维数据进入 Worksheet；
 3. `toggleHierarchyRow()`：点击产品或区域箭头；
-4. `commitBusinessCellValue()`：编辑一个业务值；
-5. `CellChanged` / `RangeChanged`：观察单格和批量修改；
-6. `search()`：搜索一个处于折叠状态的区域明细；
-7. `loadVisibleStressRows()`：滚动 10 万行模式。
+4. `getCellEditability()`：确认目标单元格是否允许编辑；
+5. `commitBusinessCellValues()`：提交业务值并观察联动聚合；
+6. `CellChanged` / `RangeChanged`：观察单格和批量修改；
+7. `search()`：搜索一个处于折叠状态的区域明细；
+8. `loadVisibleStressRows()`：滚动 10 万行模式。
 
 正式部署前需要配置：
 
@@ -458,7 +488,10 @@ NEXT_PUBLIC_SPREADJS_LICENSE_KEY
 - 下钻、上钻后选区和稳定单元格功能仍正确；
 - 搜索能命中折叠内容并只展开必要祖先；
 - 编辑、粘贴、清空、撤销、重做都有历史；
-- 状态与“已核验”联动正确；
+- 汇总、派生和层级单元格不能编辑或粘贴覆盖；
+- 收入、订单、客单价以及状态字段的同级联动正确；
+- 修改城市明细后，大区、产品和事业群汇总立即更新；
+- 开发者控制台能区分直接修改、字段联动和汇总联动；
 - 批注和附件不会改写单元格值；
 - 列显隐、列 Outline 和自动列宽仍可用；
 - 10 万行模式的产品和区域节点与常规模式行为一致且互不干扰；
