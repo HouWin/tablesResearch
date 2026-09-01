@@ -60,6 +60,13 @@ export interface ETableCellHistoryApi {
   getTracks: () => ETableCellChangeRecord[];
   getCellHistory: (cell: string) => ETableCellChangeRecord[];
   clear: () => void;
+  /** 程序化写入单元格时记录变更（source: 'api'） */
+  recordChange: (
+    row: number,
+    column: number,
+    from: string,
+    to: string,
+  ) => void;
 }
 
 /**
@@ -248,6 +255,9 @@ export const setupCellHistory = (
     clear: () => {
       tracks.length = 0;
       tracksByCell.clear();
+    },
+    recordChange: (row, column, from, to) => {
+      push(row, column, from, to, 'api');
     },
   };
 };

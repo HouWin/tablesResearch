@@ -1305,6 +1305,7 @@ const UniverTablePage = () => {
                   onCellChange={(record: ETableCellChangeRecord) => {
                     setTracks((prev) => [record, ...prev].slice(0, 200));
                     setFocusCell(record.cell);
+                    console.log(record, 'record')
                   }}
                   onSelectionChange={(cell: string) => {
                     setFocusCell(cell);

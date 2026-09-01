@@ -53,13 +53,33 @@ import {
   showAttachmentsModal,
   uploadAndAttachToCell,
 } from './attachment';
+import { buildTableExportData } from './exportData';
+import { mergeTreeDataWithRows } from './treeMerge';
+import { getCellValueFromTable, getRowValueFromTable, setCellValueOnTable, setRowValueOnTable } from './cellValue';
 import { registerAllIcons } from './icons';
 import { customizeColumnHeaders } from './header';
 import type {
   ETableAttachmentFile,
+  ETableCell,
+  ETableCellLocator,
+  ETableColumn,
   ETableDataTraceNode,
+  ETableExportData,
+  ETableGetTableDataOptions,
+  ETableGetCellValueOptions,
+  ETableGetCellValueResult,
+  ETableGetRowValueOptions,
+  ETableGetRowValueResult,
+  ETablePrimitive,
   ETableProps,
   ETableRef,
+  ETableRow,
+  ETableRowLocator,
+  ETableSetCellValueOptions,
+  ETableSetCellValueResult,
+  ETableSetRowValueResult,
+  ETableTreeConfig,
+  ETableTreeNode,
 } from './types';
 import { message } from 'antd';
 import UniverPresetSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
@@ -91,7 +111,7 @@ import '@univerjs/preset-sheets-find-replace/lib/index.css';
  * 【大数据渲染路径】（finishInit 内按条件分支）
  *   1. treeUI 且行数 ≥ 5000  → setupTreeViewport（工作表仅投影 ~300 行窗口）
  *   2. 平铺表且行数 ≥ 5000   → createVirtualDataLoader（按页 2000 行懒写入）
- *   3. 行数 ≥ 1000           → renderDataAsync（分片 setValues）
+ *   3. 行数 ≥ 1000           → renderDataAsync（分片 setValues）image.png
  *   4. 否则                    → renderData 全量写入
  *
  * 【树形折叠】
@@ -195,6 +215,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     };
   }, [needsFlatten, treeData, treeConfig, groupData, groupConfig]);
 
+  useEffect(() => {
+    treeDataRef.current = treeData;
+    treeConfigRef.current = treeConfig;
+  }, [treeData, treeConfig]);
+
   // 统一数据源：展平结果优先，否则使用 props 直接传入的二维表结构
   const columns = flattened?.columns ?? propsColumns;
   const rows = flattened?.rows ?? propsRows;
@@ -246,6 +271,11 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
+  const columnsRef = useRef<ETableColumn[]>([]);
+  const rowsRef = useRef<ETableRow[]>([]);
+  const treeDataRef = useRef<ETableTreeNode[] | undefined>(undefined);
+  const treeConfigRef = useRef<ETableTreeConfig | undefined>(undefined);
+  const useTreeViewportRef = useRef(false);
   const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
   const treeViewportStatsRef = useRef<TreeViewportStats | null>(null);
 
@@ -630,6 +660,108 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     getTreeViewportStats() {
       return treeViewportStatsRef.current;
     },
+    getTableData(options?: ETableGetTableDataOptions): ETableExportData {
+      return buildTableExportData({
+        columns: columnsRef.current,
+        rows: rowsRef.current,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        tracks: cellHistoryApiRef.current?.getTracks() ?? [],
+        useTreeViewport: useTreeViewportRef.current,
+        virtualLoader: virtualLoaderRef.current,
+        options,
+      });
+    },
+    getTreeData(options?: ETableGetTableDataOptions): ETableTreeNode[] | null {
+      const sourceTree = treeDataRef.current;
+      const config = treeConfigRef.current;
+      if (!sourceTree?.length || !config) {
+        return null;
+      }
+      const exportData = buildTableExportData({
+        columns: columnsRef.current,
+        rows: rowsRef.current,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        tracks: cellHistoryApiRef.current?.getTracks() ?? [],
+        useTreeViewport: useTreeViewportRef.current,
+        virtualLoader: virtualLoaderRef.current,
+        options,
+      });
+      return mergeTreeDataWithRows(sourceTree, config, exportData.rows);
+    },
+    setCellValue(
+      locator: ETableCellLocator,
+      value: ETablePrimitive | ETableCell,
+      options?: ETableSetCellValueOptions,
+    ): ETableSetCellValueResult {
+      return setCellValueOnTable({
+        locator,
+        value,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        recordChange: cellHistoryApiRef.current?.recordChange,
+        options,
+      });
+    },
+    setRowValue(
+      locator: ETableRowLocator,
+      data: Record<string, ETablePrimitive | ETableCell>,
+      options?: ETableSetCellValueOptions,
+    ): ETableSetRowValueResult {
+      return setRowValueOnTable({
+        locator,
+        data,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        recordChange: cellHistoryApiRef.current?.recordChange,
+        options,
+      });
+    },
+    getCellValue(
+      locator: ETableCellLocator,
+      options?: ETableGetCellValueOptions,
+    ): ETableGetCellValueResult {
+      return getCellValueFromTable({
+        locator,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        options,
+      });
+    },
+    getRowValue(
+      locator: ETableRowLocator,
+      options?: ETableGetRowValueOptions,
+    ): ETableGetRowValueResult {
+      return getRowValueFromTable({
+        locator,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        options,
+      });
+    },
   }), []);
 
   // --------------------------------------------------------------------------
@@ -647,6 +779,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     }
     const useTreeViewport =
       treeUI && rows.length >= TREE_VIEWPORT_THRESHOLD && treeToggles.length > 0;
+    useTreeViewportRef.current = useTreeViewport;
+    columnsRef.current = columns;
+    rowsRef.current = rows;
     // 防止重复初始化
     if (univerAPIRef.current) {
       return;
@@ -1237,8 +1372,19 @@ export type {
   ETableAttachmentFile,
   ETableComment,
   ETableCellChangeRecord,
+  ETableCellLocator,
   ETableDataTraceNode,
+  ETableExportData,
+  ETableGetTableDataOptions,
   ETableGroupStatistics,
+  ETableSetCellValueOptions,
+  ETableSetCellValueResult,
+  ETableSetRowValueResult,
+  ETableRowLocator,
+  ETableGetCellValueOptions,
+  ETableGetCellValueResult,
+  ETableGetRowValueOptions,
+  ETableGetRowValueResult,
   ETableGroupStatisticField,
 } from './types';
 

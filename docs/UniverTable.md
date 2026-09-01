@@ -256,6 +256,8 @@ const columnId = leafColumns[record.column]?.id;    // 业务字段名
 - `ref.getDataTrace(cell)`：简化血缘树（演示用）
 - **不会**自动把 `to` 写回 `treeData` / `groupData` props，需业务层在 `onCellChange` 里自行持久化
 
+> 单格更新、全量 Diff、全量快照的完整说明见 **§1.3.6 数据获取方式**。
+
 #### 1.3.4 表格数据的更新方式
 
 | 场景 | 方式 | 粒度 | 说明 |
@@ -319,6 +321,473 @@ ref.getTreeViewportStats();
 - 渲染分页：优化 **DOM/Canvas 写入**，不改变 `rows.length`
 - 若业务需要服务端分页（每页 50 条接口）：须在业务层换 `rows` 并 remount 表格，组件**未内置**服务端分页 API
 
+#### 1.3.6 数据获取方式
+
+组件**没有** `getRows()` / `getTableData()` 一类「一键导出业务二维表」的 API。  
+数据分三层理解，获取方式也不同：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  业务源数据（treeData / groupData / rows）  ← 父组件 state   │
+├─────────────────────────────────────────────────────────────┤
+│  展平结果（flatten 后 rows[]）              ← 组件内部，未暴露  │
+├─────────────────────────────────────────────────────────────┤
+│  工作表单元格（Worksheet）                  ← getWorksheet 可读 │
+└─────────────────────────────────────────────────────────────┘
+         编辑只改 Worksheet；不会自动回写上层
+```
+
+| 需求 | 推荐方式 | API / 回调 |
+|------|----------|------------|
+| **获取单个更新数据** | `onCellChange` 实时接收 | 每次编辑一条 `ETableCellChangeRecord` |
+| **获取全量更新数据** | 父组件累积 `onCellChange` 或 `ref.getTracks()` | 变更流水，非当前格快照 |
+| **获取全量表格数据** | 父组件维护镜像 + 必要时读 Worksheet | 见下文三种策略 |
+
+---
+
+##### A. 获取单个更新数据（单格编辑）
+
+**方式 1：回调（推荐，实时）**
+
+```tsx
+const HEADER_DEPTH = 3; // 与 options.freezeRows 一致
+const leafColumns = [...]; // 与传入 columns / treeConfig 叶子列顺序一致
+
+<ETable
+  onCellChange={(record) => {
+    // 原始变更记录
+    const patch = {
+      cell: record.cell,           // "D7"
+      sheetRow: record.row,        // 6（0-based，含表头）
+      sheetColumn: record.column,  // 3
+      field: leafColumns[record.column]?.id,  // "revenue"
+      dataRow: record.row - HEADER_DEPTH,     // 3（数据区相对行）
+      oldValue: record.from,       // "¥200"（格式化后的字符串）
+      newValue: record.to,         // "¥20,000"
+      time: record.time,
+      source: record.source ?? 'edit',
+    };
+
+  }}
+/>
+```
+
+**方式 2：查询某一格的历史（含多次编辑）**
+
+```ts
+const history = tableRef.current?.getCellHistory('D7') ?? [];
+// 按时间倒序，每项为 ETableCellChangeRecord
+const latest = history[0];
+```
+
+**单条记录示例解读：**
+
+```json
+{
+  "id": "1788232356649-6-3-zfhvo",
+  "cell": "D7",
+  "row": 6,
+  "column": 3,
+  "from": "¥200",
+  "to": "¥20,000",
+  "time": "11:12:36",
+  "source": "edit"
+}
+```
+
+| 字段 | 含义（演示页） |
+|------|----------------|
+| `cell` / `row` / `column` | 工作表坐标；D 列 = 第 4 列 = `revenue`（净收入） |
+| `row: 6` | 第 7 行；减去表头 3 行 → 数据区第 4 行（`dataRow = 3`） |
+| `from` / `to` | **显示值字符串**（含 `¥`、千分位），不是原始 `number` |
+| `source` | 当前实现主要为 `edit`；粘贴批量写入**不一定**逐格回调 |
+
+**数值列解析示例：**
+
+```ts
+const parseMoney = (display: string) =>
+  Number(display.replace(/[¥,\s]/g, '')) || 0;
+
+const numericValue = parseMoney(record.to); // 20000
+```
+
+---
+
+##### B. 获取全量更新数据（变更流水 / Diff）
+
+指「自打开表格以来（或自上次清空以来）所有编辑过的单元格」，不是整张表的当前值。
+
+**方式 1：父组件 state 累积（推荐）**
+
+```tsx
+const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
+
+<ETable
+  onCellChange={(record) => {
+    setTracks((prev) => [record, ...prev]);
+  }}
+/>
+
+// 导出为业务 patch 列表
+const patches = tracks.map((r) => ({
+  cell: r.cell,
+  field: leafColumns[r.column]?.id,
+  dataRow: r.row - HEADER_DEPTH,
+  from: r.from,
+  to: r.to,
+  time: r.time,
+}));
+```
+
+**方式 2：`ref.getTracks()`**
+
+```ts
+const allChanges = tableRef.current?.getTracks() ?? [];
+```
+
+| 说明 | 限制 |
+|------|------|
+| 内存中最多保留 **200 条**（`setupCellHistory` 默认 `maxRecords`） | 超出后丢弃最旧记录 |
+| 仅记录 **SheetEditEnded** 确认的单格编辑 | 粘贴、程序化 `setValue`、折叠 ▶/▼ 不一定入库 |
+| 同一格多次编辑会有 **多条** 记录 | 取最新值需按 `cell` 合并或读 `getCellHistory(cell)[0]` |
+| `ref.clearTracks()` | 清空流水，不影响 Worksheet 当前值 |
+
+**按单元格去重取最新值：**
+
+```ts
+function latestByCell(tracks: ETableCellChangeRecord[]) {
+  const map = new Map<string, ETableCellChangeRecord>();
+  tracks.forEach((t) => {
+    if (!map.has(t.cell)) map.set(t.cell, t); // tracks 已按时间倒序
+  });
+  return [...map.values()];
+}
+```
+
+**提交后端示例（增量保存）：**
+
+```ts
+await api.batchPatchCells(
+  latestByCell(tracks).map((r) => ({
+    rowId: resolveRowId(r.row - HEADER_DEPTH), // 业务自行映射
+    field: leafColumns[r.column]?.id,
+    value: parseFieldValue(r.to, leafColumns[r.column]),
+  })),
+);
+```
+
+---
+
+##### C. 获取全量表格数据（当前快照）
+
+**推荐 API：`ref.getTableData()`**
+
+```ts
+const snapshot = tableRef.current?.getTableData();
+// {
+//   columns: ETableColumn[];      // 多级表头
+//   leafColumns: ETableColumn[];  // 叶子列
+//   headerDepth: number;          // 表头行数
+//   rows: ETableRow[];            // 全量数据行
+//   source: 'worksheet' | 'memory';
+// }
+```
+
+| `source` | 含义 |
+|----------|------|
+| `worksheet` | 从 Worksheet 逐格读取当前值（含用户编辑），适用于中小数据全量写入 |
+| `memory` | 内存 `rows` + `getTracks()` 变更叠加；树视口 / 懒虚拟未加载完时自动使用 |
+
+```tsx
+const tableRef = useRef<ETableRef>(null);
+
+// 保存 / 导出
+const handleExport = () => {
+  const { rows, leafColumns, headerDepth, source } =
+    tableRef.current?.getTableData() ?? { rows: [] };
+
+  const records = rows.map((row, dataRow) => {
+    const record: Record<string, unknown> = { id: row.id };
+    leafColumns.forEach((col) => {
+      const cell = row.data[col.id];
+      record[col.id] =
+        cell !== null && typeof cell === 'object' && 'value' in cell
+          ? (cell as { value?: unknown }).value
+          : cell;
+    });
+    return record;
+  });
+
+  console.log('数据来源', source, '行数', records.length, records);
+};
+```
+
+**实现文件：** `src/components/UniverTable/exportData.ts`
+
+---
+
+**其他策略（无 ref 或需自定义时）：**
+
+```tsx
+// 直接模式：rows 放在父 state，编辑时更新
+const [rows, setRows] = useState<ETableRow[]>(initialRows);
+
+const handleCellChange = (record: ETableCellChangeRecord) => {
+  const dataRow = record.row - HEADER_DEPTH;
+  const field = leafColumns[record.column]?.id;
+  if (!field || dataRow < 0) return;
+
+  setRows((prev) =>
+    prev.map((row, i) =>
+      i === dataRow
+        ? { ...row, data: { ...row.data, [field]: record.to } }
+        : row,
+    ),
+  );
+};
+
+// 全量表格数据 = rows
+const fullTableData = rows;
+```
+
+```tsx
+// 树形模式：保留 treeData，按 dataRow 映射回节点后 patch（需自建 rowIndex → node 映射）
+// 或维护展平后的 rows 副本（初始化时 flattenTreeData 一次存父 state）
+import { flattenTreeData } from '@/components/UniverTable';
+
+const [flatRows, setFlatRows] = useState(() =>
+  flattenTreeData(treeData, treeConfig).rows,
+);
+// onCellChange 更新 flatRows[dataRow].data[field]
+```
+
+---
+
+**C2. 从 Worksheet 读取**
+
+```ts
+function readSheetMatrix(
+  tableRef: React.RefObject<ETableRef>,
+  headerDepth: number,
+  leafColumns: ETableColumn[],
+) {
+  const worksheet = tableRef.current?.getWorksheet();
+  if (!worksheet) return [];
+
+  const dataStartRow = headerDepth;
+  const rowCount = worksheet.getRowCount?.() ?? 0;
+  const colCount = leafColumns.length;
+  const dataRowCount = Math.max(0, rowCount - dataStartRow);
+
+  const matrix =
+    worksheet
+      .getRange(dataStartRow, 0, dataRowCount, colCount)
+      .getValues?.() ?? [];
+
+  return matrix.map((cells, i) => {
+    const data: Record<string, unknown> = {};
+    leafColumns.forEach((col, j) => {
+      const raw = cells[j];
+      data[col.id] =
+        raw !== null && typeof raw === 'object' && 'v' in raw
+          ? (raw as { v: unknown }).v
+          : raw;
+    });
+    return { id: String(i), data };
+  });
+}
+```
+
+| 模式 | 能否读到「全量」 | 注意 |
+|------|------------------|------|
+| 直接模式 / 树 &lt;5000 行 | ✅ 一般可以 | 合并格只有左上角有值；维度列可能含 ▶/▼ |
+| 平铺懒虚拟 ≥5000 | ⚠️ 仅已加载页 | 未滚动到的页 sheet 上可能为空 |
+| 树视口投影 ≥5000 | ❌ 仅 ~300 行窗口 | **不能**用此方式导全表，必须用 C1 或 C3 |
+
+---
+
+**C3. 树形：写回 treeData 后重新展平**
+
+```ts
+import { flattenTreeData } from '@/components/UniverTable';
+
+// 1. 根据 onCellChange / tracks 把值写回 treeData 对应节点
+// 2. 重新展平得到完整二维快照
+const snapshot = flattenTreeData(treeData, treeConfig);
+const { rows, columns, merges } = snapshot;
+```
+
+---
+
+##### 数据获取对照小结
+
+```
+                    单个更新          全量更新（Diff）       全量表格（快照）
+                    ────────          ──────────────       ──────────────
+实时回调            onCellChange      onCellChange 累积     —
+Ref 查询            getCellHistory    getTracks()           getTableData()
+父组件 state        —                 tracks[]              rows / treeData 镜像
+组件内置导出        —                 —                     getTableData()
+大数据树视口        同左              同左                  ⚠️ 必须 C1/C3，勿读 sheet
+```
+
+**演示页参考：** `src/pages/UniverTable/index.tsx` 用 `tracks` state + `onCellChange` 实现「全量更新数据」展示；未实现「全量快照导出」。
+
+#### 1.3.7 程序化更新单元格 `setCellValue`
+
+```ts
+const result = tableRef.current?.setCellValue('D7', 20000);
+// { success: true, appliedToSheet: true, cell: 'D7', dataRow: 3, field: 'revenue', ... }
+```
+
+**三种定位方式：**
+
+```ts
+// 1. A1 地址（含表头，与 onCellChange.cell 一致）
+tableRef.current?.setCellValue('D7', 20000);
+
+// 2. 工作表行列（0-based）
+tableRef.current?.setCellValue({ sheetRow: 6, column: 3 }, 20000);
+
+// 3. 数据区行 + 字段名（推荐业务层使用）
+tableRef.current?.setCellValue({ dataRow: 3, field: 'revenue' }, 20000);
+```
+
+**选项 `ETableSetCellValueOptions`：**
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `syncMemory` | `true` | 同步更新内部 `rows`，保证 `getTableData()` 一致 |
+| `recordChange` | `false` | 为 `true` 时写入 `getTracks()` 并触发 `onCellChange`（`source: 'api'`） |
+
+```ts
+tableRef.current?.setCellValue(
+  { dataRow: 3, field: 'revenue' },
+  20000,
+  { recordChange: true },
+);
+```
+
+**返回值 `ETableSetCellValueResult`：**
+
+| 字段 | 说明 |
+|------|------|
+| `success` | 是否成功（定位有效且至少更新了内存或 sheet） |
+| `appliedToSheet` | 是否写入了当前 Worksheet |
+| `cell` / `dataRow` / `field` | 解析后的坐标 |
+
+**注意：**
+
+- 树视口模式（≥5000 行）：逻辑行不在当前 ~300 行窗口时，`success: true` 但 `appliedToSheet: false`（仅内存更新）
+- 只读区域可程序化写入（与用户双击编辑不同）
+- 富单元格：`setCellValue('D7', { value: 20000, style: { bl: 1 } })`
+
+**实现文件：** `src/components/UniverTable/cellValue.ts`
+
+#### 1.3.8 程序化更新一行 `setRowValue`
+
+```ts
+tableRef.current?.setRowValue(3, {
+  revenue: 20000,
+  orders: 500,
+  owner: '张三',
+  status: '已核验',
+});
+// { success: true, appliedToSheet: true, dataRow: 3, updatedFields: ['revenue','orders',...] }
+```
+
+**行定位：**
+
+```ts
+// 数据区行号（0-based，推荐）
+setRowValue(3, { revenue: 20000 });
+setRowValue({ dataRow: 3 }, { revenue: 20000 });
+
+// 工作表绝对行号（含表头）
+setRowValue({ sheetRow: 6 }, { revenue: 20000 });
+```
+
+**行为说明：**
+
+| 项 | 说明 |
+|----|------|
+| 合并策略 | **按字段局部合并**到 `rows[dataRow].data`，未传入的列保持不变 |
+| 写入方式 | 合并后对该行执行 `setValues`（整行刷新，比逐格 `setCellValue` 更高效） |
+| 选项 | 与 `setCellValue` 相同：`syncMemory`、`recordChange` |
+| 视口模式 | 逻辑行不在窗口时仅更新内存，`appliedToSheet: false` |
+
+```ts
+tableRef.current?.setRowValue(
+  { dataRow: 3 },
+  { revenue: 20000, profit: 'High' },
+  { recordChange: true }, // 每个变更字段各一条 onCellChange
+);
+```
+
+#### 1.3.9 读取单元格 / 行 `getCellValue` / `getRowValue`
+
+与 `setCellValue` / `setRowValue` 对称，读取**当前值**（不是变更流水）。
+
+**读取单格：**
+
+```ts
+const cell = tableRef.current?.getCellValue('D7');
+// { success: true, value: 20000, displayValue: '¥20,000', source: 'worksheet', field: 'revenue', ... }
+
+getCellValue({ dataRow: 3, field: 'revenue' });
+getCellValue({ sheetRow: 6, column: 3 });
+```
+
+**读取一行：**
+
+```ts
+const row = tableRef.current?.getRowValue(3);
+// { success: true, dataRow: 3, id: '...', data: { revenue, orders, ... }, source: 'worksheet' }
+
+getRowValue({ dataRow: 3 }, { fields: ['revenue', 'orders'] });
+getRowValue(3, { preferWorksheet: false }); // 强制读内存 rows
+```
+
+| `source` | 说明 |
+|----------|------|
+| `worksheet` | 从 Worksheet 读取（含用户编辑） |
+| `memory` | 从内部 `rows` 读取（视口外行自动回退） |
+
+| API | 粒度 |
+|-----|------|
+| `getCellValue` | 单格 |
+| `getRowValue` | 一行 |
+| `getTableData` | 全表（展平行） |
+| `getTreeData` | 树形源数据（含编辑） |
+
+#### 1.3.10 获取树形源数据 `getTreeData`
+
+当使用 `treeData` + `treeConfig` 时，可用 `getTreeData()` 取**合并了用户编辑后的树形结构**（`ETableTreeNode[]`），而不是展平后的 `rows`。
+
+```ts
+const latestTree = tableRef.current?.getTreeData();
+// 非树形模式返回 null
+
+// 与 getTableData 相同：优先从 Worksheet 读当前值
+const fromSheet = tableRef.current?.getTreeData({ preferWorksheet: true });
+const fromMemory = tableRef.current?.getTreeData({ preferWorksheet: false });
+```
+
+**工作原理：**
+
+1. 深拷贝当前 props 中的 `treeData`（结构以最新 props 为准）
+2. 调用 `getTableData()` 获取最新展平行（含 Worksheet 编辑或内存 + tracks）
+3. 按 `row.id` 与树节点 `id` / `attributes[].id` / `attributes[].children[].id` 的对应关系，将指标写回 `values`，维度字段写回 `node.data`（跳过带 `▶/▼` 的树形标签列）
+
+**与 `getTableData` 的区别：**
+
+| API | 返回形态 | 典型用途 |
+|-----|----------|----------|
+| `getTableData()` | 展平 `rows` + 列元数据 | 导出 Excel、全表扫描 |
+| `getTreeData()` | 原始 `ETableTreeNode[]` | 回写后端、保存树形 JSON |
+
+> 组件不会自动把编辑写回父组件的 `treeData` state；需要时在 `onCellChange` 或提交时调用 `getTreeData()` 同步。
+
 ---
 
 ## 2. 模块结构
@@ -332,6 +801,7 @@ UniverTable/
 ├── header.tsx          # 自定义列头
 ├── columnTypes.ts      # 数字格式、下拉校验
 ├── tree.ts             # 树形数据展平 → rows / merges / toggles
+├── treeMerge.ts        # 展平行合并回树形源数据（getTreeData）
 ├── treeCollapse.ts     # 中小数据树折叠（hideRows）
 ├── treeViewport.ts     # 大数据树视口投影（≥5000 行）
 ├── treeDataGenerator.ts# 演示数据生成、性能阈值常量
@@ -857,10 +1327,63 @@ attachments: [{
 | `drillDown` / `drillUp` / `getBreadcrumb` | 树形下钻/上钻 |
 | `openSearch` / `search` | 快速搜索 |
 | `undo` / `redo` | 撤销重做 |
-| `getTracks` / `getCellHistory` / `getDataTrace` | 历史与追踪 |
+| `getTracks` / `getCellHistory` / `getDataTrace` | 变更流水 / 单格历史 / 数据追踪（见 §1.3.6） |
+| `getTableData(options?)` | **全量表格快照** `ETableExportData`（见 §1.3.6） |
+| `getTreeData(options?)` | **树形源数据快照** `ETableTreeNode[] \| null`（见 §1.3.10） |
+| `setCellValue(locator, value, options?)` | **程序化更新单格**（见 §1.3.7） |
+| `setRowValue(locator, data, options?)` | **程序化更新一行**（见 §1.3.8） |
+| `getCellValue(locator, options?)` | **读取单格当前值**（见 §1.3.9） |
+| `getRowValue(locator, options?)` | **读取一行当前值**（见 §1.3.9） |
 | `getVirtualRenderStats` / `getTreeViewportStats` | 性能状态 |
 
-### 7.3 回调示例
+### 7.3 数据获取示例
+
+```tsx
+import { useRef, useState } from 'react';
+import ETable, { type ETableRef, type ETableCellChangeRecord } from '@/components/UniverTable';
+
+const HEADER_DEPTH = 3;
+const leafColumns = [/* 与表头叶子列一致 */];
+
+export default function Page() {
+  const tableRef = useRef<ETableRef>(null);
+  const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
+
+  return (
+    <ETable
+      ref={tableRef}
+      treeData={treeData}
+      treeConfig={treeConfig}
+      options={{ freezeRows: HEADER_DEPTH }}
+      // ① 单个更新：每次编辑一条
+      onCellChange={(record) => {
+        setTracks((prev) => [record, ...prev]);
+        const field = leafColumns[record.column]?.id;
+        console.log('单格更新', { cell: record.cell, field, to: record.to });
+      }}
+    />
+  );
+}
+
+// ② 全量更新（Diff）
+function exportPatches() {
+  return tableRef.current?.getTracks() ?? [];
+}
+
+// ③ 全量表格（推荐 getTableData）
+function exportAllTableData() {
+  return tableRef.current?.getTableData();
+}
+
+// ④ 树形源数据（含编辑，回写后端）
+function exportTreeData() {
+  return tableRef.current?.getTreeData();
+}
+```
+
+详见 **§1.3.6 数据获取方式**。
+
+### 7.4 回调示例
 
 ```tsx
 const tableRef = useRef<ETableRef>(null);
