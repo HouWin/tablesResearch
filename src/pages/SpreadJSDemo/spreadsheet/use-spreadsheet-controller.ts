@@ -57,7 +57,6 @@ import {
   viewRowCellValue,
   viewRowValues,
   type AggregateMode,
-  type BusinessNode,
   type BusinessField,
   type CellAttachment,
   type DataMode,
@@ -145,70 +144,21 @@ function logRegularSourceData() {
   );
 }
 
-function businessNodeLogSnapshot(node: BusinessNode) {
-  return {
-    id: node.id,
-    name: node.name,
-    hierarchyRole: node.hierarchyRole,
-    revenue: node.revenue,
-    productRevenue: node.productRevenue,
-    serviceRevenue: node.serviceRevenue,
-    orders: node.orders,
-    onlineOrders: node.onlineOrders,
-    offlineOrders: node.offlineOrders,
-    avgOrder: node.avgOrder,
-    completion: node.completion,
-    owner: node.owner,
-    status: node.status,
-    verified: node.verified,
-    updatedAt: node.updatedAt,
-    adjustmentFactor: node.adjustmentFactor,
-  };
-}
-
-function logCellEditTransaction(
-  dataMode: 'regular' | 'stress',
-  requests: CellEditRequest[],
-  changes: VisibleCellChange[],
-  sourceChanges: Array<{
-    id: string;
-    name: string;
-    before: ReturnType<typeof businessNodeLogSnapshot>;
-    after: ReturnType<typeof businessNodeLogSnapshot>;
-  }>,
+// 单元格发生变化时，向后端/控制台输出一个精简对象：
+// rowId + field 标识“改的是什么”，oldValue/newValue 是变化前后的值。
+function logCellChange(
+  rowId: string,
+  field: BusinessField,
+  oldValue: unknown,
+  newValue: unknown,
 ) {
-  if (process.env.NODE_ENV === 'production' || !changes.length) return;
-  const sources = [...new Set(requests.map((request) => request.source))];
-  const directChanges = changes.filter((change) => change.kind === '直接修改');
-  const linkedChanges = changes.filter((change) => change.kind !== '直接修改');
-  console.groupCollapsed(
-    `[SpreadJS Demo][单元格修改] ${sources.join(' / ')} · ${
-      directChanges.length
-    } 项直接修改 · ${linkedChanges.length} 项联动`,
-  );
-  console.info('操作上下文：', {
-    dataMode,
-    occurredAt: new Date().toISOString(),
-    requestedCellCount: requests.length,
-    visibleChangedCellCount: changes.length,
-    linkedChangedCellCount: linkedChanges.length,
+  if (process.env.NODE_ENV === 'production') return;
+  console.log('[SpreadJS Demo][单元格修改]', {
+    rowId,
+    field,
+    oldValue,
+    newValue,
   });
-  console.table(
-    changes.map((change) => ({
-      类型: change.kind,
-      单元格: `${columnName(change.col)}${change.row + 1}`,
-      业务行ID: change.rowId,
-      产品: change.product,
-      区域: change.region,
-      字段: change.field,
-      字段名称: change.fieldLabel,
-      修改前: change.oldValue,
-      修改后: change.newValue,
-    })),
-  );
-  console.info('底层明细节点修改前后：', sourceChanges);
-  console.info('原始编辑请求：', requests);
-  console.groupEnd();
 }
 
 export type SpreadsheetActions = {
@@ -906,19 +856,11 @@ export function useSpreadsheetController() {
           request: CellEditRequest;
           rowId: string;
           field: BusinessField;
-          sourceNode: BusinessNode;
         }> = [];
         const rejected: Array<{
           request: CellEditRequest;
           reason: string;
         }> = [];
-        const sourceBefore = new Map<
-          string,
-          {
-            node: BusinessNode;
-            snapshot: ReturnType<typeof businessNodeLogSnapshot>;
-          }
-        >();
 
         requests.forEach((request) => {
           const row = beforeRows[request.row];
@@ -940,18 +882,11 @@ export function useSpreadsheetController() {
             typeof nextValue === 'number'
           )
             nextValue = roundToTwoDecimals(nextValue);
-          if (!sourceBefore.has(editability.sourceNode.id)) {
-            sourceBefore.set(editability.sourceNode.id, {
-              node: editability.sourceNode,
-              snapshot: businessNodeLogSnapshot(editability.sourceNode),
-            });
-          }
           updateBusinessNode(editability.sourceNode, column.field, nextValue);
           accepted.push({
             request: { ...request, requestedValue: nextValue },
             rowId: row.id,
             field: column.field,
-            sourceNode: editability.sourceNode,
           });
         });
 
@@ -1097,20 +1032,11 @@ export function useSpreadsheetController() {
         });
         syncProjectionSnapshot();
 
-        const sourceChanges = [...sourceBefore.values()].map(
-          ({ node, snapshot }) => ({
-            id: node.id,
-            name: node.name,
-            before: snapshot,
-            after: businessNodeLogSnapshot(node),
-          }),
-        );
-        logCellEditTransaction(
-          activeDataMode,
-          accepted.map(({ request }) => request),
-          changes,
-          sourceChanges,
-        );
+        accepted.forEach(({ request, rowId, field }) => {
+          if (historyValuesEqual(request.oldValue, request.requestedValue))
+            return;
+          logCellChange(rowId, field, request.oldValue, request.requestedValue);
+        });
         return Math.max(historyCount, changes.length);
       };
 
@@ -3051,17 +2977,6 @@ export function useSpreadsheetController() {
               formulaResult,
               `${historySource} · 计算结果`,
             );
-            console.info('[SpreadJS Demo][单元格公式修改]', {
-              source: historySource,
-              cell: `${columnName(args.col)}${args.row + 1}`,
-              rowId: node.id,
-              product: node.productLabel,
-              region: node.regionLabel,
-              field: column.field,
-              oldFormula: args.oldValue,
-              newFormula: args.newValue,
-              calculatedValue: formulaResult,
-            });
             invalidateSearchSession(
               activeSearch.query
                 ? '公式已更新，按 Enter 刷新搜索结果'

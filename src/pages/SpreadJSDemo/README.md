@@ -147,7 +147,7 @@ DrillView 路径
 
 粘贴场景在 `ClipboardPasting` 中保存操作前快照，在 `ClipboardPasted` 中比较新旧值。批量范围操作由 `RangeChanged` 兜底。
 
-开发环境中，每次成功修改还会输出折叠的控制台分组 `[SpreadJS Demo][单元格修改]`，其中包含操作来源、时间、模式、A1 地址、业务行 ID、产品、区域、字段、修改前后值、变化类型，以及底层明细节点的完整前后快照。生产构建不会输出这些调试日志。
+开发环境中，用户每次直接编辑单元格都会输出一条精简日志 `[SpreadJS Demo][单元格修改]`，附带一个对象 `{ rowId, field, oldValue, newValue }`：`rowId` + `field` 标识改的是哪条业务记录的哪个字段，`oldValue`/`newValue` 是修改前后的值，供后端/上游消费方了解具体变更内容。生产构建不会输出这些调试日志。
 
 ### 1.6 快速搜索
 
