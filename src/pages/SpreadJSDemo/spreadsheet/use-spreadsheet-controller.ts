@@ -47,7 +47,6 @@ import {
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
-  recalculateBusinessHierarchy,
   releaseStressRecords,
   roundToTwoDecimals,
   stableCellKey,
@@ -915,8 +914,6 @@ export function useSpreadsheetController() {
           );
         }
         if (!accepted.length) return 0;
-
-        if (activeDataMode === 'regular') recalculateBusinessHierarchy();
 
         const nextRows =
           activeDataMode === 'stress' ? buildStressRows() : buildRegularRows();
