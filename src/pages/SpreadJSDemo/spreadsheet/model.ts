@@ -66,6 +66,7 @@ export type BusinessField = Exclude<
 >;
 export type ColumnField = BusinessField | HierarchyField;
 export type ViewRow = BusinessNode & {
+  sourceNodes: readonly BusinessNode[];
   level: number;
   hasChildren?: boolean;
   productId: string;
@@ -93,6 +94,12 @@ export type OutlineSnapshot = {
   regionExpanded: number;
   regionTotal: number;
   rowCount: number;
+};
+
+export type CellEditability = {
+  editable: boolean;
+  reason: string;
+  sourceNode: BusinessNode | null;
 };
 
 type StressAggregationRange = {
@@ -1017,6 +1024,19 @@ function aggregateBusinessNodes(
   };
 }
 
+export function recalculateBusinessHierarchy(
+  roots: BusinessNode[] = BUSINESS_DATA,
+) {
+  const recalculateNode = (node: BusinessNode): BusinessNode[] => {
+    const children = node.children ?? [];
+    if (!children.length) return [node];
+    const leaves = children.flatMap(recalculateNode);
+    Object.assign(node, aggregateBusinessNodes(leaves, node));
+    return leaves;
+  };
+  roots.forEach(recalculateNode);
+}
+
 export function createBusinessProjectionRows(
   view: DrillView,
   productExpanded: ReadonlySet<string>,
@@ -1038,6 +1058,7 @@ export function createBusinessProjectionRows(
               (child) => child.hierarchyRole === 'subcategory',
             )
           : undefined,
+        sourceNodes: region.sourceNodes,
         level: product.depth,
         hasChildren: product.isGroup,
         productId: product.id,
@@ -1267,6 +1288,7 @@ function createStressRecord(index: number): ViewRow {
       status,
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
+    sourceNodes: [],
     level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
     hasChildren: isBusinessGroup || isRegion,
     productId: isBusinessGroup ? businessGroupId : productId,
@@ -1477,7 +1499,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
         const region: StressProjectionRegion = {
           id: regionSummary.regionRootId,
           label: regionSummary.regionLabel,
-          summaryRows: [regionSummary],
+          summaryRows: details,
           details,
         };
         regions.push(region);
@@ -1495,7 +1517,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
           };
           categoryRegions.set(region.label, categoryRegion);
         }
-        categoryRegion.summaryRows.push(regionSummary);
+        categoryRegion.summaryRows.push(...details);
         // 事业群区域展开到产品线汇总即可；明细记录仍由对应产品线的
         // 区域节点展开。这样与常规模式的“父级聚合、子级明细”一致，
         // 也避免同一批 10 万条事实在父子产品下重复投影。
@@ -1504,6 +1526,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
           id: `${regionSummary.id}:category-detail`,
           name: productSummary.productLabel,
           regionLabel: productSummary.productLabel,
+          sourceNodes: details,
         });
       }
 
@@ -1576,6 +1599,9 @@ function projectStressProduct(
       name: `${product.label} / ${region.label}`,
       hierarchyRole: product.isGroup ? 'category' : 'subcategory',
       children: undefined,
+      sourceNodes: region.summaryRows.flatMap((row) =>
+        row.sourceNodes.length ? row.sourceNodes : [row],
+      ),
       level: product.depth,
       hasChildren: product.isGroup,
       productId: product.id,
@@ -1597,13 +1623,18 @@ function projectStressProduct(
     if (!expanded) return [root];
     return [
       root,
-      ...region.details.map(
-        (detail): ViewRow => ({
+      ...region.details.map((detail): ViewRow => {
+        const sourceNodes = detail.sourceNodes.length
+          ? detail.sourceNodes
+          : [detail];
+        return {
           ...detail,
+          ...aggregateBusinessNodes(sourceNodes, detail),
           id: `${product.id}::${region.id}::${detail.id}`,
           name: `${product.label} / ${detail.regionLabel}`,
           hierarchyRole: 'detail',
           children: undefined,
+          sourceNodes,
           level: product.depth,
           hasChildren: false,
           productId: product.id,
@@ -1621,8 +1652,8 @@ function projectStressProduct(
           regionDepth: 1,
           regionIsGroup: false,
           regionExpanded: false,
-        }),
-      ),
+        };
+      }),
     ];
   });
   if (!rows.length) return rows;
@@ -1773,6 +1804,43 @@ export function isHierarchyField(field: ColumnField): field is HierarchyField {
   );
 }
 
+export function getCellEditability(
+  row: ViewRow | undefined,
+  col: number,
+): CellEditability {
+  const column = COLUMNS[col];
+  if (!row || !column)
+    return { editable: false, reason: '单元格不存在', sourceNode: null };
+  if (isHierarchyField(column.field)) {
+    return {
+      editable: false,
+      reason: '层级和属性字段由业务数据源维护',
+      sourceNode: null,
+    };
+  }
+  if (column.field === 'avgOrder') {
+    return {
+      editable: false,
+      reason: '客单价由净收入 ÷ 订单数自动计算',
+      sourceNode: null,
+    };
+  }
+  const sourceNode = row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  if (
+    row.regionDepth === 0 ||
+    !sourceNode ||
+    sourceNode.hierarchyRole !== 'detail' ||
+    sourceNode.children?.length
+  ) {
+    return {
+      editable: false,
+      reason: '汇总数据由下级明细自动聚合，不能直接编辑',
+      sourceNode: null,
+    };
+  }
+  return { editable: true, reason: '可编辑明细单元格', sourceNode };
+}
+
 export function viewRowCellValue(row: ViewRow, col: number) {
   if (col === PRODUCT_HIERARCHY_COLUMN) return productHierarchyText(row);
   if (col === PRODUCT_ATTRIBUTE_COLUMN)
@@ -1831,6 +1899,16 @@ export function updateBusinessNode(
   field: BusinessField,
   value: unknown,
 ) {
+  const updateAverageOrder = () => {
+    node.avgOrder = Math.round(node.revenue / Math.max(node.orders, 1));
+  };
+  const parsedNumber =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+      ? Number(value.replace(/[\s,¥￥]/g, ''))
+      : Number.NaN;
+  const finiteNumber = Number.isFinite(parsedNumber) ? parsedNumber : null;
   switch (field) {
     case 'name':
       if (typeof value === 'string') node.name = value.replace(/^\u3000+/, '');
@@ -1856,9 +1934,68 @@ export function updateBusinessNode(
       if (!Number.isNaN(nextDate.getTime())) node.updatedAt = nextDate;
       break;
     }
-    default:
-      if (typeof value === 'number' && Number.isFinite(value))
-        node[field] = value;
+    case 'revenue':
+      if (finiteNumber !== null) {
+        const previousComponentTotal =
+          node.productRevenue + node.serviceRevenue;
+        const productShare = previousComponentTotal
+          ? node.productRevenue / previousComponentTotal
+          : 0.78;
+        node.revenue = Math.max(0, Math.round(finiteNumber));
+        node.productRevenue = Math.round(node.revenue * productShare);
+        node.serviceRevenue = node.revenue - node.productRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'productRevenue':
+      if (finiteNumber !== null) {
+        node.productRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'serviceRevenue':
+      if (finiteNumber !== null) {
+        node.serviceRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'orders':
+      if (finiteNumber !== null) {
+        const previousOrderTotal = node.onlineOrders + node.offlineOrders;
+        const onlineShare = previousOrderTotal
+          ? node.onlineOrders / previousOrderTotal
+          : 0.63;
+        node.orders = Math.max(0, Math.round(finiteNumber));
+        node.onlineOrders = Math.round(node.orders * onlineShare);
+        node.offlineOrders = node.orders - node.onlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'onlineOrders':
+      if (finiteNumber !== null) {
+        node.onlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'offlineOrders':
+      if (finiteNumber !== null) {
+        node.offlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'avgOrder':
+      // Derived field. Kept in the switch so programmatic callers cannot
+      // accidentally break the revenue/order relationship.
+      updateAverageOrder();
+      break;
+    case 'completion':
+    case 'adjustmentFactor':
+      if (finiteNumber !== null) node[field] = finiteNumber;
+      break;
   }
 }
 
