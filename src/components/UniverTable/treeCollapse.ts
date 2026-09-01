@@ -1,3 +1,13 @@
+/**
+ * 树形折叠 - hideRows 模式（treeCollapse.ts）
+ *
+ * 用于 treeUI 且行数 < 5000 的场景：
+ * - 单元格内 ▶/▼ 点击切换折叠状态
+ * - 通过 hideRows / showRows 隐藏子行（大数据时性能较差）
+ * - Region 展开后 reapplyMergesForRowSpan 修复因 hideRows 破坏的合并
+ *
+ * 行数 ≥ 5000 时由 treeViewport.ts 接管（视口投影，不再全表 hideRows）。
+ */
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
 import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';

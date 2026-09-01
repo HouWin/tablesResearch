@@ -1,3 +1,11 @@
+/**
+ * 平铺数据多重分组展平（groupData.ts）
+ *
+ * 将 groupData[] + groupConfig 转为带维度列纵向合并、行大纲的二维表：
+ * - dimensions 从左到右为分组层级（如 Package → Quarter）
+ * - measures 为展开后的明细指标列
+ * - 视觉效果类似透视表行分组，但为预展平写入单元格
+ */
 import type {
   ETableCell,
   ETableColumn,

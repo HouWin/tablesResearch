@@ -1,3 +1,14 @@
+/**
+ * 树形大数据视口投影（treeViewport.ts）
+ *
+ * 当 treeUI 且展平行数 ≥ TREE_VIEWPORT_THRESHOLD（5000）时启用：
+ * - 全量逻辑行（rows + toggles）保留在 JS 内存
+ * - 工作表仅投影 TREE_VIEWPORT_WINDOW_SIZE（300）行滑动窗口
+ * - 折叠/展开过滤 visibleLogicalRows，避免对全表 hideRows
+ * - 合并单元格按逻辑锚点增量更新（planProjectedMerges）
+ *
+ * 对外：getLogicalDataRow（投影行 → 逻辑行）、getTreeViewportStats
+ */
 import { VerticalAlign } from '@univerjs/core';
 import { applyColumnTypes } from './columnTypes';
 import {

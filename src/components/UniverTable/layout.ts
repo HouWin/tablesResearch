@@ -1,3 +1,11 @@
+/**
+ * 多级表头布局计算（layout.ts）
+ *
+ * 将 ETableColumn 树 DFS 为表头单元格布局：
+ * - 有 children：横向合并（columnSpan = 子树叶子数）
+ * - 叶子列：纵向合并至 maxDepth（rowSpan）
+ * - 输出 leafColumns 顺序决定数据区列索引
+ */
 import type { ETableColumn } from './types';
 
 export interface ETableHeaderLayout {
