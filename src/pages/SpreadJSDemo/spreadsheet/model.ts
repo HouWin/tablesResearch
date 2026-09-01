@@ -1024,18 +1024,54 @@ function aggregateBusinessNodes(
   };
 }
 
-export function recalculateBusinessHierarchy(
-  roots: BusinessNode[] = BUSINESS_DATA,
-) {
-  const recalculateNode = (node: BusinessNode): BusinessNode[] => {
-    const children = node.children ?? [];
-    if (!children.length) return [node];
-    const leaves = children.flatMap(recalculateNode);
-    Object.assign(node, aggregateBusinessNodes(leaves, node));
-    return leaves;
-  };
-  roots.forEach(recalculateNode);
+// 汇总行（区域根行、跨子类合并的明细行等）被视为“后端已经算好并下发”的静态数据：
+// 首次计算时把结果冻结进缓存，此后即使编辑了明细单元格也不会重新求和。
+// 只有真正唯一映射到一条明细叶子的行（sourceNodes.length === 1）才会实时反映编辑结果。
+const aggregateSnapshotCache = new Map<
+  string,
+  ReturnType<typeof aggregateBusinessNodes>
+>();
+
+function snapshotKeyForSourceNodes(nodes: readonly BusinessNode[]) {
+  return nodes
+    .map((node) => node.id)
+    .sort()
+    .join('|');
 }
+
+function resolveAggregateSnapshot(
+  sourceNodes: readonly BusinessNode[],
+  fallback: BusinessNode,
+) {
+  if (sourceNodes.length <= 1)
+    return aggregateBusinessNodes(sourceNodes, fallback);
+  const key = snapshotKeyForSourceNodes(sourceNodes);
+  const cached = aggregateSnapshotCache.get(key);
+  if (cached) return cached;
+  const snapshot = aggregateBusinessNodes(sourceNodes, fallback);
+  aggregateSnapshotCache.set(key, snapshot);
+  return snapshot;
+}
+
+// 在任何编辑发生之前，预热所有产品/区域/明细维度的汇总组合，
+// 确保缓存里存的是最初的（模拟后端下发的）数值，不受后续编辑顺序影响。
+function primeAggregateSnapshotCache(nodes: readonly BusinessNode[]) {
+  nodes.forEach((node) => {
+    if (
+      node.hierarchyRole === 'category' ||
+      node.hierarchyRole === 'subcategory'
+    ) {
+      getRegionRoots(node).forEach((root) => {
+        resolveAggregateSnapshot(root.sourceNodes, node);
+        root.children.forEach((detail) =>
+          resolveAggregateSnapshot(detail.sourceNodes, node),
+        );
+      });
+    }
+    if (node.children?.length) primeAggregateSnapshotCache(node.children);
+  });
+}
+primeAggregateSnapshotCache(BUSINESS_DATA);
 
 export function createBusinessProjectionRows(
   view: DrillView,
@@ -1052,7 +1088,7 @@ export function createBusinessProjectionRows(
         id: `${product.id}::${region.id}`,
         name: `${product.label} / ${region.label}`,
         hierarchyRole: product.isGroup ? 'category' : 'subcategory',
-        ...aggregateBusinessNodes(region.sourceNodes, product.node),
+        ...resolveAggregateSnapshot(region.sourceNodes, product.node),
         children: product.isGroup
           ? product.node.children?.filter(
               (child) => child.hierarchyRole === 'subcategory',
