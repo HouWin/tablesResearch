@@ -219,6 +219,9 @@ export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
 export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 11, 12, 13, 14]);
+// 模拟一次“分批拉取”的后端网络往返耗时：滚动到已加载数据底部时，
+// 每批新数据都会先经历这段延迟，再返回给前端写入表格。
+export const STRESS_PAGE_FETCH_DELAY_MS = 220;
 
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
@@ -1819,6 +1822,15 @@ export async function getStressRecordsAsync() {
 export function releaseStressRecords() {
   stressRecordsCacheEpoch += 1;
   stressRecordsCache = null;
+}
+
+// 模拟一次分批加载请求的网络往返：可见投影（含展开/折叠、汇总合并后的
+// 树形结构）已经在内存中就绪，这里只补上“这批数据是从后端取回来的”
+// 这段延迟，供前端在把某一批可见行写入表格前先等待，制造真实的分批加载感。
+export async function simulateStressBackendDelay() {
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, STRESS_PAGE_FETCH_DELAY_MS),
+  );
 }
 
 export function productHierarchyText(row: ViewRow) {

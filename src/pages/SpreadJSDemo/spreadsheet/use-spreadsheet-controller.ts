@@ -49,6 +49,7 @@ import {
   pathForView,
   releaseStressRecords,
   roundToTwoDecimals,
+  simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
   updateBusinessNode,
@@ -399,6 +400,9 @@ export function useSpreadsheetController() {
     let groupChangeBatching = false;
     const loadedStressPages = new Set<number>();
     const loadedStressRows = new Set<number>();
+    const pendingStressPages = new Set<number>();
+    const pendingStressRows = new Set<number>();
+    let stressSessionEpoch = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
     let clipboardHistorySource: string | null = null;
@@ -1299,6 +1303,37 @@ export function useSpreadsheetController() {
         loadedStressRows.add(row);
       };
 
+      // 滚动到已加载数据边界时，先在这批行里打一个“正在加载…”占位提示，
+      // 让用户能感知到这是一次异步的分批请求，而不是瞬间完成。
+      const writeStressLoadingPlaceholder = (
+        pageIndices: number[],
+        rowIndices: number[],
+      ) => {
+        const rows = new Set<number>();
+        pageIndices.forEach((page) => {
+          const startRow = page * STRESS_PAGE_SIZE;
+          const rowCount = Math.min(
+            STRESS_PAGE_SIZE,
+            activeRows.length - startRow,
+          );
+          for (let row = startRow; row < startRow + rowCount; row += 1)
+            rows.add(row);
+        });
+        rowIndices.forEach((row) => rows.add(row));
+        if (!rows.size) return;
+        sheet.suspendPaint();
+        spread.suspendEvent();
+        try {
+          rows.forEach((row) => {
+            sheet.setValue(row, PRODUCT_HIERARCHY_COLUMN, '正在加载…');
+          });
+        } finally {
+          spread.resumeEvent();
+          sheet.resumePaint();
+        }
+        spread.repaint();
+      };
+
       const loadStressData = (
         pageIndices: Iterable<number>,
         rowIndices: Iterable<number> = [],
@@ -1307,32 +1342,58 @@ export function useSpreadsheetController() {
         const maxPage = Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1;
         const unloadedPages = [...new Set(pageIndices)].filter(
           (page) =>
-            page >= 0 && page <= maxPage && !loadedStressPages.has(page),
+            page >= 0 &&
+            page <= maxPage &&
+            !loadedStressPages.has(page) &&
+            !pendingStressPages.has(page),
         );
-        const pagesBeingLoaded = new Set(unloadedPages);
+        const pagesBeingLoaded = new Set([
+          ...unloadedPages,
+          ...pendingStressPages,
+        ]);
         const unloadedRows = [...new Set(rowIndices)].filter(
           (row) =>
             row >= 0 &&
             row < activeRows.length &&
             !pagesBeingLoaded.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
             !loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressRows.has(row),
+            !loadedStressRows.has(row) &&
+            !pendingStressRows.has(row),
         );
         if (!unloadedPages.length && !unloadedRows.length) return;
-        sheet.suspendPaint();
-        sheet.suspendCalcService(false);
-        sheet.suspendDirty();
-        spread.suspendEvent();
-        try {
-          unloadedPages.forEach(writeStressPage);
-          unloadedRows.forEach(writeStressRow);
-        } finally {
-          spread.resumeEvent();
-          sheet.resumeDirty();
-          sheet.resumeCalcService(false);
-          sheet.resumePaint();
-        }
-        spread.repaint();
+
+        unloadedPages.forEach((page) => pendingStressPages.add(page));
+        unloadedRows.forEach((row) => pendingStressRows.add(row));
+        writeStressLoadingPlaceholder(unloadedPages, unloadedRows);
+
+        // 模拟一次真实的分批后端请求：数据早已在内存中就绪，
+        // 但要等这段延迟结束才把结果写进表格，制造滚动到底部
+        // 触发下一批加载的真实观感。
+        const epoch = stressSessionEpoch;
+        void simulateStressBackendDelay().then(() => {
+          unloadedPages.forEach((page) => pendingStressPages.delete(page));
+          unloadedRows.forEach((row) => pendingStressRows.delete(row));
+          if (
+            cancelled ||
+            activeDataMode !== 'stress' ||
+            epoch !== stressSessionEpoch
+          )
+            return;
+          sheet.suspendPaint();
+          sheet.suspendCalcService(false);
+          sheet.suspendDirty();
+          spread.suspendEvent();
+          try {
+            unloadedPages.forEach(writeStressPage);
+            unloadedRows.forEach(writeStressRow);
+          } finally {
+            spread.resumeEvent();
+            sheet.resumeDirty();
+            sheet.resumeCalcService(false);
+            sheet.resumePaint();
+          }
+          spread.repaint();
+        });
       };
 
       const loadVisibleStressRows = (fallbackTopRow = 0) => {
@@ -1497,6 +1558,9 @@ export function useSpreadsheetController() {
             );
           loadedStressPages.clear();
           loadedStressRows.clear();
+          pendingStressPages.clear();
+          pendingStressRows.clear();
+          stressSessionEpoch += 1;
           if (!stress) {
             sheet.setArray(
               0,
