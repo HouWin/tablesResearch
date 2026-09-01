@@ -7,6 +7,7 @@ import {
   describeClipboardRange,
 } from './clipboard';
 import {
+  BUSINESS_DATA,
   COLUMNS,
   COLUMN_GROUPS,
   COLUMN_HEADER_GROUPS,
@@ -31,18 +32,24 @@ import {
   canDrillNode,
   columnName,
   createBusinessProjectionRows,
+  createStressProjectionRows,
   getAllProductIdsForView,
   getAggregateValue,
   getBusinessProjectionSummary,
+  getCellEditability,
   getProductGroupIdsForView,
   getRegionGroupIdsForProduct,
+  getStressAllProductIds,
+  getStressProductGroupIds,
+  getStressProjectionSummary,
   getStressRecordsAsync,
-  getStressRowOutlineGroups,
+  getStressRegionGroupIdsForProduct,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
   releaseStressRecords,
   roundToTwoDecimals,
+  simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
   updateBusinessNode,
@@ -61,7 +68,6 @@ import {
   type PanelName,
   type SelectedCell,
   type SelectionStats,
-  type StressRowOutlineGroup,
   type ToastState,
   type ToastTone,
   type ViewRow,
@@ -92,6 +98,8 @@ type ClipboardPastedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IClipboardPastedEventArgs;
 type RangeChangedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IRangeChangedEventArgs;
+type EditStartingArgs =
+  import('@grapecity-software/spread-sheets').Spread.Sheets.IEditStartingEventArgs;
 
 type ClipboardHistoryCell = {
   row: number;
@@ -106,6 +114,52 @@ type TrackedHistoryCell = {
   row: number;
   col: number;
 };
+
+type CellEditRequest = {
+  row: number;
+  col: number;
+  oldValue: unknown;
+  requestedValue: unknown;
+  source: string;
+};
+
+type VisibleCellChange = {
+  row: number;
+  col: number;
+  rowId: string;
+  product: string;
+  region: string;
+  field: BusinessField;
+  fieldLabel: string;
+  oldValue: unknown;
+  newValue: unknown;
+  kind: '直接修改' | '字段联动' | '汇总联动';
+};
+
+function logRegularSourceData() {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log(
+    '[SpreadJS Demo] 常规模式原始业务数据 BUSINESS_DATA：',
+    BUSINESS_DATA,
+  );
+}
+
+// 单元格发生变化时，向后端/控制台输出一个精简对象：
+// rowId + field 标识“改的是什么”，oldValue/newValue 是变化前后的值。
+function logCellChange(
+  rowId: string,
+  field: BusinessField,
+  oldValue: unknown,
+  newValue: unknown,
+) {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log('[SpreadJS Demo][单元格修改]', {
+    rowId,
+    field,
+    oldValue,
+    newValue,
+  });
+}
 
 export type SpreadsheetActions = {
   undo: () => void;
@@ -176,6 +230,7 @@ function isAcceptedAttachment(file: File) {
 export function useSpreadsheetController() {
   const hostRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<SpreadsheetActions | null>(null);
+  const regularSourceLoggedRef = useRef(false);
   const panelRef = useRef<PanelName>(null);
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
   const rowGroupsCollapsedRef = useRef(false);
@@ -219,10 +274,6 @@ export function useSpreadsheetController() {
     ]),
   );
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
-  const dataOverridesRef = useRef<Map<string, Map<BusinessField, unknown>>>(
-    new Map(),
-  );
-
   const [ready, setReady] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
     null,
@@ -330,9 +381,7 @@ export function useSpreadsheetController() {
       productExpanded,
       regionExpandedByProduct,
     );
-    let activeStressOutlineGroups: StressRowOutlineGroup[] = [];
-    let stressGroupBySummaryRow = new Map<number, StressRowOutlineGroup>();
-    let collapsedStressRanges: Array<{ start: number; end: number }> = [];
+    let stressSourceRows: ViewRow[] = [];
     let activeDataMode: 'regular' | 'stress' = 'regular';
     let activeSearch = {
       query: '',
@@ -351,6 +400,9 @@ export function useSpreadsheetController() {
     let groupChangeBatching = false;
     const loadedStressPages = new Set<number>();
     const loadedStressRows = new Set<number>();
+    const pendingStressPages = new Set<number>();
+    const pendingStressRows = new Set<number>();
+    let stressSessionEpoch = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
     let clipboardHistorySource: string | null = null;
@@ -375,23 +427,34 @@ export function useSpreadsheetController() {
       return state;
     };
 
-    const applyRegularOverrides = (rows: ViewRow[]) => {
-      rows.forEach((row) => {
-        dataOverridesRef.current.get(row.id)?.forEach((value, field) => {
-          updateBusinessNode(row, field, value);
-        });
-      });
-      return rows;
-    };
-
     const buildRegularRows = () =>
-      applyRegularOverrides(
-        createBusinessProjectionRows(
-          activeView,
-          productExpanded,
-          regionExpandedByProduct,
-        ),
+      createBusinessProjectionRows(
+        activeView,
+        productExpanded,
+        regionExpandedByProduct,
       );
+
+    const buildStressRows = () =>
+      createStressProjectionRows(
+        stressSourceRows,
+        productExpanded,
+        regionExpandedByProduct,
+      );
+
+    const currentProductGroupIds = () =>
+      activeDataMode === 'stress'
+        ? getStressProductGroupIds(stressSourceRows)
+        : getProductGroupIdsForView(activeView);
+
+    const currentProductIds = () =>
+      activeDataMode === 'stress'
+        ? getStressAllProductIds(stressSourceRows)
+        : getAllProductIdsForView(activeView);
+
+    const currentRegionGroupIds = (productId: string) =>
+      activeDataMode === 'stress'
+        ? getStressRegionGroupIdsForProduct(stressSourceRows, productId)
+        : getRegionGroupIdsForProduct(productId);
 
     const buildFullyExpandedRegularRows = () => {
       const allProductGroups = new Set(getProductGroupIdsForView(activeView));
@@ -402,12 +465,10 @@ export function useSpreadsheetController() {
           new Set(getRegionGroupIdsForProduct(productId)),
         );
       });
-      return applyRegularOverrides(
-        createBusinessProjectionRows(
-          activeView,
-          allProductGroups,
-          allRegionGroups,
-        ),
+      return createBusinessProjectionRows(
+        activeView,
+        allProductGroups,
+        allRegionGroups,
       );
     };
 
@@ -464,7 +525,15 @@ export function useSpreadsheetController() {
       const sheet = spread.getActiveSheet();
       sheet.name('经营明细');
       sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
-      sheet.options.isProtected = false;
+      sheet.options.protectionOptions = {
+        allowSelectLockedCells: true,
+        allowSelectUnlockedCells: true,
+        allowResizeRows: true,
+        allowResizeColumns: true,
+        allowOutlineRows: true,
+        allowOutlineColumns: true,
+      };
+      sheet.options.isProtected = true;
       sheet.options.rowHeaderAutoText = GC.Spread.Sheets.HeaderAutoText.numbers;
       spread.options.scrollByPixel = true;
       spread.options.scrollPixel = 22;
@@ -657,7 +726,7 @@ export function useSpreadsheetController() {
           numericDisplay: numericDisplay ?? 'number',
         });
       };
-
+      console.log('spread', sheet);
       const clearOutlinesAndComments = () => {
         const oldRows = Math.max(sheet.getRowCount(), 1);
         const oldCols = Math.max(sheet.getColumnCount(), 1);
@@ -701,7 +770,10 @@ export function useSpreadsheetController() {
         const key = stableCellKey(node.id, column.field);
         const count = attachmentsRef.current.get(key)?.length ?? 0;
         const cell = sheet.getCell(row, col);
-        const buttons = col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [];
+        const buttons =
+          col === UPDATED_AT_COLUMN && getCellEditability(node, col).editable
+            ? [datePickerCellButton]
+            : [];
         if (count) {
           buttons.push({
             imageType: GC.Spread.Sheets.ButtonImageType.custom,
@@ -758,87 +830,227 @@ export function useSpreadsheetController() {
         }
       };
 
+      const applyCellEditability = (startRow: number, rowCount: number) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let row = startRow; row < endRow; row += 1) {
+          for (let col = 0; col < COLUMNS.length; col += 1) {
+            const editability = getCellEditability(activeRows[row], col);
+            const cell = sheet.getCell(row, col);
+            cell.locked(!editability.editable);
+            if (
+              col < REVENUE_COLUMN ||
+              col === STATUS_COLUMN ||
+              col === VERIFIED_COLUMN
+            )
+              continue;
+            if (editability.editable) {
+              cell.backColor('#fff').foreColor('#1f2937');
+            } else {
+              cell.backColor('#f5f6f8').foreColor('#667085');
+            }
+          }
+        }
+      };
+
+      const commitBusinessCellValues = (requests: CellEditRequest[]) => {
+        if (!requests.length) return 0;
+        const beforeRows = activeRows;
+        const accepted: Array<{
+          request: CellEditRequest;
+          rowId: string;
+          field: BusinessField;
+        }> = [];
+        const rejected: Array<{
+          request: CellEditRequest;
+          reason: string;
+        }> = [];
+
+        requests.forEach((request) => {
+          const row = beforeRows[request.row];
+          const column = COLUMNS[request.col];
+          const editability = getCellEditability(row, request.col);
+          if (
+            !row ||
+            !column ||
+            isHierarchyField(column.field) ||
+            !editability.editable ||
+            !editability.sourceNode
+          ) {
+            rejected.push({ request, reason: editability.reason });
+            return;
+          }
+          let nextValue = request.requestedValue;
+          if (
+            column.field === 'adjustmentFactor' &&
+            typeof nextValue === 'number'
+          )
+            nextValue = roundToTwoDecimals(nextValue);
+          updateBusinessNode(editability.sourceNode, column.field, nextValue);
+          accepted.push({
+            request: { ...request, requestedValue: nextValue },
+            rowId: row.id,
+            field: column.field,
+          });
+        });
+
+        if (rejected.length) {
+          spread.suspendEvent();
+          try {
+            rejected.forEach(({ request }) => {
+              const row = beforeRows[request.row];
+              if (!row) return;
+              sheet.setFormula(request.row, request.col, '');
+              sheet.setValue(
+                request.row,
+                request.col,
+                viewRowCellValue(row, request.col),
+              );
+            });
+          } finally {
+            spread.resumeEvent();
+          }
+          const first = rejected[0];
+          notify(
+            `无法编辑 ${columnName(first.request.col)}${
+              first.request.row + 1
+            }：${first.reason}`,
+            'error',
+          );
+        }
+        if (!accepted.length) return 0;
+
+        const nextRows =
+          activeDataMode === 'stress' ? buildStressRows() : buildRegularRows();
+        const beforeById = new Map(beforeRows.map((row) => [row.id, row]));
+        const nextRowIndexById = new Map(
+          nextRows.map((row, index) => [row.id, index]),
+        );
+        const directKeys = new Set(
+          accepted.map(({ rowId, field }) => stableCellKey(rowId, field)),
+        );
+        const directRowIds = new Set(accepted.map(({ rowId }) => rowId));
+        const changes: VisibleCellChange[] = [];
+        nextRows.forEach((nextRow, row) => {
+          const beforeRow = beforeById.get(nextRow.id);
+          if (!beforeRow) return;
+          COLUMNS.forEach((column, col) => {
+            if (isHierarchyField(column.field)) return;
+            const oldValue = viewRowCellValue(beforeRow, col);
+            const newValue = viewRowCellValue(nextRow, col);
+            if (historyValuesEqual(oldValue, newValue)) return;
+            const key = stableCellKey(nextRow.id, column.field);
+            changes.push({
+              row,
+              col,
+              rowId: nextRow.id,
+              product: nextRow.productLabel,
+              region: nextRow.regionLabel,
+              field: column.field,
+              fieldLabel: column.label,
+              oldValue,
+              newValue,
+              kind: directKeys.has(key)
+                ? '直接修改'
+                : directRowIds.has(nextRow.id)
+                ? '字段联动'
+                : '汇总联动',
+            });
+          });
+        });
+
+        const sameStructure =
+          beforeRows.length === nextRows.length &&
+          beforeRows.every((row, index) => row.id === nextRows[index]?.id);
+        const preferredCell = currentCellIdentity();
+        if (!sameStructure) {
+          renderRows(nextRows, activeDataMode === 'stress', preferredCell);
+        } else {
+          activeRows = nextRows;
+          const changedRows = new Set<number>();
+          sheet.suspendPaint();
+          sheet.suspendCalcService(false);
+          sheet.suspendDirty();
+          spread.suspendEvent();
+          try {
+            accepted.forEach(({ request, rowId }) => {
+              const row = nextRowIndexById.get(rowId);
+              if (row === undefined || sheet.getFormula(row, request.col))
+                return;
+              sheet.setValue(
+                row,
+                request.col,
+                viewRowCellValue(nextRows[row], request.col),
+              );
+            });
+            changes.forEach((change) => {
+              const stressRowLoaded =
+                activeDataMode !== 'stress' ||
+                loadedStressPages.has(
+                  Math.floor(change.row / STRESS_PAGE_SIZE),
+                ) ||
+                loadedStressRows.has(change.row);
+              if (!stressRowLoaded) return;
+              if (
+                change.kind === '直接修改' &&
+                sheet.getFormula(change.row, change.col)
+              )
+                return;
+              sheet.setValue(change.row, change.col, change.newValue);
+              changedRows.add(change.row);
+            });
+            changedRows.forEach((row) => {
+              styleStatusCells(row, 1);
+              applyCellEditability(row, 1);
+            });
+          } finally {
+            spread.resumeEvent();
+            sheet.resumeDirty();
+            sheet.resumeCalcService(false);
+            sheet.resumePaint();
+          }
+          spread.repaint();
+        }
+
+        const operationSource = [
+          ...new Set(accepted.map(({ request }) => request.source)),
+        ].join(' / ');
+        let historyCount = 0;
+        changes.forEach((change) => {
+          const historySource =
+            change.kind === '直接修改'
+              ? operationSource
+              : `${operationSource} · ${change.kind}`;
+          if (
+            appendCellHistory(
+              change.row,
+              change.col,
+              change.oldValue,
+              change.newValue,
+              historySource,
+            )
+          )
+            historyCount += 1;
+        });
+        syncProjectionSnapshot();
+
+        accepted.forEach(({ request, rowId, field }) => {
+          if (historyValuesEqual(request.oldValue, request.requestedValue))
+            return;
+          logCellChange(rowId, field, request.oldValue, request.requestedValue);
+        });
+        return Math.max(historyCount, changes.length);
+      };
+
       const commitBusinessCellValue = (
         row: number,
         col: number,
         oldValue: unknown,
         requestedValue: unknown,
         source: string,
-      ) => {
-        const node = activeRows[row];
-        const column = COLUMNS[col];
-        if (!node || !column || isHierarchyField(column.field)) return false;
-
-        const previousStatus = node.status;
-        const previousVerified = node.verified;
-        let nextValue = requestedValue;
-        if (
-          column.field === 'adjustmentFactor' &&
-          typeof nextValue === 'number'
-        )
-          nextValue = roundToTwoDecimals(nextValue);
-
-        updateBusinessNode(node, column.field, nextValue);
-        const committedValue = viewRowCellValue(node, col);
-        if (!historyValuesEqual(sheet.getValue(row, col), committedValue)) {
-          spread.suspendEvent();
-          try {
-            sheet.setValue(row, col, committedValue);
-          } finally {
-            spread.resumeEvent();
-          }
-        }
-
-        if (activeDataMode === 'regular') {
-          const overrides =
-            dataOverridesRef.current.get(node.id) ??
-            new Map<BusinessField, unknown>();
-          overrides.set(column.field, committedValue);
-          if (column.field === 'status' || column.field === 'verified') {
-            overrides.set('status', node.status);
-            overrides.set('verified', node.verified);
-          }
-          dataOverridesRef.current.set(node.id, overrides);
-        }
-
-        if (column.field === 'status' || column.field === 'verified') {
-          spread.suspendEvent();
-          try {
-            sheet.setValue(row, STATUS_COLUMN, node.status);
-            sheet.setValue(row, VERIFIED_COLUMN, node.verified);
-          } finally {
-            spread.resumeEvent();
-          }
-          styleStatusCells(row, 1);
-        }
-
-        const recorded = appendCellHistory(
-          row,
-          col,
-          oldValue,
-          committedValue,
-          source,
-        );
-        if (col !== STATUS_COLUMN && previousStatus !== node.status) {
-          appendCellHistory(
-            row,
-            STATUS_COLUMN,
-            previousStatus,
-            node.status,
-            `${source} · 联动更新`,
-          );
-        }
-        if (col !== VERIFIED_COLUMN && previousVerified !== node.verified) {
-          appendCellHistory(
-            row,
-            VERIFIED_COLUMN,
-            previousVerified,
-            node.verified,
-            `${source} · 联动更新`,
-          );
-        }
-        return recorded;
-      };
+      ) =>
+        commitBusinessCellValues([
+          { row, col, oldValue, requestedValue, source },
+        ]) > 0;
 
       const captureClipboardHistory = (
         range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
@@ -877,6 +1089,31 @@ export function useSpreadsheetController() {
         return snapshot;
       };
 
+      const firstReadonlyCellInRange = (
+        range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
+        requestedRowCount = range.rowCount,
+        requestedColCount = range.colCount,
+      ) => {
+        const startRow = Math.max(range.row, 0);
+        const startCol = Math.max(range.col, 0);
+        const endRow = Math.min(
+          activeRows.length,
+          startRow + Math.max(requestedRowCount, 0),
+        );
+        const endCol = Math.min(
+          COLUMNS.length,
+          startCol + Math.max(requestedColCount, 0),
+        );
+        for (let row = startRow; row < endRow; row += 1) {
+          for (let col = startCol; col < endCol; col += 1) {
+            const editability = getCellEditability(activeRows[row], col);
+            if (!editability.editable)
+              return { row, col, reason: editability.reason };
+          }
+        }
+        return null;
+      };
+
       const rangeHistorySource = (args: RangeChangedArgs) => {
         if (args.isUndo) return '撤销';
         const action = GC.Spread.Sheets.RangeChangedAction;
@@ -891,132 +1128,8 @@ export function useSpreadsheetController() {
         return sources[args.action] ?? null;
       };
 
-      const isStressRowMaterialized = (row: number) =>
-        loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-        loadedStressRows.has(row);
-
-      const stressHierarchyColumn = (group: StressRowOutlineGroup) =>
-        group.dimension === 'product'
-          ? PRODUCT_HIERARCHY_COLUMN
-          : REGION_HIERARCHY_COLUMN;
-
-      const isStressGroupCollapsed = (group: StressRowOutlineGroup) =>
-        sheet.rowOutlines.find(group.detailStart, group.level).state() ===
-        GC.Spread.Sheets.Outlines.OutlineState.collapsed;
-
-      const stressHierarchyText = (group: StressRowOutlineGroup) => {
-        const row = activeRows[group.summaryRow];
-        const label =
-          group.dimension === 'product' ? row.productLabel : row.regionLabel;
-        return `${isStressGroupCollapsed(group) ? '▶' : '▼'}  ${label}`;
-      };
-
-      const refreshStressHierarchyNavigator = (
-        startRow = 0,
-        rowCount = activeRows.length,
-      ) => {
-        if (activeDataMode !== 'stress') return;
-        const endRow = Math.min(activeRows.length, startRow + rowCount);
-        spread.suspendEvent();
-        try {
-          activeStressOutlineGroups.forEach((group) => {
-            if (
-              group.summaryRow < startRow ||
-              group.summaryRow >= endRow ||
-              !isStressRowMaterialized(group.summaryRow)
-            )
-              return;
-            const col = stressHierarchyColumn(group);
-            const text = stressHierarchyText(group);
-            if (sheet.getValue(group.summaryRow, col) !== text)
-              sheet.setValue(group.summaryRow, col, text);
-          });
-        } finally {
-          spread.resumeEvent();
-        }
-      };
-
-      const updateCollapsedStressRanges = (
-        ranges: Array<{ start: number; end: number }>,
-      ) => {
-        ranges.sort((left, right) => left.start - right.start);
-        const merged: Array<{ start: number; end: number }> = [];
-        ranges.forEach((range) => {
-          const previous = merged.at(-1);
-          if (!previous || range.start > previous.end + 1) {
-            merged.push({ ...range });
-            return;
-          }
-          previous.end = Math.max(previous.end, range.end);
-        });
-        collapsedStressRanges = merged;
-      };
-
-      const refreshCollapsedStressRanges = () => {
-        updateCollapsedStressRanges(
-          activeStressOutlineGroups
-            .filter(isStressGroupCollapsed)
-            .map((group) => ({
-              start: group.detailStart,
-              end: group.detailStart + group.detailCount - 1,
-            })),
-        );
-      };
-
-      const syncStressOutlineSnapshot = () => {
-        let productExpanded = 0;
-        let productTotal = 0;
-        let regionExpanded = 0;
-        let regionTotal = 0;
-        const collapsedRanges: Array<{ start: number; end: number }> = [];
-        activeStressOutlineGroups.forEach((group) => {
-          const collapsed = isStressGroupCollapsed(group);
-          const expanded = !collapsed;
-          if (collapsed) {
-            collapsedRanges.push({
-              start: group.detailStart,
-              end: group.detailStart + group.detailCount - 1,
-            });
-          }
-          if (group.dimension === 'product') {
-            productTotal += 1;
-            if (expanded) productExpanded += 1;
-          } else {
-            regionTotal += 1;
-            if (expanded) regionExpanded += 1;
-          }
-        });
-        updateCollapsedStressRanges(collapsedRanges);
-        const hiddenRows = collapsedStressRanges.reduce(
-          (count, range) => count + range.end - range.start + 1,
-          0,
-        );
-        const visibleRows = Math.max(activeRows.length - hiddenRows, 0);
-        setOutlineSnapshot({
-          productExpanded,
-          productTotal,
-          regionExpanded,
-          regionTotal,
-          rowCount: visibleRows,
-        });
-        const collapsed = productExpanded + regionExpanded === 0;
-        rowGroupsCollapsedRef.current = collapsed;
-        setRowGroupsCollapsed(collapsed);
-        setDatasetLabel(
-          `${activeRows.length.toLocaleString(
-            'zh-CN',
-          )} 行（当前显示 ${visibleRows.toLocaleString('zh-CN')}） × ${
-            COLUMNS.length
-          } 列`,
-        );
-      };
-
       const syncGroupToolbarState = (isRowGroup: boolean) => {
         if (isRowGroup) {
-          if (activeDataMode === 'stress') {
-            syncStressOutlineSnapshot();
-            return;
-          }
           setRowGroupsCollapsed(rowGroupsCollapsedRef.current);
           return;
         }
@@ -1028,30 +1141,43 @@ export function useSpreadsheetController() {
       };
 
       const configureCellTypes = (startRow: number, rowCount: number) => {
-        sheet
-          .getRange(startRow, STATUS_COLUMN, rowCount, 1)
-          .cellType(statusCellType);
-        sheet
-          .getRange(startRow, VERIFIED_COLUMN, rowCount, 1)
-          .cellType(verifiedCellType);
-
-        const updatedAtRange = sheet.getRange(
-          startRow,
-          UPDATED_AT_COLUMN,
-          rowCount,
-          1,
-        );
-        updatedAtRange.cellButtons([datePickerCellButton]);
-        updatedAtRange.dropDowns([
-          {
-            type: GC.Spread.Sheets.DropDownType.dateTimePicker,
-            option: {
-              showTime: false,
-              calendarPage: GC.Spread.Sheets.CalendarPage.day,
-              startDay: GC.Spread.Sheets.CalendarStartDay.monday,
-            },
-          },
-        ]);
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let row = startRow; row < endRow; row += 1) {
+          const statusEditable = getCellEditability(
+            activeRows[row],
+            STATUS_COLUMN,
+          ).editable;
+          const verifiedEditable = getCellEditability(
+            activeRows[row],
+            VERIFIED_COLUMN,
+          ).editable;
+          const dateEditable = getCellEditability(
+            activeRows[row],
+            UPDATED_AT_COLUMN,
+          ).editable;
+          sheet
+            .getCell(row, STATUS_COLUMN)
+            .cellType(statusEditable ? statusCellType : null);
+          sheet
+            .getCell(row, VERIFIED_COLUMN)
+            .cellType(verifiedEditable ? verifiedCellType : null);
+          const updatedAtCell = sheet.getCell(row, UPDATED_AT_COLUMN);
+          updatedAtCell.cellButtons(dateEditable ? [datePickerCellButton] : []);
+          updatedAtCell.dropDowns(
+            dateEditable
+              ? [
+                  {
+                    type: GC.Spread.Sheets.DropDownType.dateTimePicker,
+                    option: {
+                      showTime: false,
+                      calendarPage: GC.Spread.Sheets.CalendarPage.day,
+                      startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+                    },
+                  },
+                ]
+              : [],
+          );
+        }
         sheet.setDataValidator(
           startRow,
           DECIMAL_COLUMN,
@@ -1152,10 +1278,10 @@ export function useSpreadsheetController() {
         styleDataRows(startRow, rowCount, sheet.getColumnCount());
         configureCellTypes(startRow, rowCount);
         styleStatusCells(startRow, rowCount);
+        applyCellEditability(startRow, rowCount);
         loadedStressPages.add(pageIndex);
         for (let row = startRow; row < startRow + rowCount; row += 1)
           loadedStressRows.delete(row);
-        refreshStressHierarchyNavigator(startRow, rowCount);
       };
 
       const writeStressRow = (row: number) => {
@@ -1173,8 +1299,39 @@ export function useSpreadsheetController() {
         styleDataRows(row, 1, sheet.getColumnCount());
         configureCellTypes(row, 1);
         styleStatusCells(row, 1);
+        applyCellEditability(row, 1);
         loadedStressRows.add(row);
-        refreshStressHierarchyNavigator(row, 1);
+      };
+
+      // 滚动到已加载数据边界时，先在这批行里打一个“正在加载…”占位提示，
+      // 让用户能感知到这是一次异步的分批请求，而不是瞬间完成。
+      const writeStressLoadingPlaceholder = (
+        pageIndices: number[],
+        rowIndices: number[],
+      ) => {
+        const rows = new Set<number>();
+        pageIndices.forEach((page) => {
+          const startRow = page * STRESS_PAGE_SIZE;
+          const rowCount = Math.min(
+            STRESS_PAGE_SIZE,
+            activeRows.length - startRow,
+          );
+          for (let row = startRow; row < startRow + rowCount; row += 1)
+            rows.add(row);
+        });
+        rowIndices.forEach((row) => rows.add(row));
+        if (!rows.size) return;
+        sheet.suspendPaint();
+        spread.suspendEvent();
+        try {
+          rows.forEach((row) => {
+            sheet.setValue(row, PRODUCT_HIERARCHY_COLUMN, '正在加载…');
+          });
+        } finally {
+          spread.resumeEvent();
+          sheet.resumePaint();
+        }
+        spread.repaint();
       };
 
       const loadStressData = (
@@ -1185,32 +1342,58 @@ export function useSpreadsheetController() {
         const maxPage = Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1;
         const unloadedPages = [...new Set(pageIndices)].filter(
           (page) =>
-            page >= 0 && page <= maxPage && !loadedStressPages.has(page),
+            page >= 0 &&
+            page <= maxPage &&
+            !loadedStressPages.has(page) &&
+            !pendingStressPages.has(page),
         );
-        const pagesBeingLoaded = new Set(unloadedPages);
+        const pagesBeingLoaded = new Set([
+          ...unloadedPages,
+          ...pendingStressPages,
+        ]);
         const unloadedRows = [...new Set(rowIndices)].filter(
           (row) =>
             row >= 0 &&
             row < activeRows.length &&
             !pagesBeingLoaded.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
             !loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressRows.has(row),
+            !loadedStressRows.has(row) &&
+            !pendingStressRows.has(row),
         );
         if (!unloadedPages.length && !unloadedRows.length) return;
-        sheet.suspendPaint();
-        sheet.suspendCalcService(false);
-        sheet.suspendDirty();
-        spread.suspendEvent();
-        try {
-          unloadedPages.forEach(writeStressPage);
-          unloadedRows.forEach(writeStressRow);
-        } finally {
-          spread.resumeEvent();
-          sheet.resumeDirty();
-          sheet.resumeCalcService(false);
-          sheet.resumePaint();
-        }
-        spread.repaint();
+
+        unloadedPages.forEach((page) => pendingStressPages.add(page));
+        unloadedRows.forEach((row) => pendingStressRows.add(row));
+        writeStressLoadingPlaceholder(unloadedPages, unloadedRows);
+
+        // 模拟一次真实的分批后端请求：数据早已在内存中就绪，
+        // 但要等这段延迟结束才把结果写进表格，制造滚动到底部
+        // 触发下一批加载的真实观感。
+        const epoch = stressSessionEpoch;
+        void simulateStressBackendDelay().then(() => {
+          unloadedPages.forEach((page) => pendingStressPages.delete(page));
+          unloadedRows.forEach((row) => pendingStressRows.delete(row));
+          if (
+            cancelled ||
+            activeDataMode !== 'stress' ||
+            epoch !== stressSessionEpoch
+          )
+            return;
+          sheet.suspendPaint();
+          sheet.suspendCalcService(false);
+          sheet.suspendDirty();
+          spread.suspendEvent();
+          try {
+            unloadedPages.forEach(writeStressPage);
+            unloadedRows.forEach(writeStressRow);
+          } finally {
+            spread.resumeEvent();
+            sheet.resumeDirty();
+            sheet.resumeCalcService(false);
+            sheet.resumePaint();
+          }
+          spread.repaint();
+        });
       };
 
       const loadVisibleStressRows = (fallbackTopRow = 0) => {
@@ -1224,28 +1407,11 @@ export function useSpreadsheetController() {
           viewportBottom >= topRow ? viewportBottom : topRow + STRESS_PAGE_SIZE,
         );
         const visibleRowsByPage = new Map<number, number[]>();
-        let rangeIndex = 0;
-        while (
-          rangeIndex < collapsedStressRanges.length &&
-          collapsedStressRanges[rangeIndex].end < topRow
-        )
-          rangeIndex += 1;
-        for (let row = topRow; row <= bottomRow; ) {
-          const hiddenRange = collapsedStressRanges[rangeIndex];
-          if (hiddenRange && row >= hiddenRange.start) {
-            if (row <= hiddenRange.end) {
-              row = hiddenRange.end + 1;
-              rangeIndex += 1;
-              continue;
-            }
-            rangeIndex += 1;
-            continue;
-          }
+        for (let row = topRow; row <= bottomRow; row += 1) {
           const page = Math.floor(row / STRESS_PAGE_SIZE);
           const rows = visibleRowsByPage.get(page) ?? [];
           rows.push(row);
           visibleRowsByPage.set(page, rows);
-          row += 1;
         }
         if (!visibleRowsByPage.size) {
           visibleRowsByPage.set(Math.floor(topRow / STRESS_PAGE_SIZE), [
@@ -1261,8 +1427,8 @@ export function useSpreadsheetController() {
           else sparseRows.push(...rows);
         });
 
-        // Prefetch the next physical page only for a normal, mostly contiguous
-        // viewport. A collapsed outline can span tens of thousands of hidden rows.
+        // Prefetch the next physical page for continuous scrolling. The visible
+        // projection has no hidden Outline ranges, so page adjacency is stable.
         const nextRow = bottomRow + 1;
         if (
           bottomRow - topRow < STRESS_PAGE_SIZE * 2 &&
@@ -1300,23 +1466,13 @@ export function useSpreadsheetController() {
           activeRow >= 0 &&
           !sheet.getRowVisible(activeRow, GC.Spread.Sheets.SheetArea.viewport)
         ) {
-          if (activeDataMode === 'stress') {
-            const containingRange = collapsedStressRanges.find(
-              (range) => activeRow >= range.start && activeRow <= range.end,
-            );
-            nextRow = Math.max((containingRange?.start ?? 1) - 1, 0);
-          } else {
-            for (nextRow = activeRow - 1; nextRow >= 0; nextRow -= 1) {
-              if (
-                sheet.getRowVisible(
-                  nextRow,
-                  GC.Spread.Sheets.SheetArea.viewport,
-                )
-              )
-                break;
-            }
-            if (nextRow < 0) nextRow = 0;
+          for (nextRow = activeRow - 1; nextRow >= 0; nextRow -= 1) {
+            if (
+              sheet.getRowVisible(nextRow, GC.Spread.Sheets.SheetArea.viewport)
+            )
+              break;
           }
+          if (nextRow < 0) nextRow = 0;
         }
         if (
           activeCol >= 0 &&
@@ -1356,23 +1512,8 @@ export function useSpreadsheetController() {
 
       const refreshAfterGroupChange = (isRowGroup: boolean) => {
         syncGroupToolbarState(isRowGroup);
-        if (isRowGroup && activeDataMode === 'stress')
-          refreshStressHierarchyNavigator();
         spread.invalidateLayout();
-        if (isRowGroup && activeDataMode === 'stress') {
-          window.clearTimeout(stressViewportTimer);
-          stressViewportTimer = 0;
-          loadVisibleStressRows(sheet.getViewportTopRow(1));
-        }
         normalizeActiveSelection();
-        if (isRowGroup && activeDataMode === 'stress') {
-          updateSelected(
-            sheet.getActiveRowIndex(),
-            sheet.getActiveColumnIndex(),
-          );
-          // Re-check after SpreadJS has committed its new viewport bounds.
-          scheduleStressViewportLoad(sheet.getViewportTopRow(1));
-        }
         spread.repaint();
       };
 
@@ -1395,13 +1536,6 @@ export function useSpreadsheetController() {
       ) => {
         activeRows = rows;
         activeDataMode = stress ? 'stress' : 'regular';
-        activeStressOutlineGroups = stress
-          ? getStressRowOutlineGroups(rows)
-          : [];
-        stressGroupBySummaryRow = new Map(
-          activeStressOutlineGroups.map((group) => [group.summaryRow, group]),
-        );
-        collapsedStressRanges = [];
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
         sheet.suspendPaint();
@@ -1424,6 +1558,9 @@ export function useSpreadsheetController() {
             );
           loadedStressPages.clear();
           loadedStressRows.clear();
+          pendingStressPages.clear();
+          pendingStressRows.clear();
+          stressSessionEpoch += 1;
           if (!stress) {
             sheet.setArray(
               0,
@@ -1524,32 +1661,10 @@ export function useSpreadsheetController() {
           sheet.setRowHeight(2, 34, headerArea);
           if (!stress) configureCellTypes(0, rowCount);
 
-          if (stress) {
-            // 大数据模式保持固定的 10 万物理行，仅用原生 Outline 切换
-            // 可见性；展开/收起不会重建数据数组或重写未进入视口的单元格。
-            sheet.rowOutlines.direction(
-              GC.Spread.Sheets.Outlines.OutlineDirection.backward,
-            );
-            activeStressOutlineGroups.forEach(({ detailStart, detailCount }) =>
-              sheet.rowOutlines.group(detailStart, detailCount),
-            );
-            for (
-              let level = sheet.rowOutlines.getMaxLevel();
-              level >= 0;
-              level -= 1
-            ) {
-              sheet.rowOutlines.expand(level, false);
-            }
-            sheet.showRowOutline(true);
-            refreshCollapsedStressRanges();
-            activeStressOutlineGroups
-              .filter((group) => group.level === 0)
-              .forEach((group) => writeStressRow(group.summaryRow));
-            refreshStressHierarchyNavigator();
-          } else {
-            // 常规模式由产品列和区域列分别维护独立的投影状态。
-            sheet.showRowOutline(false);
-          }
+          // 常规与大数据模式都由产品列、区域列分别维护独立状态并
+          // 重建可见投影。大数据模式只在单元格写入阶段按视口分页，
+          // 不再使用会把两列可见性绑在一起的整行 Outline。
+          sheet.showRowOutline(false);
           // Keep each summary column visible and collapse only its detail columns.
           sheet.columnOutlines.direction(
             GC.Spread.Sheets.Outlines.OutlineDirection.backward,
@@ -1571,6 +1686,7 @@ export function useSpreadsheetController() {
             applyStableComments();
             applyStableAttachmentIndicators();
             styleStatusCells(0, rowCount);
+            applyCellEditability(0, rowCount);
           }
 
           COLUMNS.forEach((_, col) =>
@@ -1610,13 +1726,22 @@ export function useSpreadsheetController() {
           new GC.Spread.Sheets.Range(nextRow, nextCol, 1, 1),
         );
         setDatasetLabel(
-          `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
+          stress
+            ? `${stressSourceRows.length.toLocaleString(
+                'zh-CN',
+              )} 条底层记录（当前显示 ${rowCount.toLocaleString(
+                'zh-CN',
+              )} 行） × ${colCount} 列`
+            : `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
         );
         if (stress) {
-          syncStressOutlineSnapshot();
           scheduleStressViewportLoad(nextRow);
         }
         setReady(true);
+        if (!stress && !regularSourceLoggedRef.current) {
+          regularSourceLoggedRef.current = true;
+          logRegularSourceData();
+        }
       };
 
       const currentCellIdentity = () => {
@@ -1630,11 +1755,18 @@ export function useSpreadsheetController() {
       };
 
       const syncProjectionSnapshot = () => {
-        const snapshot = getBusinessProjectionSummary(
-          activeView,
-          productExpanded,
-          regionExpandedByProduct,
-        );
+        const snapshot =
+          activeDataMode === 'stress'
+            ? getStressProjectionSummary(
+                stressSourceRows,
+                productExpanded,
+                regionExpandedByProduct,
+              )
+            : getBusinessProjectionSummary(
+                activeView,
+                productExpanded,
+                regionExpandedByProduct,
+              );
         setOutlineSnapshot(snapshot);
         const collapsed =
           snapshot.productExpanded === 0 && snapshot.regionExpanded === 0;
@@ -1644,7 +1776,12 @@ export function useSpreadsheetController() {
 
       const renderProjectionRows = () => {
         const preferredCell = currentCellIdentity();
-        renderRows(buildRegularRows(), false, preferredCell);
+        const stress = activeDataMode === 'stress';
+        renderRows(
+          stress ? buildStressRows() : buildRegularRows(),
+          stress,
+          preferredCell,
+        );
         syncProjectionSnapshot();
       };
 
@@ -1652,30 +1789,15 @@ export function useSpreadsheetController() {
         dimension: OutlineDimension,
         expanded: boolean,
       ) => {
-        if (activeDataMode === 'stress') {
-          const levels = dimension === 'product' ? [0] : [1];
-          runOutlineBatch(true, () => {
-            const orderedLevels = expanded ? levels : [...levels].reverse();
-            orderedLevels.forEach((level) =>
-              sheet.rowOutlines.expand(level, expanded),
-            );
-          });
-          notify(
-            `${dimension === 'product' ? '产品层级' : '区域树'}已全部${
-              expanded ? '展开' : '收起'
-            }`,
-          );
-          return;
-        }
         if (dimension === 'product') {
-          getProductGroupIdsForView(activeView).forEach((productId) => {
+          currentProductGroupIds().forEach((productId) => {
             if (expanded) productExpanded.add(productId);
             else productExpanded.delete(productId);
           });
         } else if (expanded) {
-          getAllProductIdsForView(activeView).forEach((productId) => {
+          currentProductIds().forEach((productId) => {
             const state = extensionStateFor(productId);
-            getRegionGroupIdsForProduct(productId).forEach((regionId) =>
+            currentRegionGroupIds(productId).forEach((regionId) =>
               state.add(regionId),
             );
           });
@@ -1692,16 +1814,12 @@ export function useSpreadsheetController() {
 
       const resetOutline = () => {
         if (activeDataMode === 'stress') {
-          runOutlineBatch(true, () => {
-            for (
-              let level = sheet.rowOutlines.getMaxLevel();
-              level >= 0;
-              level -= 1
-            ) {
-              sheet.rowOutlines.expand(level, false);
-            }
-          });
-          notify('已恢复大数据默认折叠状态，仅显示 10 个事业群');
+          currentProductGroupIds().forEach((id) => productExpanded.delete(id));
+          currentProductIds().forEach((id) =>
+            regionExpandedByProduct.delete(id),
+          );
+          renderProjectionRows();
+          notify('已恢复大数据默认折叠状态');
           return;
         }
         productExpanded.clear();
@@ -1785,27 +1903,6 @@ export function useSpreadsheetController() {
       const toggleHierarchyRow = (row: number, col: number) => {
         const node = activeRows[row];
         if (!node) return;
-        if (activeDataMode === 'stress') {
-          const group = stressGroupBySummaryRow.get(row);
-          if (!group || col !== stressHierarchyColumn(group)) return;
-          ensureStressRowLoaded(row);
-          const expanded = isStressGroupCollapsed(group);
-          const groupInfo = sheet.rowOutlines.find(
-            group.detailStart,
-            group.level,
-          );
-          runOutlineBatch(true, () => {
-            sheet.rowOutlines.expandGroup(groupInfo, expanded);
-          });
-          notify(
-            `已${expanded ? '展开' : '收起'}${
-              group.dimension === 'product'
-                ? node.productLabel
-                : node.regionLabel
-            }`,
-          );
-          return;
-        }
         if (
           col === PRODUCT_HIERARCHY_COLUMN &&
           node.productBlockStart &&
@@ -1858,8 +1955,8 @@ export function useSpreadsheetController() {
         query: string,
         searchRun: number,
       ) => {
-        const columnCount = sheet.getColumnCount();
-        const totalCells = activeRows.length * columnCount;
+        const columnCount = COLUMNS.length;
+        const totalCells = stressSourceRows.length * columnCount;
         if (!totalCells) return [];
         const normalizedQuery = query.toLocaleLowerCase('zh-CN');
         const textOnlyQuery = /[A-Za-z\u3400-\u9fff]/u.test(query);
@@ -1867,11 +1964,11 @@ export function useSpreadsheetController() {
           ? [...STRESS_TEXT_SEARCH_COLUMNS]
           : COLUMNS.map((_, col) => col);
         const matches: number[] = [];
-        for (let row = 0; row < activeRows.length; row += 1) {
+        for (let row = 0; row < stressSourceRows.length; row += 1) {
           if (row > 0 && row % 5_000 === 0) {
             setSearchResult(
               `正在搜索全部 10 万行… ${Math.round(
-                (row / activeRows.length) * 100,
+                (row / stressSourceRows.length) * 100,
               )}%`,
             );
             await new Promise<void>((resolve) =>
@@ -1879,19 +1976,12 @@ export function useSpreadsheetController() {
             );
             if (cancelled || searchRun !== activeSearchRun) return null;
           }
-          const stressDataLoaded =
-            loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-            loadedStressRows.has(row);
           for (const col of searchableColumns) {
-            const text = stressDataLoaded
-              ? `${sheet.getText(row, col)} ${
-                  sheet.getFormula(row, col) ?? ''
-                } ${sheet.getValue(row, col) ?? ''}`.toLocaleLowerCase('zh-CN')
-              : stressCellSearchText(
-                  activeRows[row],
-                  col,
-                  true,
-                ).toLocaleLowerCase('zh-CN');
+            const text = stressCellSearchText(
+              stressSourceRows[row],
+              col,
+              true,
+            ).toLocaleLowerCase('zh-CN');
             if (text.includes(normalizedQuery))
               matches.push(row * columnCount + col);
           }
@@ -1899,46 +1989,8 @@ export function useSpreadsheetController() {
         return matches;
       };
 
-      const expandStressAncestors = (row: number) => {
-        const collapsedAncestors = activeStressOutlineGroups.filter(
-          (group) =>
-            row >= group.detailStart &&
-            row < group.detailStart + group.detailCount &&
-            isStressGroupCollapsed(group),
-        );
-        if (!collapsedAncestors.length) return false;
-        runOutlineBatch(true, () => {
-          collapsedAncestors
-            .sort((left, right) => left.level - right.level)
-            .forEach((group) => {
-              const groupInfo = sheet.rowOutlines.find(
-                group.detailStart,
-                group.level,
-              );
-              sheet.rowOutlines.expandGroup(groupInfo, true);
-            });
-        });
-        return true;
-      };
-
       const revealSearchMatch = (row: number, col: number) => {
         let expandedHierarchy = false;
-        if (!sheet.getRowVisible(row)) {
-          if (activeDataMode === 'stress') {
-            expandedHierarchy = expandStressAncestors(row);
-          } else {
-            runOutlineBatch(true, () => {
-              for (
-                let level = 0;
-                level <= sheet.rowOutlines.getMaxLevel();
-                level += 1
-              ) {
-                sheet.rowOutlines.expand(level, true);
-              }
-            });
-            expandedHierarchy = true;
-          }
-        }
         if (!sheet.getColumnVisible(col)) {
           runOutlineBatch(false, () => {
             for (
@@ -1970,6 +2022,47 @@ export function useSpreadsheetController() {
         updateSelected(row, col);
         calculateSelection(sheet, new GC.Spread.Sheets.Range(row, col, 1, 1));
         return expandedHierarchy;
+      };
+
+      const revealStressSearchMatch = (sourceRow: number, col: number) => {
+        const source = stressSourceRows[sourceRow];
+        if (!source) return null;
+        let expandedHierarchy = false;
+        if (
+          source.productParentId &&
+          !productExpanded.has(source.productParentId)
+        ) {
+          productExpanded.add(source.productParentId);
+          expandedHierarchy = true;
+        }
+        if (!source.productIsGroup && source.regionDepth > 0) {
+          const state = extensionStateFor(source.productId);
+          if (!state.has(source.regionRootId)) {
+            state.add(source.regionRootId);
+            expandedHierarchy = true;
+          }
+        }
+        if (expandedHierarchy) renderProjectionRows();
+
+        const projectedId = source.productIsGroup
+          ? null
+          : source.regionDepth > 0
+          ? `${source.productId}::${source.regionRootId}::${source.id}`
+          : `${source.productId}::${source.regionRootId}`;
+        let row = projectedId
+          ? activeRows.findIndex((item) => item.id === projectedId)
+          : -1;
+        if (row < 0)
+          row = activeRows.findIndex(
+            (item) => item.productId === source.productId,
+          );
+        if (row < 0) return null;
+        ensureStressRowLoaded(row);
+        const columnExpanded = revealSearchMatch(row, col);
+        return {
+          row,
+          expandedHierarchy: expandedHierarchy || columnExpanded,
+        };
       };
 
       const revealRegularSearchMatch = (match: RegularSearchMatch) => {
@@ -2072,15 +2165,20 @@ export function useSpreadsheetController() {
             row,
             col,
           };
-          ensureStressRowLoaded(row);
-          const expandedHierarchy = revealSearchMatch(row, col);
+          const revealed = revealStressSearchMatch(row, col);
+          if (!revealed) {
+            invalidateSearchSession('数据结构已变化，请重新搜索');
+            notify('无法定位该结果，请重新搜索', 'error');
+            return;
+          }
+          activeSearch.row = revealed.row;
           setSearchResult(
             searchStatus(
               stressSearchMatches.length,
               matchIndex,
-              row,
+              revealed.row,
               col,
-              expandedHierarchy,
+              revealed.expandedHierarchy,
             ),
           );
           return;
@@ -2151,6 +2249,7 @@ export function useSpreadsheetController() {
           commandHistorySource = previousSource;
         }
         let changedCount = 0;
+        const pendingEdits: CellEditRequest[] = [];
         before.forEach(({ row, col, oldValue, oldFormula }) => {
           const newValue = sheet.getValue(row, col);
           const newFormula = sheet.getFormula(row, col) ?? '';
@@ -2173,12 +2272,16 @@ export function useSpreadsheetController() {
               else cellFormulaState.delete(key);
             }
           }
-          if (
-            !historyValuesEqual(oldValue, newValue) &&
-            commitBusinessCellValue(row, col, oldValue, newValue, source)
-          )
-            changedCount += 1;
+          if (!historyValuesEqual(oldValue, newValue))
+            pendingEdits.push({
+              row,
+              col,
+              oldValue,
+              requestedValue: newValue,
+              source,
+            });
         });
+        changedCount += commitBusinessCellValues(pendingEdits);
         if (changedCount) {
           invalidateSearchSession(
             activeSearch.query
@@ -2329,42 +2432,15 @@ export function useSpreadsheetController() {
         },
         toggleRowGroups: () => {
           const collapse = !rowGroupsCollapsedRef.current;
-          if (activeDataMode === 'stress') {
-            runOutlineBatch(true, () => {
-              if (collapse) {
-                for (
-                  let level = sheet.rowOutlines.getMaxLevel();
-                  level >= 0;
-                  level -= 1
-                ) {
-                  sheet.rowOutlines.expand(level, false);
-                }
-              } else {
-                for (
-                  let level = 0;
-                  level <= sheet.rowOutlines.getMaxLevel();
-                  level += 1
-                ) {
-                  sheet.rowOutlines.expand(level, true);
-                }
-              }
-            });
-            notify(
-              collapse
-                ? '已收起全部大数据业务层级'
-                : '已展开全部大数据业务层级',
-            );
-            return;
-          }
-          getProductGroupIdsForView(activeView).forEach((productId) => {
+          currentProductGroupIds().forEach((productId) => {
             if (collapse) productExpanded.delete(productId);
             else productExpanded.add(productId);
           });
           if (collapse) regionExpandedByProduct.clear();
           else {
-            getAllProductIdsForView(activeView).forEach((productId) => {
+            currentProductIds().forEach((productId) => {
               const state = extensionStateFor(productId);
-              getRegionGroupIdsForProduct(productId).forEach((regionId) =>
+              currentRegionGroupIds(productId).forEach((regionId) =>
                 state.add(regionId),
               );
             });
@@ -2405,8 +2481,10 @@ export function useSpreadsheetController() {
           if (mode === 'regular') {
             setDataMode('regular');
             activeView = [];
+            activeDataMode = 'regular';
             setView([]);
             renderProjectionRows();
+            stressSourceRows = [];
             releaseStressRecords();
             notify('已恢复常规业务数据');
             return;
@@ -2421,8 +2499,17 @@ export function useSpreadsheetController() {
               .then((rows) => {
                 if (cancelled) return;
                 activeView = [];
+                stressSourceRows = rows;
+                getStressProductGroupIds(rows).forEach((id) =>
+                  productExpanded.delete(id),
+                );
+                getStressAllProductIds(rows).forEach((id) =>
+                  regionExpandedByProduct.delete(id),
+                );
+                activeDataMode = 'stress';
                 setView([]);
-                renderRows(rows, true);
+                renderRows(buildStressRows(), true);
+                syncProjectionSnapshot();
                 setDataMode('stress');
                 notify(
                   `10 万行已载入，用时 ${Math.round(
@@ -2662,6 +2749,29 @@ export function useSpreadsheetController() {
         },
       );
       sheet.bind(
+        GC.Spread.Sheets.Events.EditStarting,
+        (_sender: unknown, args: EditStartingArgs) => {
+          const editability = getCellEditability(
+            activeRows[args.row],
+            args.col,
+          );
+          if (editability.editable) return;
+          args.cancel = true;
+          notify(
+            `无法编辑 ${columnName(args.col)}${args.row + 1}：${
+              editability.reason
+            }`,
+            'error',
+          );
+          console.info('[SpreadJS Demo][编辑已阻止]', {
+            cell: `${columnName(args.col)}${args.row + 1}`,
+            rowId: activeRows[args.row]?.id,
+            field: COLUMNS[args.col]?.field,
+            reason: editability.reason,
+          });
+        },
+      );
+      sheet.bind(
         GC.Spread.Sheets.Events.CellClick,
         (_sender: unknown, args: CellClickArgs) => {
           if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
@@ -2695,13 +2805,45 @@ export function useSpreadsheetController() {
           window.clearTimeout(clipboardHistoryTimer);
           const text = args.pasteData.text ?? '';
           const matrix = clipboardTextToMatrix(text);
+          const pasteRowCount = Math.max(
+            args.fromRange?.rowCount ?? 0,
+            matrix.length,
+            args.cellRange.rowCount,
+          );
+          const pasteColCount = Math.max(
+            args.fromRange?.colCount ?? 0,
+            ...matrix.map((row) => row.length),
+            args.cellRange.colCount,
+          );
+          const readonlyTarget = firstReadonlyCellInRange(
+            args.cellRange,
+            pasteRowCount,
+            pasteColCount,
+          );
+          if (readonlyTarget) {
+            args.cancel = true;
+            clipboardHistorySource = null;
+            clipboardHistorySnapshot = null;
+            notify(
+              `无法粘贴到 ${columnName(readonlyTarget.col)}${
+                readonlyTarget.row + 1
+              }：${readonlyTarget.reason}`,
+              'error',
+            );
+            console.warn('[SpreadJS Demo][粘贴已阻止]', {
+              cell: `${columnName(readonlyTarget.col)}${
+                readonlyTarget.row + 1
+              }`,
+              reason: readonlyTarget.reason,
+              pasteRowCount,
+              pasteColCount,
+            });
+            return;
+          }
           clipboardHistorySnapshot = captureClipboardHistory(
             args.cellRange,
-            Math.max(args.fromRange?.rowCount ?? 0, matrix.length),
-            Math.max(
-              args.fromRange?.colCount ?? 0,
-              ...matrix.map((row) => row.length),
-            ),
+            pasteRowCount,
+            pasteColCount,
           );
           clipboardHistorySource = args.isCutting
             ? '剪切粘贴'
@@ -2734,7 +2876,8 @@ export function useSpreadsheetController() {
           const source = clipboardHistorySource ?? '粘贴';
           clipboardHistorySnapshot = null;
           let changedCount = 0;
-          let blockedHierarchyChange = false;
+          let blockedReadonlyChange = false;
+          const pendingEdits: CellEditRequest[] = [];
           spread.suspendPaint();
           try {
             snapshot?.forEach(({ row, col, oldValue, oldFormula }) => {
@@ -2742,7 +2885,8 @@ export function useSpreadsheetController() {
               const newValue = sheet.getValue(row, col);
               const newFormula = sheet.getFormula(row, col) ?? '';
               if (!column) return;
-              if (isHierarchyField(column.field)) {
+              const editability = getCellEditability(activeRows[row], col);
+              if (!editability.editable) {
                 if (
                   !historyValuesEqual(oldValue, newValue) ||
                   oldFormula !== newFormula
@@ -2754,7 +2898,7 @@ export function useSpreadsheetController() {
                   } finally {
                     spread.resumeEvent();
                   }
-                  blockedHierarchyChange = true;
+                  blockedReadonlyChange = true;
                 }
                 return;
               }
@@ -2773,15 +2917,19 @@ export function useSpreadsheetController() {
                 if (newFormula) cellFormulaState.set(key, newFormula);
                 else cellFormulaState.delete(key);
               }
-              if (
-                !historyValuesEqual(oldValue, newValue) &&
-                commitBusinessCellValue(row, col, oldValue, newValue, source)
-              )
-                changedCount += 1;
+              if (!historyValuesEqual(oldValue, newValue))
+                pendingEdits.push({
+                  row,
+                  col,
+                  oldValue,
+                  requestedValue: newValue,
+                  source,
+                });
             });
           } finally {
             spread.resumePaint();
           }
+          changedCount += commitBusinessCellValues(pendingEdits);
           if (changedCount) {
             invalidateSearchSession(
               activeSearch.query
@@ -2789,8 +2937,8 @@ export function useSpreadsheetController() {
                 : undefined,
             );
           }
-          if (blockedHierarchyChange)
-            notify('已跳过层级列；层级名称请从业务数据源维护');
+          if (blockedReadonlyChange)
+            notify('已跳过不可编辑的汇总、派生或层级单元格', 'error');
           updateSelected(
             sheet.getActiveRowIndex(),
             sheet.getActiveColumnIndex(),
@@ -2843,25 +2991,29 @@ export function useSpreadsheetController() {
           )
             return;
           if (clipboardHistorySnapshot) return;
+          if (commandHistoryDiffInProgress) return;
           const node = activeRows[args.row];
           const column = COLUMNS[args.col];
           if (!node || !column) return;
-          if (isHierarchyField(column.field)) {
+          const editability = getCellEditability(node, args.col);
+          if (!editability.editable) {
             spread.suspendEvent();
             try {
-              const stressGroup =
-                activeDataMode === 'stress'
-                  ? stressGroupBySummaryRow.get(args.row)
-                  : undefined;
-              const nextValue =
-                stressGroup && args.col === stressHierarchyColumn(stressGroup)
-                  ? stressHierarchyText(stressGroup)
-                  : viewRowCellValue(node, args.col);
-              sheet.setValue(args.row, args.col, nextValue);
+              const oldFormula =
+                args.propertyName === 'formula'
+                  ? String(args.oldValue ?? '')
+                  : '';
+              sheet.setFormula(args.row, args.col, oldFormula);
+              if (!oldFormula)
+                sheet.setValue(
+                  args.row,
+                  args.col,
+                  viewRowCellValue(node, args.col),
+                );
             } finally {
               spread.resumeEvent();
             }
-            notify('层级字段用于展开和折叠，名称请从业务数据源维护');
+            notify(`无法编辑：${editability.reason}`, 'error');
             updateSelected(args.row, args.col);
             return;
           }
@@ -2878,6 +3030,14 @@ export function useSpreadsheetController() {
             const nextFormula = String(args.newValue ?? '');
             if (nextFormula) cellFormulaState.set(key, nextFormula);
             else cellFormulaState.delete(key);
+            const formulaResult = sheet.getValue(args.row, args.col);
+            commitBusinessCellValue(
+              args.row,
+              args.col,
+              viewRowCellValue(node, args.col),
+              formulaResult,
+              `${historySource} · 计算结果`,
+            );
             invalidateSearchSession(
               activeSearch.query
                 ? '公式已更新，按 Enter 刷新搜索结果'
@@ -2923,7 +3083,8 @@ export function useSpreadsheetController() {
               ).flat();
           const seen = new Set<string>();
           let changedCount = 0;
-          let blockedHierarchyChange = false;
+          let blockedReadonlyChange = false;
+          const pendingEdits: CellEditRequest[] = [];
           spread.suspendPaint();
           try {
             changedCells.forEach(({ row, col }) => {
@@ -2935,7 +3096,8 @@ export function useSpreadsheetController() {
               if (!node || !column) return;
               const newValue = sheet.getValue(row, col);
               const newFormula = sheet.getFormula(row, col) ?? '';
-              if (isHierarchyField(column.field)) {
+              const editability = getCellEditability(node, col);
+              if (!editability.editable) {
                 const expectedValue = viewRowCellValue(node, col);
                 if (!historyValuesEqual(expectedValue, newValue)) {
                   spread.suspendEvent();
@@ -2945,7 +3107,7 @@ export function useSpreadsheetController() {
                   } finally {
                     spread.resumeEvent();
                   }
-                  blockedHierarchyChange = true;
+                  blockedReadonlyChange = true;
                 }
                 return;
               }
@@ -2968,15 +3130,19 @@ export function useSpreadsheetController() {
               }
 
               const oldValue = viewRowCellValue(node, col);
-              if (
-                !historyValuesEqual(oldValue, newValue) &&
-                commitBusinessCellValue(row, col, oldValue, newValue, source)
-              )
-                changedCount += 1;
+              if (!historyValuesEqual(oldValue, newValue))
+                pendingEdits.push({
+                  row,
+                  col,
+                  oldValue,
+                  requestedValue: newValue,
+                  source,
+                });
             });
           } finally {
             spread.resumePaint();
           }
+          changedCount += commitBusinessCellValues(pendingEdits);
           if (changedCount) {
             invalidateSearchSession(
               activeSearch.query
@@ -2990,8 +3156,8 @@ export function useSpreadsheetController() {
             const range = sheet.getSelections().at(-1);
             if (range) calculateSelection(sheet, range);
           }
-          if (blockedHierarchyChange)
-            notify('已跳过层级列；层级名称请从业务数据源维护');
+          if (blockedReadonlyChange)
+            notify('已跳过不可编辑的汇总、派生或层级单元格', 'error');
         },
       );
       sheet.bind(
@@ -3007,6 +3173,8 @@ export function useSpreadsheetController() {
             scheduleStressViewportLoad(args.newTopRow);
         },
       );
+
+      console.log('Sheet', sheet);
 
       renderRows(buildRegularRows(), false);
       syncProjectionSnapshot();
@@ -3045,7 +3213,7 @@ export function useSpreadsheetController() {
   const commentDirty = commentDraft.trim() !== persistedComment;
   const retryInitialization = () =>
     setInitializationAttempt((attempt) => attempt + 1);
-
+  console.log(attachmentsRef, '...attachmentsRef');
   return {
     hostRef,
     actionsRef,

@@ -66,6 +66,7 @@ export type BusinessField = Exclude<
 >;
 export type ColumnField = BusinessField | HierarchyField;
 export type ViewRow = BusinessNode & {
+  sourceNodes: readonly BusinessNode[];
   level: number;
   hasChildren?: boolean;
   productId: string;
@@ -95,7 +96,13 @@ export type OutlineSnapshot = {
   rowCount: number;
 };
 
-export type StressRowOutlineGroup = {
+export type CellEditability = {
+  editable: boolean;
+  reason: string;
+  sourceNode: BusinessNode | null;
+};
+
+type StressAggregationRange = {
   summaryRow: number;
   detailStart: number;
   detailCount: number;
@@ -212,6 +219,9 @@ export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
 export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 11, 12, 13, 14]);
+// 模拟一次“分批拉取”的后端网络往返耗时：滚动到已加载数据底部时，
+// 每批新数据都会先经历这段延迟，再返回给前端写入表格。
+export const STRESS_PAGE_FETCH_DELAY_MS = 220;
 
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
@@ -1017,6 +1027,55 @@ function aggregateBusinessNodes(
   };
 }
 
+// 汇总行（区域根行、跨子类合并的明细行等）被视为“后端已经算好并下发”的静态数据：
+// 首次计算时把结果冻结进缓存，此后即使编辑了明细单元格也不会重新求和。
+// 只有真正唯一映射到一条明细叶子的行（sourceNodes.length === 1）才会实时反映编辑结果。
+const aggregateSnapshotCache = new Map<
+  string,
+  ReturnType<typeof aggregateBusinessNodes>
+>();
+
+function snapshotKeyForSourceNodes(nodes: readonly BusinessNode[]) {
+  return nodes
+    .map((node) => node.id)
+    .sort()
+    .join('|');
+}
+
+function resolveAggregateSnapshot(
+  sourceNodes: readonly BusinessNode[],
+  fallback: BusinessNode,
+) {
+  if (sourceNodes.length <= 1)
+    return aggregateBusinessNodes(sourceNodes, fallback);
+  const key = snapshotKeyForSourceNodes(sourceNodes);
+  const cached = aggregateSnapshotCache.get(key);
+  if (cached) return cached;
+  const snapshot = aggregateBusinessNodes(sourceNodes, fallback);
+  aggregateSnapshotCache.set(key, snapshot);
+  return snapshot;
+}
+
+// 在任何编辑发生之前，预热所有产品/区域/明细维度的汇总组合，
+// 确保缓存里存的是最初的（模拟后端下发的）数值，不受后续编辑顺序影响。
+function primeAggregateSnapshotCache(nodes: readonly BusinessNode[]) {
+  nodes.forEach((node) => {
+    if (
+      node.hierarchyRole === 'category' ||
+      node.hierarchyRole === 'subcategory'
+    ) {
+      getRegionRoots(node).forEach((root) => {
+        resolveAggregateSnapshot(root.sourceNodes, node);
+        root.children.forEach((detail) =>
+          resolveAggregateSnapshot(detail.sourceNodes, node),
+        );
+      });
+    }
+    if (node.children?.length) primeAggregateSnapshotCache(node.children);
+  });
+}
+primeAggregateSnapshotCache(BUSINESS_DATA);
+
 export function createBusinessProjectionRows(
   view: DrillView,
   productExpanded: ReadonlySet<string>,
@@ -1032,12 +1091,13 @@ export function createBusinessProjectionRows(
         id: `${product.id}::${region.id}`,
         name: `${product.label} / ${region.label}`,
         hierarchyRole: product.isGroup ? 'category' : 'subcategory',
-        ...aggregateBusinessNodes(region.sourceNodes, product.node),
+        ...resolveAggregateSnapshot(region.sourceNodes, product.node),
         children: product.isGroup
           ? product.node.children?.filter(
               (child) => child.hierarchyRole === 'subcategory',
             )
           : undefined,
+        sourceNodes: region.sourceNodes,
         level: product.depth,
         hasChildren: product.isGroup,
         productId: product.id,
@@ -1267,6 +1327,7 @@ function createStressRecord(index: number): ViewRow {
       status,
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
+    sourceNodes: [],
     level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
     hasChildren: isBusinessGroup || isRegion,
     productId: isBusinessGroup ? businessGroupId : productId,
@@ -1298,8 +1359,8 @@ function createStressRecord(index: number): ViewRow {
   };
 }
 
-export function getStressRowOutlineGroups(rows: ViewRow[]) {
-  const groups: StressRowOutlineGroup[] = [];
+function getStressAggregationRanges(rows: ViewRow[]) {
+  const groups: StressAggregationRange[] = [];
   let openProductSummary = -1;
   let openRegionSummary = -1;
   const closeGroup = (
@@ -1339,7 +1400,7 @@ export function getStressRowOutlineGroups(rows: ViewRow[]) {
 }
 
 function applyStressGroupSummaries(rows: ViewRow[]) {
-  getStressRowOutlineGroups(rows).forEach((group) => {
+  getStressAggregationRanges(rows).forEach((group) => {
     const summary = rows[group.summaryRow];
     const endRow = group.detailStart + group.detailCount;
     let leafCount = 0;
@@ -1395,6 +1456,336 @@ function applyStressGroupSummaries(rows: ViewRow[]) {
   });
 }
 
+type StressProjectionRegion = {
+  id: string;
+  label: string;
+  summaryRows: ViewRow[];
+  details: ViewRow[];
+};
+
+type StressProjectionProduct = {
+  id: string;
+  parentId: string | null;
+  label: string;
+  attribute: string;
+  depth: 0 | 1;
+  isGroup: boolean;
+  summary: ViewRow;
+  regions: StressProjectionRegion[];
+  children: StressProjectionProduct[];
+};
+
+type StressProjectionIndex = {
+  roots: StressProjectionProduct[];
+  productGroups: string[];
+  allProducts: string[];
+  productsById: Map<string, StressProjectionProduct>;
+};
+
+const stressProjectionIndexCache = new WeakMap<
+  ViewRow[],
+  StressProjectionIndex
+>();
+
+function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
+  const cached = stressProjectionIndexCache.get(rows);
+  if (cached) return cached;
+
+  const roots: StressProjectionProduct[] = [];
+  const productGroups: string[] = [];
+  const allProducts: string[] = [];
+  const productsById = new Map<string, StressProjectionProduct>();
+
+  for (
+    let groupStart = 0;
+    groupStart < rows.length;
+    groupStart += STRESS_BUSINESS_GROUP_SIZE
+  ) {
+    const groupSummary = rows[groupStart];
+    if (!groupSummary) break;
+    const groupEnd = Math.min(
+      rows.length,
+      groupStart + STRESS_BUSINESS_GROUP_SIZE,
+    );
+    const categoryRegions = new Map<string, StressProjectionRegion>();
+    const children: StressProjectionProduct[] = [];
+
+    for (
+      let productStart = groupStart + 1;
+      productStart < groupEnd;
+      productStart += STRESS_PRODUCT_LINE_SIZE
+    ) {
+      const productSummary = rows[productStart];
+      if (!productSummary) break;
+      const productEnd = Math.min(
+        groupEnd,
+        productStart + STRESS_PRODUCT_LINE_SIZE,
+      );
+      const regions: StressProjectionRegion[] = [];
+
+      for (
+        let regionStart = productStart;
+        regionStart < productEnd;
+        regionStart += STRESS_REGION_SIZE
+      ) {
+        const regionSummary = rows[regionStart];
+        if (!regionSummary) break;
+        const regionEnd = Math.min(
+          productEnd,
+          regionStart + STRESS_REGION_SIZE,
+        );
+        const details = rows.slice(regionStart + 1, regionEnd);
+        const region: StressProjectionRegion = {
+          id: regionSummary.regionRootId,
+          label: regionSummary.regionLabel,
+          summaryRows: details,
+          details,
+        };
+        regions.push(region);
+
+        const categoryRegionId = `${groupSummary.productId}:region-${
+          regions.length - 1
+        }`;
+        let categoryRegion = categoryRegions.get(region.label);
+        if (!categoryRegion) {
+          categoryRegion = {
+            id: categoryRegionId,
+            label: region.label,
+            summaryRows: [],
+            details: [],
+          };
+          categoryRegions.set(region.label, categoryRegion);
+        }
+        categoryRegion.summaryRows.push(...details);
+        // 事业群区域展开到产品线汇总即可；明细记录仍由对应产品线的
+        // 区域节点展开。这样与常规模式的“父级聚合、子级明细”一致，
+        // 也避免同一批 10 万条事实在父子产品下重复投影。
+        categoryRegion.details.push({
+          ...regionSummary,
+          id: `${regionSummary.id}:category-detail`,
+          name: productSummary.productLabel,
+          regionLabel: productSummary.productLabel,
+          sourceNodes: details,
+        });
+      }
+
+      const product: StressProjectionProduct = {
+        id: productSummary.productId,
+        parentId: groupSummary.productId,
+        label: productSummary.productLabel,
+        attribute: productSummary.productAttribute,
+        depth: 1,
+        isGroup: false,
+        summary: productSummary,
+        regions,
+        children: [],
+      };
+      children.push(product);
+      allProducts.push(product.id);
+      productsById.set(product.id, product);
+    }
+
+    const root: StressProjectionProduct = {
+      id: groupSummary.productId,
+      parentId: null,
+      label: groupSummary.productLabel,
+      attribute: groupSummary.productAttribute,
+      depth: 0,
+      isGroup: children.length > 0,
+      summary: groupSummary,
+      regions: [...categoryRegions.values()],
+      children,
+    };
+    roots.push(root);
+    productGroups.push(root.id);
+    allProducts.push(root.id);
+    productsById.set(root.id, root);
+  }
+
+  const index = { roots, productGroups, allProducts, productsById };
+  stressProjectionIndexCache.set(rows, index);
+  return index;
+}
+
+function stressRegionSummary(
+  product: StressProjectionProduct,
+  region: StressProjectionRegion,
+) {
+  const fallback =
+    region.summaryRows[0] ?? region.details[0] ?? product.summary;
+  return {
+    ...fallback,
+    ...aggregateBusinessNodes(
+      region.summaryRows.length ? region.summaryRows : region.details,
+      fallback,
+    ),
+  };
+}
+
+function projectStressProduct(
+  product: StressProjectionProduct,
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+) {
+  const expandedRegions =
+    regionExpandedByProduct.get(product.id) ?? new Set<string>();
+  const rows = product.regions.flatMap((region) => {
+    const summary = stressRegionSummary(product, region);
+    const expanded = expandedRegions.has(region.id);
+    const root: ViewRow = {
+      ...summary,
+      id: `${product.id}::${region.id}`,
+      name: `${product.label} / ${region.label}`,
+      hierarchyRole: product.isGroup ? 'category' : 'subcategory',
+      children: undefined,
+      sourceNodes: region.summaryRows.flatMap((row) =>
+        row.sourceNodes.length ? row.sourceNodes : [row],
+      ),
+      level: product.depth,
+      hasChildren: product.isGroup,
+      productId: product.id,
+      productParentId: product.parentId,
+      productLabel: product.label,
+      productAttribute: product.attribute,
+      productDepth: product.depth,
+      productIsGroup: product.isGroup,
+      productExpanded: product.isGroup && productExpanded.has(product.id),
+      productBlockStart: false,
+      productRowSpan: 1,
+      regionId: region.id,
+      regionRootId: region.id,
+      regionLabel: region.label,
+      regionDepth: 0,
+      regionIsGroup: region.details.length > 0,
+      regionExpanded: expanded,
+    };
+    if (!expanded) return [root];
+    return [
+      root,
+      ...region.details.map((detail): ViewRow => {
+        const sourceNodes = detail.sourceNodes.length
+          ? detail.sourceNodes
+          : [detail];
+        return {
+          ...detail,
+          ...aggregateBusinessNodes(sourceNodes, detail),
+          id: `${product.id}::${region.id}::${detail.id}`,
+          name: `${product.label} / ${detail.regionLabel}`,
+          hierarchyRole: 'detail',
+          children: undefined,
+          sourceNodes,
+          level: product.depth,
+          hasChildren: false,
+          productId: product.id,
+          productParentId: product.parentId,
+          productLabel: product.label,
+          productAttribute: product.attribute,
+          productDepth: product.depth,
+          productIsGroup: product.isGroup,
+          productExpanded: product.isGroup && productExpanded.has(product.id),
+          productBlockStart: false,
+          productRowSpan: 1,
+          regionId: `${region.id}:detail:${detail.id}`,
+          regionRootId: region.id,
+          regionLabel: detail.regionLabel,
+          regionDepth: 1,
+          regionIsGroup: false,
+          regionExpanded: false,
+        };
+      }),
+    ];
+  });
+  if (!rows.length) return rows;
+  rows[0].productBlockStart = true;
+  rows[0].productRowSpan = rows.length;
+  return rows;
+}
+
+/**
+ * 10 万条底层记录的可见行投影。这里刻意复用常规模式的交互语义：
+ * 产品列和区域列分别维护展开状态，任一列变化都只重建可见行，不借助
+ * 整行 Outline 隐藏另一列的数据。
+ */
+export function createStressProjectionRows(
+  sourceRows: ViewRow[],
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+) {
+  const index = buildStressProjectionIndex(sourceRows);
+  return index.roots.flatMap((root) => {
+    const products = productExpanded.has(root.id)
+      ? [root, ...root.children]
+      : [root];
+    return products.flatMap((product) =>
+      projectStressProduct(product, productExpanded, regionExpandedByProduct),
+    );
+  });
+}
+
+export function getStressProductGroupIds(sourceRows: ViewRow[]) {
+  return buildStressProjectionIndex(sourceRows).productGroups;
+}
+
+export function getStressAllProductIds(sourceRows: ViewRow[]) {
+  return buildStressProjectionIndex(sourceRows).allProducts;
+}
+
+export function getStressRegionGroupIdsForProduct(
+  sourceRows: ViewRow[],
+  productId: string,
+) {
+  return (
+    buildStressProjectionIndex(sourceRows).productsById.get(productId)
+      ?.regions ?? []
+  ).map((region) => region.id);
+}
+
+export function getStressProjectionSummary(
+  sourceRows: ViewRow[],
+  productExpanded: ReadonlySet<string>,
+  regionExpandedByProduct: ExtensionExpansionState,
+): OutlineSnapshot {
+  const index = buildStressProjectionIndex(sourceRows);
+  const regionGroups = index.allProducts.flatMap((productId) =>
+    (index.productsById.get(productId)?.regions ?? []).map((region) => ({
+      productId,
+      regionId: region.id,
+    })),
+  );
+  const rowCount = index.roots.reduce((total, root) => {
+    const products = productExpanded.has(root.id)
+      ? [root, ...root.children]
+      : [root];
+    return (
+      total +
+      products.reduce(
+        (productTotal, product) =>
+          productTotal +
+          product.regions.reduce(
+            (regionTotal, region) =>
+              regionTotal +
+              1 +
+              (regionExpandedByProduct.get(product.id)?.has(region.id)
+                ? region.details.length
+                : 0),
+            0,
+          ),
+        0,
+      )
+    );
+  }, 0);
+  return {
+    productExpanded: index.productGroups.filter((id) => productExpanded.has(id))
+      .length,
+    productTotal: index.productGroups.length,
+    regionExpanded: regionGroups.filter(({ productId, regionId }) =>
+      regionExpandedByProduct.get(productId)?.has(regionId),
+    ).length,
+    regionTotal: regionGroups.length,
+    rowCount,
+  };
+}
+
 let stressRecordsCache: ViewRow[] | null = null;
 let stressRecordsPromise: Promise<ViewRow[]> | null = null;
 let stressRecordsCacheEpoch = 0;
@@ -1433,6 +1824,15 @@ export function releaseStressRecords() {
   stressRecordsCache = null;
 }
 
+// 模拟一次分批加载请求的网络往返：可见投影（含展开/折叠、汇总合并后的
+// 树形结构）已经在内存中就绪，这里只补上“这批数据是从后端取回来的”
+// 这段延迟，供前端在把某一批可见行写入表格前先等待，制造真实的分批加载感。
+export async function simulateStressBackendDelay() {
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, STRESS_PAGE_FETCH_DELAY_MS),
+  );
+}
+
 export function productHierarchyText(row: ViewRow) {
   if (!row.productBlockStart) return '';
   if (!row.productIsGroup) return row.productLabel;
@@ -1450,6 +1850,43 @@ export function isHierarchyField(field: ColumnField): field is HierarchyField {
     field === 'productAttribute' ||
     field === 'regionHierarchy'
   );
+}
+
+export function getCellEditability(
+  row: ViewRow | undefined,
+  col: number,
+): CellEditability {
+  const column = COLUMNS[col];
+  if (!row || !column)
+    return { editable: false, reason: '单元格不存在', sourceNode: null };
+  if (isHierarchyField(column.field)) {
+    return {
+      editable: false,
+      reason: '层级和属性字段由业务数据源维护',
+      sourceNode: null,
+    };
+  }
+  if (column.field === 'avgOrder') {
+    return {
+      editable: false,
+      reason: '客单价由净收入 ÷ 订单数自动计算',
+      sourceNode: null,
+    };
+  }
+  const sourceNode = row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  if (
+    row.regionDepth === 0 ||
+    !sourceNode ||
+    sourceNode.hierarchyRole !== 'detail' ||
+    sourceNode.children?.length
+  ) {
+    return {
+      editable: false,
+      reason: '汇总数据由下级明细自动聚合，不能直接编辑',
+      sourceNode: null,
+    };
+  }
+  return { editable: true, reason: '可编辑明细单元格', sourceNode };
 }
 
 export function viewRowCellValue(row: ViewRow, col: number) {
@@ -1510,6 +1947,16 @@ export function updateBusinessNode(
   field: BusinessField,
   value: unknown,
 ) {
+  const updateAverageOrder = () => {
+    node.avgOrder = Math.round(node.revenue / Math.max(node.orders, 1));
+  };
+  const parsedNumber =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+      ? Number(value.replace(/[\s,¥￥]/g, ''))
+      : Number.NaN;
+  const finiteNumber = Number.isFinite(parsedNumber) ? parsedNumber : null;
   switch (field) {
     case 'name':
       if (typeof value === 'string') node.name = value.replace(/^\u3000+/, '');
@@ -1535,9 +1982,68 @@ export function updateBusinessNode(
       if (!Number.isNaN(nextDate.getTime())) node.updatedAt = nextDate;
       break;
     }
-    default:
-      if (typeof value === 'number' && Number.isFinite(value))
-        node[field] = value;
+    case 'revenue':
+      if (finiteNumber !== null) {
+        const previousComponentTotal =
+          node.productRevenue + node.serviceRevenue;
+        const productShare = previousComponentTotal
+          ? node.productRevenue / previousComponentTotal
+          : 0.78;
+        node.revenue = Math.max(0, Math.round(finiteNumber));
+        node.productRevenue = Math.round(node.revenue * productShare);
+        node.serviceRevenue = node.revenue - node.productRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'productRevenue':
+      if (finiteNumber !== null) {
+        node.productRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'serviceRevenue':
+      if (finiteNumber !== null) {
+        node.serviceRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'orders':
+      if (finiteNumber !== null) {
+        const previousOrderTotal = node.onlineOrders + node.offlineOrders;
+        const onlineShare = previousOrderTotal
+          ? node.onlineOrders / previousOrderTotal
+          : 0.63;
+        node.orders = Math.max(0, Math.round(finiteNumber));
+        node.onlineOrders = Math.round(node.orders * onlineShare);
+        node.offlineOrders = node.orders - node.onlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'onlineOrders':
+      if (finiteNumber !== null) {
+        node.onlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'offlineOrders':
+      if (finiteNumber !== null) {
+        node.offlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'avgOrder':
+      // Derived field. Kept in the switch so programmatic callers cannot
+      // accidentally break the revenue/order relationship.
+      updateAverageOrder();
+      break;
+    case 'completion':
+    case 'adjustmentFactor':
+      if (finiteNumber !== null) node[field] = finiteNumber;
+      break;
   }
 }
 

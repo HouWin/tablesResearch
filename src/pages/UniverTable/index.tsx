@@ -1,3 +1,22 @@
+/**
+ * ============================================================================
+ * UniverTable 演示页（路由：/UniverTable）
+ * ============================================================================
+ *
+ * 演示 ETable 组件的能力：
+ * - 三层多级表头（品类/子品类/区域 + 经营指标 + 业务治理）
+ * - 树形数据 treeData + treeConfig（单元格内 ▶/▼ 折叠）
+ * - 1万～100万行大数据压测（generateScaledTreeData + liteMode）
+ * - 工具栏：展开/折叠、全屏、动态追加列、虚拟滚动开关
+ * - 侧栏：单元格变更历史、数据追踪、面包屑
+ *
+ * 数据流：
+ *   treeData → ETable 内部 flattenTreeData → Worksheet 二维网格
+ *   onCellChange → setTracks（演示用，未回写 treeData）
+ *
+ * 技术文档：tablesResearch/docs/UniverTable.md
+ * ============================================================================
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -50,7 +69,7 @@ import type {
   ETableTreeNode,
 } from '@/components/UniverTable/types';
 
-/** 树形演示 / 树形大数据规模（展平后的工作表行数） */
+/** 数据规模选项：tree 为固定演示树；数字为展平后的目标行数 */
 const DATA_SCALE_OPTIONS = [
   { value: 'tree', label: '树形演示' },
   { value: 10000, label: '1万行（树形）' },
@@ -65,6 +84,7 @@ type DataScale = (typeof DATA_SCALE_OPTIONS)[number]['value'];
 const STATUS_OPTIONS = ['已核验', '待复核', '异常'] as const;
 const VERIFIED_OPTIONS = ['是', '否'] as const;
 
+/** 固定指标列（叶子列）：与 buildHeaderColumns / treeConfig.measures 的 field 一一对应 */
 const LEAF_MEASURES: ETableColumn[] = [
   {
     id: 'revenue',
@@ -154,7 +174,7 @@ const LEAF_MEASURES: ETableColumn[] = [
   },
 ];
 
-/** 可通过工具栏追加的扩展指标列 */
+/** 工具栏可动态追加的扩展指标列（会合并进 headerColumns 与 measures） */
 const OPTIONAL_COLUMNS: ETableColumn[] = [
   {
     id: 'cost',
@@ -187,6 +207,7 @@ const OPTIONAL_COLUMNS: ETableColumn[] = [
   { id: 'remark', title: '备注', width: 120 },
 ];
 
+/** 为缺失的扩展列生成演示用随机值 */
 const makeExtraColumnValue = (
   column: ETableColumn,
   seed: number,
@@ -210,6 +231,7 @@ const makeExtraColumnValue = (
   }
 };
 
+/** 合并节点 values 并补齐扩展列字段 */
 const enrichValues = (
   values: Record<string, ETablePrimitive | ETableCell> | undefined,
   columns: ETableColumn[],
@@ -231,6 +253,7 @@ const enrichValues = (
   return next;
 };
 
+/** 递归为树节点 / 属性 / 城市明细补齐扩展列数据 */
 const enrichTreeWithColumns = (
   nodes: ETableTreeNode[],
   columns: ETableColumn[],
@@ -334,30 +357,29 @@ const buildHeaderColumns = (extraMeasures: ETableColumn[] = []): ETableColumn[] 
   },
   ...(extraMeasures.length
     ? [
-        {
-          id: 'extra-metrics',
-          title: '扩展指标',
-          children: [
-            {
-              id: 'user-added',
-              title: '追加列',
-              children: extraMeasures,
-            },
-          ],
-        },
-      ]
+      {
+        id: 'extra-metrics',
+        title: '扩展指标',
+        children: [
+          {
+            id: 'user-added',
+            title: '追加列',
+            children: extraMeasures,
+          },
+        ],
+      },
+    ]
     : []),
 ];
 
-const HEADER_DEPTH = 3;
-const HIERARCHY_COLS = 3;
+const HEADER_DEPTH = 3;   // 表头占用行数，与 freezeRows 一致
+const HIERARCHY_COLS = 3; // 冻结左侧维度列数：品类 + 子品类 + 区域
 const BASE_MEASURE_COUNT = LEAF_MEASURES.length;
 
+/** 组装 treeConfig：维度、属性、三层表头、指标、分组统计 */
 const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig => {
   const allMeasures = [...LEAF_MEASURES, ...extraMeasures];
-  const numericExtraFields = extraMeasures
-    .filter((item) => item.type === 'number')
-    .map((item) => ({ field: item.id, method: 'sum' as const }));
+  const numericExtraFields = extraMeasures.filter((item) => item.type === 'number').map((item) => ({ field: item.id, method: 'sum' as const }));
 
   return {
     treeUI: true,
@@ -393,6 +415,12 @@ const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig =
 
 type Status = (typeof STATUS_OPTIONS)[number];
 
+// ============================================================================
+// 演示树数据构造：品类 → 子品类 → 区域（attributes）→ 城市（children）
+// 结构对应 ETableTreeNode + ETableTreeAttribute，由 flattenTreeData 展平为二维 rows
+// ============================================================================
+
+/** 生成一行叶子节点的全部指标字段（净收入、订单、负责人等） */
 const makeLeafValues = (
   revenue: number,
   orders: number,
@@ -584,6 +612,7 @@ const officeStorage: ETableTreeNode = {
   ],
 };
 
+/** 固定演示树：家具 / 办公用品，含书柜、椅子、纸张、收纳等子品类 */
 const treeData: ETableTreeNode[] = withSubcategoryDim([
   {
     id: 'furniture',
@@ -621,6 +650,7 @@ const treeData: ETableTreeNode[] = withSubcategoryDim([
   },
 ]);
 
+/** 传给 ETable 的默认工作表配置 */
 const defaultOptions: ETableOptions = {
   name: '经营指标明细',
   defaultColumnWidth: 110,
@@ -643,9 +673,16 @@ const countNodes = (nodes: ETableTreeNode[]): number =>
 
 const TABLE_VIEW_HEIGHT = 560;
 
+/**
+ * 演示页主组件：工具栏控制数据规模与表格选项，侧栏展示编辑历史与数据追踪
+ */
 const UniverTablePage = () => {
+  // ETable 实例 ref，用于调用 expandAllRows / search / undo 等命令
   const tableRef = useRef<ETableRef>(null);
+  /** 表格容器，用于仅表格区域全屏 */
   const tableShellRef = useRef<HTMLDivElement>(null);
+
+  // ---------- 数据规模与生成状态 ----------
   const [dataScale, setDataScale] = useState<DataScale>('tree');
   const [scaledTreeData, setScaledTreeData] = useState<ETableTreeNode[] | null>(
     null,
@@ -673,6 +710,7 @@ const UniverTablePage = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewportRange, setViewportRange] = useState<string | null>(null);
 
+  // ---------- 全屏：监听 fullscreenchange 并触发 resize 让 Univer 重算布局 ----------
   useEffect(() => {
     const syncFullscreen = () => {
       const active =
@@ -720,6 +758,8 @@ const UniverTablePage = () => {
 
   const isDemoTree = dataScale === 'tree';
   const targetRowCount = typeof dataScale === 'number' ? dataScale : 0;
+
+  // ---------- 派生数据：演示树 or 生成树 + 动态追加列 ----------
   const activeTreeData = useMemo(() => {
     const base = isDemoTree ? treeData : scaledTreeData ?? [];
     if (!addedColumns.length) {
@@ -727,6 +767,7 @@ const UniverTablePage = () => {
     }
     return enrichTreeWithColumns(base, addedColumns);
   }, [isDemoTree, scaledTreeData, addedColumns]);
+  /** 大数据模式启用 liteMode：减少展平行数与 merge，配合视口投影 */
   const activeTreeConfig = useMemo(() => {
     const config = buildTreeConfig(addedColumns);
     if (isDemoTree) {
@@ -756,6 +797,7 @@ const UniverTablePage = () => {
   );
 
   const loadScaledTree = useCallback(async (count: number) => {
+    /** 调用 treeDataGenerator 生成指定展平行数的树，完成后 setScaledTreeData */
     if (count >= 500000) {
       message.warning('数据量较大，生成与渲染可能较慢，请耐心等待');
     }
@@ -945,6 +987,7 @@ const UniverTablePage = () => {
       toAntdTree(child, `${key}-${index}`),
     ),
   });
+
 
   return (
     <div style={{ padding: 24, background: '#f0f2f5', minHeight: '100%' }}>
@@ -1236,6 +1279,10 @@ const UniverTablePage = () => {
                     <Spin size="large" tip="渲染表格中…" />
                   </div>
                 )}
+                {/*
+                  ETable：treeData 内部展平后写入 Worksheet
+                  onCellChange 每次单格编辑一条记录；演示页写入 tracks，不回写 treeData
+                */}
                 <ETable
                   ref={tableRef}
                   key={`tree-${dataScale}-${tableKey}-${gridLines}-${freezeHeader}-${contextMenu}-${virtualScroll}-${addedColumns.map((item) => item.id).join(',')}`}
@@ -1258,6 +1305,7 @@ const UniverTablePage = () => {
                   onCellChange={(record: ETableCellChangeRecord) => {
                     setTracks((prev) => [record, ...prev].slice(0, 200));
                     setFocusCell(record.cell);
+                    console.log(record, 'record')
                   }}
                   onSelectionChange={(cell: string) => {
                     setFocusCell(cell);

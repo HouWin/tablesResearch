@@ -529,6 +529,89 @@ export interface ETableCellChangeRecord {
 }
 
 /**
+ * getTableData() 返回的全量表格快照。
+ */
+export interface ETableExportData {
+  columns: ETableColumn[];
+  leafColumns: ETableColumn[];
+  headerDepth: number;
+  rows: ETableRow[];
+  /** worksheet：从工作表读取；memory：内存 rows + 变更流水叠加（视口/懒虚拟模式） */
+  source: 'worksheet' | 'memory';
+}
+
+export interface ETableGetTableDataOptions {
+  /** 优先从 Worksheet 读当前值，默认 true；视口模式会自动降级 */
+  preferWorksheet?: boolean;
+}
+
+/** setCellValue 选项 */
+export interface ETableSetCellValueOptions {
+  /** 同步内存 rows（默认 true，保证 getTableData source:memory 一致） */
+  syncMemory?: boolean;
+  /** 写入变更流水并触发 onCellChange（默认 false） */
+  recordChange?: boolean;
+}
+
+export type ETableSetCellValueResult = {
+  success: boolean;
+  appliedToSheet: boolean;
+  cell?: string;
+  sheetRow?: number;
+  column?: number;
+  dataRow?: number;
+  field?: string;
+};
+
+/** 单元格定位：A1 / 工作表行列 / 数据区行 + 字段 */
+export type ETableCellLocator =
+  | string
+  | { sheetRow: number; column: number }
+  | { dataRow: number; field: string };
+
+/** 行定位：数据区行号 / 工作表绝对行号 */
+export type ETableRowLocator = number | { dataRow: number } | { sheetRow: number };
+
+export type ETableSetRowValueResult = {
+  success: boolean;
+  appliedToSheet: boolean;
+  dataRow: number;
+  updatedFields: string[];
+};
+
+/** getCellValue / getRowValue 选项 */
+export interface ETableGetCellValueOptions {
+  /** 优先从 Worksheet 读取（默认 true）；不可读时回退内存 rows */
+  preferWorksheet?: boolean;
+}
+
+export interface ETableGetRowValueOptions extends ETableGetCellValueOptions {
+  /** 仅返回指定字段，默认返回全部叶子列 */
+  fields?: string[];
+}
+
+export type ETableGetCellValueResult = {
+  success: boolean;
+  value: ETablePrimitive | ETableCell | null;
+  /** 单元格显示文本（含格式，如 ¥20,000） */
+  displayValue: string;
+  source: 'worksheet' | 'memory';
+  cell?: string;
+  sheetRow?: number;
+  column?: number;
+  dataRow?: number;
+  field?: string;
+};
+
+export type ETableGetRowValueResult = {
+  success: boolean;
+  dataRow: number;
+  id?: string;
+  data: Record<string, ETablePrimitive | ETableCell>;
+  source: 'worksheet' | 'memory';
+};
+
+/**
  * 数据追踪节点（计算血缘的简化展示）。
  */
 export interface ETableDataTraceNode {
@@ -690,4 +773,45 @@ export interface ETableRef {
   getVirtualRenderStats(): VirtualRenderStats | null;
   /** 树形视口投影统计（未启用时返回 null） */
   getTreeViewportStats(): TreeViewportStats | null;
+  /**
+   * 获取表格全量数据快照（columns + rows）。
+   * - 中小数据：从 Worksheet 读取当前单元格值（含用户编辑）
+   * - 树视口 / 未加载完的懒虚拟：内存 rows + getTracks() 叠加（source: 'memory'）
+   */
+  getTableData(options?: ETableGetTableDataOptions): ETableExportData;
+  /**
+   * 获取树形源数据快照（含用户编辑）。
+   * 非树形模式（未传 treeData + treeConfig）时返回 null。
+   * 内部先通过 getTableData 取最新展平行，再按 row.id 合并回树结构。
+   */
+  getTreeData(options?: ETableGetTableDataOptions): ETableTreeNode[] | null;
+  /**
+   * 程序化更新单个单元格。
+   * - 支持 'D7'、{ sheetRow, column }、{ dataRow, field }
+   * - 视口模式下逻辑行不在当前窗口时仅更新内存（appliedToSheet: false）
+   */
+  setCellValue(
+    locator: ETableCellLocator,
+    value: ETablePrimitive | ETableCell,
+    options?: ETableSetCellValueOptions,
+  ): ETableSetCellValueResult;
+  /**
+   * 程序化更新一行（按字段合并到 row.data，再批量写入 Worksheet 一行）。
+   * 视口模式下逻辑行不在窗口时仅更新内存。
+   */
+  setRowValue(
+    locator: ETableRowLocator,
+    data: Record<string, ETablePrimitive | ETableCell>,
+    options?: ETableSetCellValueOptions,
+  ): ETableSetRowValueResult;
+  /** 读取单个单元格当前值 */
+  getCellValue(
+    locator: ETableCellLocator,
+    options?: ETableGetCellValueOptions,
+  ): ETableGetCellValueResult;
+  /** 读取一行当前值（默认全部叶子列字段） */
+  getRowValue(
+    locator: ETableRowLocator,
+    options?: ETableGetRowValueOptions,
+  ): ETableGetRowValueResult;
 }
