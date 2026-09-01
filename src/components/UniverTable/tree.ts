@@ -1,3 +1,11 @@
+/**
+ * 树形数据展平（tree.ts）
+ *
+ * 将 ETableTreeNode[] + ETableTreeConfig 转为二维 ETableFlattenResult：
+ * - buildTreeColumns：表头列树（headerColumns > measureGroups > 自动生成）
+ * - flattenTreeData：递归展平节点、属性、城市明细 → rows / merges / treeToggles
+ * - 支持 groupStatistics 小计/总计、treeUI 折叠绑定、liteMode 轻量展平
+ */
 import type {
   ETableCell,
   ETableColumnGroup,

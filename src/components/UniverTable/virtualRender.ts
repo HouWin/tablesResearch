@@ -1,3 +1,13 @@
+/**
+ * 平铺表视口懒写入（virtualRender.ts）
+ *
+ * 当行数 ≥ VIRTUAL_LAZY_THRESHOLD（5000）且非树形视口模式时启用：
+ * - 全量 rows 保留在内存
+ * - 工作表按 VIRTUAL_PAGE_SIZE（2000 行/页）懒写入
+ * - 滚动时 ensureRows 补页，避免百万行一次 setValues 卡死主线程
+ *
+ * 注意：这是渲染层「分页」，不是面向用户的 UI 分页。
+ */
 import { applyColumnTypes } from './columnTypes';
 import type { ETableColumn, ETableRow } from './types';
 
