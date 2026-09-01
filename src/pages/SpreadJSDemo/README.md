@@ -118,9 +118,9 @@ DrillView 路径
   ↓ updateBusinessNode()
 更新直接字段及收入、订单、状态等同级联动字段
   ↓ createBusinessProjectionRows() / createStressProjectionRows()
-重新聚合区域、产品及事业群
+常规模式重新读取 BUSINESS_DATA；压力模式重新生成当前投影
   ↓ 比较修改前后的 ViewRow[]
-刷新所有受影响单元格，并记录直接修改、字段联动、汇总联动
+刷新直接修改和同级字段联动，并写入历史
 ```
 
 具体规则如下：
@@ -130,7 +130,7 @@ DrillView 路径
 - 修改订单数：按修改前占比同步分摊线上和线下订单，并重算客单价；
 - 修改线上订单或线下订单：重算订单数和客单价；
 - 修改状态或“已核验”：双向同步另一字段；
-- 区域、产品及事业群等汇总行的数值被视为“后端已经算好并下发”的静态快照（在任何编辑发生之前预热并冻结），因此编辑明细单元格只会改变该条明细自身的显示值，不会再联动刷新汇总行；只有能唯一映射到一条明细叶子的单元格（`sourceNodes.length === 1`）才会实时反映编辑结果。
+- 常规模式的产品、子类和区域汇总指标由后端直接返回，Demo 将这些静态值明确保存在 `BUSINESS_DATA`。`regionSummaries` 保存产品大类下的区域汇总，`detailIds` 只声明展开后对应哪些明细；前端不再根据明细执行求和、平均值或状态归并。因此编辑明细只改变该明细及其同级派生字段，不会擅自修改后端汇总值。
 
 ### 1.5 撤销、重做和单元格历史
 
@@ -268,7 +268,7 @@ const { hostRef, actionsRef, ...uiState } = useSpreadsheetController();
 - 业务类型：`BusinessNode`、`ViewRow`、`SelectedCell` 等；
 - 列定义和列号常量；
 - 常规演示数据；
-- 业务聚合；
+- 后端汇总节点与明细节点的二维投影；
 - 产品和区域投影；
 - 下钻路径计算；
 - 10 万行数据生成、聚合索引和可见行投影；
@@ -284,11 +284,9 @@ BUSINESS_DATA
   ↓ getVisibleProducts()
 可见产品
   ↓ getVisibleRegions()
-每个产品的可见区域
-  ↓ aggregateBusinessNodes()
-区域汇总指标
+按 regionSummaries / detailIds 找到后端节点
   ↓ createBusinessProjectionRows()
-ViewRow[]
+直接复制节点指标得到 ViewRow[]（不做前端聚合）
   ↓ viewRowValues()
 SpreadJS 二维数组
 ```
@@ -470,7 +468,7 @@ http://localhost:8000/spreadjs-demo/business
 2. `renderRows()`：观察二维数据进入 Worksheet；
 3. `toggleHierarchyRow()`：点击产品或区域箭头；
 4. `getCellEditability()`：确认目标单元格是否允许编辑；
-5. `commitBusinessCellValues()`：提交业务值并观察联动聚合；
+5. `commitBusinessCellValues()`：提交明细值并观察同级字段联动；
 6. `CellChanged` / `RangeChanged`：观察单格和批量修改；
 7. `search()`：搜索一个处于折叠状态的区域明细；
 8. `loadVisibleStressRows()`：滚动 10 万行模式。
@@ -492,8 +490,8 @@ NEXT_PUBLIC_SPREADJS_LICENSE_KEY
 - 编辑、粘贴、清空、撤销、重做都有历史；
 - 汇总、派生和层级单元格不能编辑或粘贴覆盖；
 - 收入、订单、客单价以及状态字段的同级联动正确；
-- 修改城市明细后，大区、产品和事业群汇总立即更新；
-- 开发者控制台能区分直接修改、字段联动和汇总联动；
+- 修改城市明细后，后端汇总静态值保持不变；
+- 开发者控制台能输出直接修改的业务行 ID、字段和新旧值；
 - 批注和附件不会改写单元格值；
 - 列显隐、列 Outline 和自动列宽仍可用；
 - 10 万行模式的产品和区域节点与常规模式行为一致且互不干扰；

@@ -40,6 +40,8 @@ export type BusinessNode = {
   updatedAt: Date;
   adjustmentFactor: number;
   children?: BusinessNode[];
+  regionSummaries?: BusinessNode[];
+  detailIds?: string[];
 };
 
 export type CellAttachment = {
@@ -62,7 +64,7 @@ export type HierarchyField =
   | 'regionHierarchy';
 export type BusinessField = Exclude<
   keyof BusinessNode,
-  'id' | 'children' | 'hierarchyRole'
+  'id' | 'children' | 'regionSummaries' | 'detailIds' | 'hierarchyRole'
 >;
 export type ColumnField = BusinessField | HierarchyField;
 export type ViewRow = BusinessNode & {
@@ -294,6 +296,255 @@ function makeNode(
   };
 }
 
+type BackendAggregateMetrics = Pick<
+  BusinessNode,
+  | 'revenue'
+  | 'productRevenue'
+  | 'serviceRevenue'
+  | 'orders'
+  | 'onlineOrders'
+  | 'offlineOrders'
+  | 'avgOrder'
+  | 'completion'
+  | 'adjustmentFactor'
+>;
+
+// 模拟后端直接返回的产品、子类和区域汇总指标。这里只做 ID 映射，
+// 不根据 children 在浏览器中执行求和、平均值或状态归并。
+const BACKEND_AGGREGATE_METRICS: Record<string, BackendAggregateMetrics> = {
+  furniture: {
+    revenue: 15_099_200,
+    productRevenue: 11_777_376,
+    serviceRevenue: 3_321_824,
+    orders: 2_736,
+    onlineOrders: 1_724,
+    offlineOrders: 1_012,
+    avgOrder: 5_519,
+    completion: 0.927875,
+    adjustmentFactor: 0.88,
+  },
+  'furniture-bookcases': {
+    revenue: 6_018_000,
+    productRevenue: 4_694_040,
+    serviceRevenue: 1_323_960,
+    orders: 1_090,
+    onlineOrders: 687,
+    offlineOrders: 403,
+    avgOrder: 5_521,
+    completion: 0.944,
+    adjustmentFactor: 0.85,
+  },
+  'bookcases-east': {
+    revenue: 3_724_800,
+    productRevenue: 2_905_344,
+    serviceRevenue: 819_456,
+    orders: 646,
+    onlineOrders: 407,
+    offlineOrders: 239,
+    avgOrder: 5_766,
+    completion: 0.9675,
+    adjustmentFactor: 1.06,
+  },
+  'bookcases-central': {
+    revenue: 2_293_200,
+    productRevenue: 1_788_696,
+    serviceRevenue: 504_504,
+    orders: 444,
+    onlineOrders: 280,
+    offlineOrders: 164,
+    avgOrder: 5_165,
+    completion: 0.9205,
+    adjustmentFactor: 0.9,
+  },
+  'furniture-chairs': {
+    revenue: 9_081_200,
+    productRevenue: 7_083_336,
+    serviceRevenue: 1_997_864,
+    orders: 1_646,
+    onlineOrders: 1_037,
+    offlineOrders: 609,
+    avgOrder: 5_517,
+    completion: 0.91175,
+    adjustmentFactor: 0.83,
+  },
+  'chairs-east': {
+    revenue: 4_267_000,
+    productRevenue: 3_328_260,
+    serviceRevenue: 938_740,
+    orders: 728,
+    onlineOrders: 459,
+    offlineOrders: 269,
+    avgOrder: 5_861,
+    completion: 0.919,
+    adjustmentFactor: 0.95,
+  },
+  'chairs-south': {
+    revenue: 4_814_200,
+    productRevenue: 3_755_076,
+    serviceRevenue: 1_059_124,
+    orders: 918,
+    onlineOrders: 578,
+    offlineOrders: 340,
+    avgOrder: 5_244,
+    completion: 0.9045,
+    adjustmentFactor: 0.99,
+  },
+  'office-supplies': {
+    revenue: 11_399_200,
+    productRevenue: 8_891_376,
+    serviceRevenue: 2_507_824,
+    orders: 2_906,
+    onlineOrders: 1_831,
+    offlineOrders: 1_075,
+    avgOrder: 3_923,
+    completion: 0.916625,
+    adjustmentFactor: 1.03,
+  },
+  'office-paper': {
+    revenue: 5_218_000,
+    productRevenue: 4_070_040,
+    serviceRevenue: 1_147_960,
+    orders: 1_450,
+    onlineOrders: 914,
+    offlineOrders: 536,
+    avgOrder: 3_599,
+    completion: 0.9315,
+    adjustmentFactor: 1.04,
+  },
+  'paper-east': {
+    revenue: 2_624_800,
+    productRevenue: 2_047_344,
+    serviceRevenue: 577_456,
+    orders: 786,
+    onlineOrders: 495,
+    offlineOrders: 291,
+    avgOrder: 3_339,
+    completion: 0.9575,
+    adjustmentFactor: 0.91,
+  },
+  'paper-north': {
+    revenue: 2_593_200,
+    productRevenue: 2_022_696,
+    serviceRevenue: 570_504,
+    orders: 664,
+    onlineOrders: 418,
+    offlineOrders: 246,
+    avgOrder: 3_905,
+    completion: 0.9055,
+    adjustmentFactor: 0.93,
+  },
+  'office-storage': {
+    revenue: 6_181_200,
+    productRevenue: 4_821_336,
+    serviceRevenue: 1_359_864,
+    orders: 1_456,
+    onlineOrders: 917,
+    offlineOrders: 539,
+    avgOrder: 4_245,
+    completion: 0.90175,
+    adjustmentFactor: 1.1,
+  },
+  'storage-central': {
+    revenue: 2_767_000,
+    productRevenue: 2_158_260,
+    serviceRevenue: 608_740,
+    orders: 658,
+    onlineOrders: 415,
+    offlineOrders: 243,
+    avgOrder: 4_205,
+    completion: 0.909,
+    adjustmentFactor: 0.87,
+  },
+  'storage-south': {
+    revenue: 3_414_200,
+    productRevenue: 2_663_076,
+    serviceRevenue: 751_124,
+    orders: 798,
+    onlineOrders: 503,
+    offlineOrders: 295,
+    avgOrder: 4_278,
+    completion: 0.8945,
+    adjustmentFactor: 1.03,
+  },
+  technology: {
+    revenue: 34_544_000,
+    productRevenue: 26_944_320,
+    serviceRevenue: 7_599_680,
+    orders: 6_990,
+    onlineOrders: 4_404,
+    offlineOrders: 2_586,
+    avgOrder: 4_942,
+    completion: 0.991,
+    adjustmentFactor: 0.95,
+  },
+  'technology-mobile': {
+    revenue: 16_560_000,
+    productRevenue: 12_916_800,
+    serviceRevenue: 3_643_200,
+    orders: 3_620,
+    onlineOrders: 2_281,
+    offlineOrders: 1_339,
+    avgOrder: 4_575,
+    completion: 0.99675,
+    adjustmentFactor: 1.04,
+  },
+  'mobile-east': {
+    revenue: 8_786_000,
+    productRevenue: 6_853_080,
+    serviceRevenue: 1_932_920,
+    orders: 1_880,
+    onlineOrders: 1_184,
+    offlineOrders: 696,
+    avgOrder: 4_673,
+    completion: 1.0115,
+    adjustmentFactor: 1,
+  },
+  'mobile-north': {
+    revenue: 7_774_000,
+    productRevenue: 6_063_720,
+    serviceRevenue: 1_710_280,
+    orders: 1_740,
+    onlineOrders: 1_096,
+    offlineOrders: 644,
+    avgOrder: 4_468,
+    completion: 0.982,
+    adjustmentFactor: 0.84,
+  },
+  'technology-equipment': {
+    revenue: 17_984_000,
+    productRevenue: 14_027_520,
+    serviceRevenue: 3_956_480,
+    orders: 3_370,
+    onlineOrders: 2_123,
+    offlineOrders: 1_247,
+    avgOrder: 5_336,
+    completion: 0.98525,
+    adjustmentFactor: 1.02,
+  },
+  'equipment-south': {
+    revenue: 11_214_000,
+    productRevenue: 8_746_920,
+    serviceRevenue: 2_467_080,
+    orders: 1_960,
+    onlineOrders: 1_235,
+    offlineOrders: 725,
+    avgOrder: 5_721,
+    completion: 1.023,
+    adjustmentFactor: 0.87,
+  },
+  'equipment-central': {
+    revenue: 6_770_000,
+    productRevenue: 5_280_600,
+    serviceRevenue: 1_489_400,
+    orders: 1_410,
+    onlineOrders: 888,
+    offlineOrders: 522,
+    avgOrder: 4_801,
+    completion: 0.9475,
+    adjustmentFactor: 0.95,
+  },
+};
+
 function makeGroup(
   id: string,
   name: string,
@@ -301,24 +552,22 @@ function makeGroup(
   children: BusinessNode[],
   owner: string,
   status: Status = '已核验',
+  regionSummaries?: BusinessNode[],
 ): BusinessNode {
-  const revenue = children.reduce((sum, child) => sum + child.revenue, 0);
-  const orders = children.reduce((sum, child) => sum + child.orders, 0);
-  const completion =
-    children.reduce((sum, child) => sum + child.completion, 0) /
-    Math.max(children.length, 1);
-  return makeNode(
+  const metrics = BACKEND_AGGREGATE_METRICS[id];
+  if (!metrics) throw new Error(`缺少后端汇总数据：${id}`);
+  return {
     id,
     name,
     hierarchyRole,
-    revenue,
-    orders,
-    completion,
+    ...metrics,
     owner,
     status,
-    '2026-08-21',
+    verified: status === '已核验',
+    updatedAt: new Date('2026-08-21T00:00:00'),
     children,
-  );
+    regionSummaries,
+  };
 }
 
 function makeRegion(
@@ -733,6 +982,23 @@ const technologyEquipment = makeGroup(
   '待复核',
 );
 
+type BackendRegionSummaryInput = Omit<
+  BusinessNode,
+  'updatedAt' | 'children' | 'regionSummaries'
+> & {
+  updatedAt: string;
+  detailIds: string[];
+};
+
+function backendRegionSummary(
+  summary: BackendRegionSummaryInput,
+): BusinessNode {
+  return {
+    ...summary,
+    updatedAt: new Date(`${summary.updatedAt}T00:00:00`),
+  };
+}
+
 export const BUSINESS_DATA = [
   makeGroup(
     'furniture',
@@ -740,6 +1006,71 @@ export const BUSINESS_DATA = [
     'category',
     [furnitureBookcases, furnitureChairs],
     '林嘉',
+    '已核验',
+    [
+      backendRegionSummary({
+        id: 'furniture-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 7_991_800,
+        productRevenue: 6_233_604,
+        serviceRevenue: 1_758_196,
+        orders: 1_374,
+        onlineOrders: 866,
+        offlineOrders: 508,
+        avgOrder: 5_816,
+        completion: 0.9437314497359793,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: [
+          'bookcases-shanghai',
+          'bookcases-jiangsu',
+          'chairs-zhejiang',
+          'chairs-anhui',
+        ],
+      }),
+      backendRegionSummary({
+        id: 'furniture-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 2_293_200,
+        productRevenue: 1_788_696,
+        serviceRevenue: 504_504,
+        orders: 444,
+        onlineOrders: 280,
+        offlineOrders: 164,
+        avgOrder: 5_165,
+        completion: 0.9231251526251527,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 1,
+        detailIds: ['bookcases-hubei', 'bookcases-henan'],
+      }),
+      backendRegionSummary({
+        id: 'furniture-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 4_814_200,
+        productRevenue: 3_755_076,
+        serviceRevenue: 1_059_124,
+        orders: 918,
+        onlineOrders: 578,
+        offlineOrders: 340,
+        avgOrder: 5_244,
+        completion: 0.9130844169332392,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: ['chairs-guangdong', 'chairs-fujian'],
+      }),
+    ],
   ),
   makeGroup(
     'office-supplies',
@@ -748,6 +1079,84 @@ export const BUSINESS_DATA = [
     [officePaper, officeStorage],
     '罗蔚',
     '待复核',
+    [
+      backendRegionSummary({
+        id: 'office-supplies-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 2_624_800,
+        productRevenue: 2_047_344,
+        serviceRevenue: 577_456,
+        orders: 786,
+        onlineOrders: 495,
+        offlineOrders: 291,
+        avgOrder: 3_339,
+        completion: 0.9594224321853093,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.85,
+        detailIds: ['paper-shanghai', 'paper-nanjing'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-north',
+        name: '华北',
+        hierarchyRole: 'region',
+        revenue: 2_593_200,
+        productRevenue: 2_022_696,
+        serviceRevenue: 570_504,
+        orders: 664,
+        onlineOrders: 418,
+        offlineOrders: 246,
+        avgOrder: 3_905,
+        completion: 0.9104629801018047,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.86,
+        detailIds: ['paper-beijing', 'paper-tianjin'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 2_767_000,
+        productRevenue: 2_158_260,
+        serviceRevenue: 608_740,
+        orders: 658,
+        onlineOrders: 415,
+        offlineOrders: 243,
+        avgOrder: 4_205,
+        completion: 0.9111684134441633,
+        owner: '罗蔚',
+        status: '已核验',
+        verified: true,
+        updatedAt: '2026-08-20',
+        adjustmentFactor: 0.83,
+        detailIds: ['storage-wuhan', 'storage-changsha'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 3_414_200,
+        productRevenue: 2_663_076,
+        serviceRevenue: 751_124,
+        orders: 798,
+        onlineOrders: 502,
+        offlineOrders: 296,
+        avgOrder: 4_278,
+        completion: 0.9010980610391892,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.92,
+        detailIds: ['storage-shenzhen', 'storage-xiamen'],
+      }),
+    ],
   ),
   makeGroup(
     'technology',
@@ -756,6 +1165,84 @@ export const BUSINESS_DATA = [
     [technologyMobile, technologyEquipment],
     '程澈',
     '待复核',
+    [
+      backendRegionSummary({
+        id: 'technology-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 8_786_000,
+        productRevenue: 6_853_080,
+        serviceRevenue: 1_932_920,
+        orders: 1_880,
+        onlineOrders: 1_184,
+        offlineOrders: 696,
+        avgOrder: 4_673,
+        completion: 1.0141156385158205,
+        owner: '程澈',
+        status: '已核验',
+        verified: true,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: ['mobile-shanghai', 'mobile-zhejiang'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-north',
+        name: '华北',
+        hierarchyRole: 'region',
+        revenue: 7_774_000,
+        productRevenue: 6_063_720,
+        serviceRevenue: 1_710_280,
+        orders: 1_740,
+        onlineOrders: 1_097,
+        offlineOrders: 643,
+        avgOrder: 4_468,
+        completion: 0.9934751736557756,
+        owner: '程澈',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.82,
+        detailIds: ['mobile-beijing', 'mobile-tianjin'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 11_214_000,
+        productRevenue: 8_746_920,
+        serviceRevenue: 2_467_080,
+        orders: 1_960,
+        onlineOrders: 1_235,
+        offlineOrders: 725,
+        avgOrder: 5_721,
+        completion: 1.0265118601747816,
+        owner: '程澈',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.99,
+        detailIds: ['equipment-shenzhen', 'equipment-guangzhou'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 6_770_000,
+        productRevenue: 5_280_600,
+        serviceRevenue: 1_489_400,
+        orders: 1_410,
+        onlineOrders: 888,
+        offlineOrders: 522,
+        avgOrder: 4_801,
+        completion: 0.9501586410635156,
+        owner: '程澈',
+        status: '异常',
+        verified: false,
+        updatedAt: '2026-08-20',
+        adjustmentFactor: 1.03,
+        detailIds: ['equipment-wuhan', 'equipment-zhengzhou'],
+      }),
+    ],
   ),
 ];
 
@@ -800,7 +1287,10 @@ export function findBusinessNode(
 ): BusinessNode | undefined {
   for (const node of nodes) {
     if (node.id === nodeId) return node;
-    const child = findBusinessNode(node.children ?? [], nodeId);
+    const child = findBusinessNode(
+      [...(node.children ?? []), ...(node.regionSummaries ?? [])],
+      nodeId,
+    );
     if (child) return child;
   }
   return undefined;
@@ -874,6 +1364,7 @@ function getVisibleProducts(
 }
 
 function productRegionSources(product: BusinessNode) {
+  if (product.regionSummaries?.length) return product.regionSummaries;
   const productNodes =
     product.hierarchyRole === 'category'
       ? (product.children ?? []).filter(
@@ -904,35 +1395,22 @@ function normalizedTreeKey(label: string) {
 }
 
 function getRegionRoots(product: BusinessNode) {
-  const groupedRegions = new Map<string, BusinessNode[]>();
-  productRegionSources(product).forEach((region) => {
-    const current = groupedRegions.get(region.name) ?? [];
-    current.push(region);
-    groupedRegions.set(region.name, current);
-  });
-
-  return [...groupedRegions.entries()].map(([label, regions]) => {
-    const groupedDetails = new Map<string, BusinessNode[]>();
-    regions.forEach((region) => {
-      const details = region.children?.length ? region.children : [region];
-      details.forEach((detail) => {
-        const current = groupedDetails.get(detail.name) ?? [];
-        current.push(detail);
-        groupedDetails.set(detail.name, current);
-      });
-    });
-    const rootId = `region:${normalizedTreeKey(label)}`;
+  return productRegionSources(product).map((region) => {
+    const rootId = `region:${normalizedTreeKey(region.name)}`;
+    const details = region.detailIds?.length
+      ? region.detailIds
+          .map((detailId) => findBusinessNode(BUSINESS_DATA, detailId))
+          .filter((detail): detail is BusinessNode => Boolean(detail))
+      : region.children ?? [];
     return {
       id: rootId,
-      label,
-      sourceNodes: [...groupedDetails.values()].flat(),
-      children: [...groupedDetails.entries()].map(
-        ([detailLabel, sourceNodes]) => ({
-          id: `${rootId}:detail:${normalizedTreeKey(detailLabel)}`,
-          label: detailLabel,
-          sourceNodes,
-        }),
-      ),
+      label: region.name,
+      sourceNodes: [region],
+      children: details.map((detail) => ({
+        id: `${rootId}:detail:${normalizedTreeKey(detail.name)}`,
+        label: detail.name,
+        sourceNodes: [detail],
+      })),
     };
   });
 }
@@ -1027,55 +1505,6 @@ function aggregateBusinessNodes(
   };
 }
 
-// 汇总行（区域根行、跨子类合并的明细行等）被视为“后端已经算好并下发”的静态数据：
-// 首次计算时把结果冻结进缓存，此后即使编辑了明细单元格也不会重新求和。
-// 只有真正唯一映射到一条明细叶子的行（sourceNodes.length === 1）才会实时反映编辑结果。
-const aggregateSnapshotCache = new Map<
-  string,
-  ReturnType<typeof aggregateBusinessNodes>
->();
-
-function snapshotKeyForSourceNodes(nodes: readonly BusinessNode[]) {
-  return nodes
-    .map((node) => node.id)
-    .sort()
-    .join('|');
-}
-
-function resolveAggregateSnapshot(
-  sourceNodes: readonly BusinessNode[],
-  fallback: BusinessNode,
-) {
-  if (sourceNodes.length <= 1)
-    return aggregateBusinessNodes(sourceNodes, fallback);
-  const key = snapshotKeyForSourceNodes(sourceNodes);
-  const cached = aggregateSnapshotCache.get(key);
-  if (cached) return cached;
-  const snapshot = aggregateBusinessNodes(sourceNodes, fallback);
-  aggregateSnapshotCache.set(key, snapshot);
-  return snapshot;
-}
-
-// 在任何编辑发生之前，预热所有产品/区域/明细维度的汇总组合，
-// 确保缓存里存的是最初的（模拟后端下发的）数值，不受后续编辑顺序影响。
-function primeAggregateSnapshotCache(nodes: readonly BusinessNode[]) {
-  nodes.forEach((node) => {
-    if (
-      node.hierarchyRole === 'category' ||
-      node.hierarchyRole === 'subcategory'
-    ) {
-      getRegionRoots(node).forEach((root) => {
-        resolveAggregateSnapshot(root.sourceNodes, node);
-        root.children.forEach((detail) =>
-          resolveAggregateSnapshot(detail.sourceNodes, node),
-        );
-      });
-    }
-    if (node.children?.length) primeAggregateSnapshotCache(node.children);
-  });
-}
-primeAggregateSnapshotCache(BUSINESS_DATA);
-
 export function createBusinessProjectionRows(
   view: DrillView,
   productExpanded: ReadonlySet<string>,
@@ -1086,12 +1515,13 @@ export function createBusinessProjectionRows(
       product.node,
       regionExpandedByProduct.get(product.id) ?? new Set<string>(),
     );
-    return regions.map(
-      (region, index): ViewRow => ({
+    return regions.map((region, index): ViewRow => {
+      const backendNode = region.sourceNodes[0] ?? product.node;
+      return {
+        ...backendNode,
         id: `${product.id}::${region.id}`,
         name: `${product.label} / ${region.label}`,
         hierarchyRole: product.isGroup ? 'category' : 'subcategory',
-        ...resolveAggregateSnapshot(region.sourceNodes, product.node),
         children: product.isGroup
           ? product.node.children?.filter(
               (child) => child.hierarchyRole === 'subcategory',
@@ -1115,8 +1545,8 @@ export function createBusinessProjectionRows(
         regionDepth: region.depth,
         regionIsGroup: region.isGroup,
         regionExpanded: region.expanded,
-      }),
-    );
+      };
+    });
   });
 }
 
