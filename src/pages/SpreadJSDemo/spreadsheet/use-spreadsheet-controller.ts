@@ -136,7 +136,7 @@ type VisibleCellChange = {
   fieldLabel: string;
   oldValue: unknown;
   newValue: unknown;
-  kind: '直接修改' | '字段联动' | '汇总联动';
+  kind: '直接修改' | '投影同步';
 };
 
 export type BusinessCellChangePayload = {
@@ -972,9 +972,6 @@ export function useSpreadsheetController(
             stableCellKey(projectionRowId, field),
           ),
         );
-        const directRowIds = new Set(
-          accepted.map(({ projectionRowId }) => projectionRowId),
-        );
         const changes: VisibleCellChange[] = [];
         nextRows.forEach((nextRow, row) => {
           const beforeRow = beforeById.get(nextRow.id);
@@ -995,11 +992,7 @@ export function useSpreadsheetController(
               fieldLabel: column.label,
               oldValue,
               newValue,
-              kind: directKeys.has(key)
-                ? '直接修改'
-                : directRowIds.has(nextRow.id)
-                ? '字段联动'
-                : '汇总联动',
+              kind: directKeys.has(key) ? '直接修改' : '投影同步',
             });
           });
         });
@@ -3085,7 +3078,7 @@ export function useSpreadsheetController(
             );
           }
           if (blockedReadonlyChange)
-            notify('已跳过不可编辑的派生或层级单元格', 'error');
+            notify('已跳过只读或无法映射的单元格', 'error');
           updateSelected(
             sheet.getActiveRowIndex(),
             sheet.getActiveColumnIndex(),
@@ -3304,7 +3297,7 @@ export function useSpreadsheetController(
             if (range) calculateSelection(sheet, range);
           }
           if (blockedReadonlyChange)
-            notify('已跳过不可编辑的派生或层级单元格', 'error');
+            notify('已跳过只读或无法映射的单元格', 'error');
         },
       );
       sheet.bind(

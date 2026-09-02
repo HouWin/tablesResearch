@@ -1,5 +1,4 @@
 import {
-  Calculator,
   CheckCircle2,
   ChevronRight,
   Database,
@@ -189,11 +188,11 @@ export function InspectorPanels({
             </div>
             <div className="tree-connector" />
             <div className="lineage-rule">
-              <Calculator size={16} />
+              <Database size={16} />
               <div>
-                <b>计算规则</b>
-                <span>{lineageDetails.formula}</span>
-                <small>过滤：核验状态 ≠ 异常 · 空值：忽略 · 币种：CNY</small>
+                <b>数据规则</b>
+                <span>{lineageDetails.rule}</span>
+                <small>编辑仅提交当前字段；刷新与最终值以后端响应为准</small>
               </div>
             </div>
             <div className="tree-connector split" />

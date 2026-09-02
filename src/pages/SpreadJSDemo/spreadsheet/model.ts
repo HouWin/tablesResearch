@@ -2432,8 +2432,6 @@ export function getCellEditability(
       editable: false,
       reason: isHierarchyField(column.field)
         ? '层级和属性字段由业务数据源维护'
-        : column.field === 'avgOrder'
-        ? '客单价由净收入 ÷ 订单数自动计算'
         : '后台列配置将该字段设为只读',
       sourceNode: null,
     };
@@ -2510,9 +2508,8 @@ export function updateBusinessNode(
   field: BusinessField,
   value: unknown,
 ) {
-  const updateAverageOrder = () => {
-    node.avgOrder = Math.round(node.revenue / Math.max(node.orders, 1));
-  };
+  // Cross-field consistency belongs to the backend. A client edit only
+  // updates the requested field so a stale local rule cannot overwrite data.
   const parsedNumber =
     typeof value === 'number'
       ? value
@@ -2528,17 +2525,11 @@ export function updateBusinessNode(
       if (typeof value === 'string') node.owner = value;
       break;
     case 'status':
-      if (value === '已核验' || value === '待复核' || value === '异常') {
+      if (value === '已核验' || value === '待复核' || value === '异常')
         node.status = value;
-        node.verified = value === '已核验';
-      }
       break;
     case 'verified':
-      if (typeof value === 'boolean') {
-        node.verified = value;
-        if (value) node.status = '已核验';
-        else if (node.status === '已核验') node.status = '待复核';
-      }
+      if (typeof value === 'boolean') node.verified = value;
       break;
     case 'updatedAt': {
       const nextDate = value instanceof Date ? value : new Date(String(value));
@@ -2546,62 +2537,14 @@ export function updateBusinessNode(
       break;
     }
     case 'revenue':
-      if (finiteNumber !== null) {
-        const previousComponentTotal =
-          node.productRevenue + node.serviceRevenue;
-        const productShare = previousComponentTotal
-          ? node.productRevenue / previousComponentTotal
-          : 0.78;
-        node.revenue = Math.max(0, Math.round(finiteNumber));
-        node.productRevenue = Math.round(node.revenue * productShare);
-        node.serviceRevenue = node.revenue - node.productRevenue;
-        updateAverageOrder();
-      }
-      break;
     case 'productRevenue':
-      if (finiteNumber !== null) {
-        node.productRevenue = Math.max(0, Math.round(finiteNumber));
-        node.revenue = node.productRevenue + node.serviceRevenue;
-        updateAverageOrder();
-      }
-      break;
     case 'serviceRevenue':
-      if (finiteNumber !== null) {
-        node.serviceRevenue = Math.max(0, Math.round(finiteNumber));
-        node.revenue = node.productRevenue + node.serviceRevenue;
-        updateAverageOrder();
-      }
-      break;
     case 'orders':
-      if (finiteNumber !== null) {
-        const previousOrderTotal = node.onlineOrders + node.offlineOrders;
-        const onlineShare = previousOrderTotal
-          ? node.onlineOrders / previousOrderTotal
-          : 0.63;
-        node.orders = Math.max(0, Math.round(finiteNumber));
-        node.onlineOrders = Math.round(node.orders * onlineShare);
-        node.offlineOrders = node.orders - node.onlineOrders;
-        updateAverageOrder();
-      }
-      break;
     case 'onlineOrders':
-      if (finiteNumber !== null) {
-        node.onlineOrders = Math.max(0, Math.round(finiteNumber));
-        node.orders = node.onlineOrders + node.offlineOrders;
-        updateAverageOrder();
-      }
-      break;
     case 'offlineOrders':
-      if (finiteNumber !== null) {
-        node.offlineOrders = Math.max(0, Math.round(finiteNumber));
-        node.orders = node.onlineOrders + node.offlineOrders;
-        updateAverageOrder();
-      }
-      break;
     case 'avgOrder':
-      // Derived field. Kept in the switch so programmatic callers cannot
-      // accidentally break the revenue/order relationship.
-      updateAverageOrder();
+      if (finiteNumber !== null)
+        node[field] = Math.max(0, Math.round(finiteNumber));
       break;
     case 'completion':
     case 'adjustmentFactor':
