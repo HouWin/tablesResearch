@@ -11,6 +11,8 @@
  */
 import { VerticalAlign } from '@univerjs/core';
 import { applyColumnTypes } from './columnTypes';
+import type { ETableCellToneContext } from './cellTone';
+import { buildRowSheetValues } from './cellTone';
 import {
   applyProjectedMerges,
   breakRemovedProjectedMerges,
@@ -65,40 +67,12 @@ const collectGroups = (groups: ETableRowGroup[]): ETableRowGroup[] => {
   return result;
 };
 
-const toRowValues = (row: ETableRow, leafColumns: ETableColumn[]) => {
-  const bgStyle = row.style?.bg
-    ? {
-        bg: {
-          rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
-        },
-      }
-    : null;
-
-  return leafColumns.map((column) => {
-    const cell = row.data?.[column.id];
-    if (cell !== null && typeof cell === 'object') {
-      const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
-      if (styledCell.style || bgStyle) {
-        return {
-          v: styledCell.value ?? null,
-          s: {
-            ...(bgStyle || {}),
-            ...(styledCell.style || {}),
-            bg: (styledCell.style as any)?.bg || bgStyle?.bg,
-          },
-        };
-      }
-      return styledCell.value ?? null;
-    }
-    if (bgStyle) {
-      return {
-        v: cell ?? null,
-        s: bgStyle,
-      };
-    }
-    return cell ?? null;
-  });
-};
+const toRowValues = (
+  row: ETableRow,
+  logicalRow: number,
+  leafColumns: ETableColumn[],
+  cellTone: ETableCellToneContext | null,
+) => buildRowSheetValues(row, logicalRow, leafColumns, cellTone);
 
 const buildHiddenMask = (
   totalRows: number,
@@ -152,6 +126,7 @@ export interface ETableTreeViewportOptions {
   windowSize?: number;
   merges?: ETableMerge[];
   skipMerges?: boolean;
+  cellTone?: ETableCellToneContext | null;
   onProjected?: (stats: TreeViewportStats) => void;
 }
 
@@ -202,6 +177,7 @@ export const setupTreeViewport = (
 
   const defaultRowHeight = options?.defaultRowHeight ?? 30;
   const windowSize = options?.windowSize ?? TREE_VIEWPORT_WINDOW_SIZE;
+  const cellTone = options?.cellTone ?? null;
   const sheetMerges = options?.merges ?? [];
   const mergesByAnchorRow = sheetMerges.length
     ? buildMergeIndexByAnchorRow(sheetMerges)
@@ -290,40 +266,91 @@ export const setupTreeViewport = (
     }
   };
 
-  const ensureLogicalRowInWindow = (logicalRow: number) => {
-    const index = visibleLogicalRows.indexOf(logicalRow);
-    if (index < 0) {
+  /** 记录折叠/展开前某逻辑行在投影窗口中的槽位，用于 reproject 后恢复视口 */
+  const captureViewportAnchor = (logicalRow: number) => {
+    const projectedSlot = projectedToLogical.indexOf(logicalRow);
+    if (projectedSlot >= 0) {
+      return { logicalRow, projectedSlot };
+    }
+    const visibleIndex = visibleLogicalRows.indexOf(logicalRow);
+    if (visibleIndex >= 0) {
+      return { logicalRow, projectedSlot: visibleIndex - windowOffset };
+    }
+    const topLogical = projectedToLogical[0];
+    if (topLogical !== undefined) {
+      return { logicalRow: topLogical, projectedSlot: 0 };
+    }
+    return null;
+  };
+
+  const restoreViewportAnchor = (
+    anchor: { logicalRow: number; projectedSlot: number } | null,
+  ) => {
+    if (!anchor) {
       return;
     }
-    if (index < windowOffset) {
-      windowOffset = index;
+    const newIndex = visibleLogicalRows.indexOf(anchor.logicalRow);
+    if (newIndex < 0) {
       return;
     }
-    if (index >= windowOffset + windowSize) {
-      windowOffset = Math.max(0, index - windowSize + 1);
+    const maxOffset = Math.max(0, visibleLogicalRows.length - windowSize);
+    windowOffset = Math.max(
+      0,
+      Math.min(newIndex - anchor.projectedSlot, maxOffset),
+    );
+  };
+
+  const captureTopViewportAnchor = () => {
+    const topLogical = projectedToLogical[0];
+    if (topLogical === undefined) {
+      return null;
     }
+    return { logicalRow: topLogical, projectedSlot: 0 };
   };
 
   const collectMergesForSlice = (slice: number[]) => {
-    if (!mergesByAnchorRow.size || !slice.length) {
+    if (!sheetMerges.length || !slice.length) {
       return [] as ETableMerge[];
     }
+    let sliceMin = slice[0];
+    let sliceMax = slice[0];
+    for (let i = 1; i < slice.length; i += 1) {
+      if (slice[i] < sliceMin) {
+        sliceMin = slice[i];
+      }
+      if (slice[i] > sliceMax) {
+        sliceMax = slice[i];
+      }
+    }
+
     const relevant: ETableMerge[] = [];
     const seen = new Set<string>();
-    for (let i = 0; i < slice.length; i += 1) {
-      const anchored = mergesByAnchorRow.get(slice[i]);
-      if (!anchored?.length) {
-        continue;
+    const addMerge = (merge: ETableMerge) => {
+      if (merge.rowSpan <= 1) {
+        return;
       }
-      anchored.forEach((merge) => {
-        const key = `${merge.row}:${merge.column}`;
-        if (seen.has(key)) {
-          return;
-        }
-        seen.add(key);
-        relevant.push(merge);
-      });
+      const key = `${merge.row}:${merge.column}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      relevant.push(merge);
+    };
+
+    for (let i = 0; i < slice.length; i += 1) {
+      mergesByAnchorRow.get(slice[i])?.forEach(addMerge);
     }
+
+    sheetMerges.forEach((merge) => {
+      if (merge.row >= sliceMin) {
+        return;
+      }
+      const mergeEnd = merge.row + merge.rowSpan;
+      if (mergeEnd > sliceMin) {
+        addMerge(merge);
+      }
+    });
+
     return relevant;
   };
 
@@ -355,7 +382,15 @@ export const setupTreeViewport = (
     rowToggles.forEach((toggle) => {
       const collapsed = Boolean(collapsedState.get(toggle.groupId));
       const text = collapsed ? toggle.collapsedText : toggle.expandedText;
-      next[toggle.column] = { v: text, s: { bl: 1 } };
+      const existing = next[toggle.column];
+      const existingStyle =
+        existing !== null && typeof existing === 'object' && 's' in existing
+          ? (existing as { s?: Record<string, unknown> }).s
+          : undefined;
+      next[toggle.column] = {
+        v: text,
+        s: { ...(existingStyle || {}), bl: 1 },
+      } as (typeof next)[number];
     });
     return next;
   };
@@ -472,7 +507,10 @@ export const setupTreeViewport = (
 
   const writeProjectedRow = (projectedIndex: number, logicalRow: number) => {
     const values = [
-      patchToggleLabels(logicalRow, toRowValues(rows[logicalRow], leafColumns)),
+      patchToggleLabels(
+        logicalRow,
+        toRowValues(rows[logicalRow], logicalRow, leafColumns, cellTone),
+      ),
     ];
     worksheet
       .getRange(dataStartRow + projectedIndex, 0, 1, leafColumns.length)
@@ -501,6 +539,7 @@ export const setupTreeViewport = (
   const reproject = (scrollOptions?: {
     scrollRow?: number;
     preserveScroll?: boolean;
+    forceRewrite?: boolean;
   }) => {
     if (disposed) {
       return;
@@ -529,9 +568,10 @@ export const setupTreeViewport = (
     rebuildProjectedToggleIndex();
 
     if (slice.length) {
+      const forceRewrite = scrollOptions?.forceRewrite ?? false;
       for (let i = 0; i < slice.length; i += 1) {
         const logicalRow = slice[i];
-        if (i < prevSlice.length && prevSlice[i] === logicalRow) {
+        if (!forceRewrite && i < prevSlice.length && prevSlice[i] === logicalRow) {
           patchProjectedToggleLabels(i, logicalRow);
           continue;
         }
@@ -605,10 +645,19 @@ export const setupTreeViewport = (
   const refresh = (scrollOptions?: {
     scrollRow?: number;
     preserveScroll?: boolean;
+    viewportAnchor?: { logicalRow: number; projectedSlot: number } | null;
+    forceRewrite?: boolean;
   }) => {
     scrollAdjustLock = true;
     recomputeVisible();
-    reproject(scrollOptions);
+    if (scrollOptions?.viewportAnchor) {
+      restoreViewportAnchor(scrollOptions.viewportAnchor);
+    }
+    reproject({
+      scrollRow: scrollOptions?.scrollRow,
+      preserveScroll: scrollOptions?.preserveScroll ?? scrollOptions?.scrollRow === undefined,
+      forceRewrite: scrollOptions?.forceRewrite,
+    });
     window.setTimeout(() => {
       scrollAdjustLock = false;
     }, 64);
@@ -644,16 +693,12 @@ export const setupTreeViewport = (
     if (!toggle) {
       return;
     }
+    const viewportAnchor = captureViewportAnchor(toggle.row);
     collapsedState.set(groupId, collapsed);
     if (toggle.kind === 'category' && collapsed) {
       syncCategoryRegionCollapsedState(groupId, true);
     }
-    if (toggle.kind === 'category') {
-      ensureLogicalRowInWindow(toggle.row);
-    } else if (toggle.kind === 'region') {
-      ensureLogicalRowInWindow(toggle.row);
-    }
-    refresh();
+    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
   };
 
   const toggleGroup = (groupId: string) => {
@@ -806,6 +851,7 @@ export const setupTreeViewport = (
       });
 
   const expandAll = () => {
+    const viewportAnchor = captureTopViewportAnchor();
     categoryToggles.forEach((toggle) => {
       collapsedState.set(toggle.groupId, false);
     });
@@ -814,15 +860,16 @@ export const setupTreeViewport = (
         collapsedState.set(toggle.groupId, false);
       }
     });
-    refresh({ preserveScroll: true });
+    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
   };
 
   const collapseAll = () => {
+    const viewportAnchor = captureTopViewportAnchor();
     categoryToggles.forEach((toggle) => {
       collapsedState.set(toggle.groupId, true);
       syncCategoryRegionCollapsedState(toggle.groupId, true);
     });
-    refresh({ preserveScroll: true });
+    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
   };
 
   const resolveToggleHit = (

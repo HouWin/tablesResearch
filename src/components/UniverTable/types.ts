@@ -1,8 +1,10 @@
 import type { VirtualRenderStats } from './virtualRender';
 import type { TreeViewportStats } from './treeViewport';
+import type { ETableCellToneOptions } from './cellTone';
 
 export type { VirtualRenderStats } from './virtualRender';
 export type { TreeViewportStats } from './treeViewport';
+export type { ETableCellToneOptions } from './cellTone';
 
 export type ETablePrimitive = string | number | boolean | null | undefined;
 
@@ -193,6 +195,12 @@ export interface ETableOptions {
    * - ≥5000 行：视口按页懒写入，滚动/选区时再补页
    */
   virtualScroll?: boolean;
+  /**
+   * 只读 / 可编辑单元格背景色（treeUI 默认开启）。
+   * - false：关闭，回退 row.style.bg / rowBackgrounds
+   * - 对象：自定义 readonlyBackground / editableBackground
+   */
+  cellTone?: boolean | ETableCellToneOptions;
 }
 
 /**
@@ -526,6 +534,20 @@ export interface ETableDimensionInfo {
   value?: ETablePrimitive;
 }
 
+/** getCellDimensions() 返回的单元格维度信息 */
+export type ETableCellDimensionsResult = {
+  success: boolean;
+  cell?: string;
+  field?: string;
+  sheetRow?: number;
+  column?: number;
+  dataRow?: number;
+  logicalRow?: number;
+  rowDimensions?: ETableDimensionInfo[];
+  columnDimensions?: ETableDimensionInfo[];
+  rowPath?: string[];
+};
+
 /**
  * 单元格变更记录（历史 / 数据追踪）。
  */
@@ -838,4 +860,10 @@ export interface ETableRef {
     locator: ETableRowLocator,
     options?: ETableGetRowValueOptions,
   ): ETableGetRowValueResult;
+  /**
+   * 读取指定单元格的行列维度。
+   * - 支持 'D7'、{ sheetRow, column }、{ dataRow, field }
+   * - 树形/分组模式返回 rowDimensions / columnDimensions；直接 rows 模式可能为空
+   */
+  getCellDimensions(locator: ETableCellLocator): ETableCellDimensionsResult;
 }

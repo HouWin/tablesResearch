@@ -7,7 +7,8 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
-import { enrichCellChangeRecord } from './cellChangeContext';
+import { enrichCellChangeRecord, resolveCellDimensions } from './cellChangeContext';
+import { resolveReadonlyLayout } from './cellTone';
 import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights } from './renderer';
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
@@ -63,6 +64,7 @@ import type {
   ETableAttachmentFile,
   ETableCell,
   ETableCellLocator,
+  ETableCellDimensionsResult,
   ETableColumn,
   ETableDataTraceNode,
   ETableExportData,
@@ -71,6 +73,7 @@ import type {
   ETableGetCellValueResult,
   ETableGetRowValueOptions,
   ETableGetRowValueResult,
+  ETableOptions,
   ETablePrimitive,
   ETableProps,
   ETableRef,
@@ -270,6 +273,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     // 扩展选项：是否启用自定义右键菜单
     enableContextMenu = true,
   } = options as any;
+  const cellToneOption = (options as ETableOptions).cellTone;
 
   // --------------------------------------------------------------------------
   // 实例 Ref：贯穿初始化与对外 API，保存 Univer 与各子模块句柄
@@ -781,6 +785,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         options,
       });
     },
+    getCellDimensions(locator: ETableCellLocator): ETableCellDimensionsResult {
+      return resolveCellDimensions(locator, {
+        headerDepth: headerDepthRef.current,
+        columns: columnsRef.current,
+        leafColumns: leafColumnsRef.current,
+        rows: rowsRef.current,
+        treeConfig: treeConfigRef.current,
+        groupConfig: groupConfigRef.current,
+        getLogicalDataRow: (dataRow) =>
+          logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+        getRowPath: (logicalRow) =>
+          treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
+      });
+    },
   }), []);
 
   // --------------------------------------------------------------------------
@@ -939,6 +957,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     let disposeContextMenuBlock: (() => void) | undefined;
 
     const finishInit = async () => {
+      const readonlyLayout = resolveReadonlyLayout({
+        leafColumns,
+        rows,
+        treeUI,
+        treeConfig,
+        cellTone: cellToneOption,
+      });
+      const {
+        cellTone,
+        readonlyColumns,
+        editableOnReadonlyRowColumns,
+        readonlyDataRows: layoutReadonlyDataRows,
+      } = readonlyLayout;
+
       // ------ 6. 数据写入（四选一渲染路径）------
       if (useTreeViewport) {
         // 数据由 setupTreeViewport 按可见窗口写入，跳过全量 setValues
@@ -950,6 +982,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           leafColumns,
           dataStartRow: maxDepth,
           defaultRowHeight,
+          cellTone,
         });
         virtualLoaderRef.current = virtualLoader;
         disposeVirtualLoader = () => {
@@ -959,24 +992,21 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         renderData(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipWrite: true,
+          cellTone,
         });
       } else if (isAsyncRender) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipRowBackgrounds: Boolean(treeConfig?.liteMode) || isLargeData,
+          cellTone,
         });
       } else {
-        renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+        renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll, cellTone });
       }
       if (cancelled) {
         return;
       }
-      const readonlyDataRows: number[] = [];
-      for (let index = 0; index < rows.length; index += 1) {
-        if (rows[index].readonly) {
-          readonlyDataRows.push(index);
-        }
-      }
+      const readonlyDataRows = layoutReadonlyDataRows;
       // 6.5 列类型：懒虚拟按页写入；树视口在投影时写入；其余路径一次性应用
       if (!useLazyVirtual && !useTreeViewport) {
         applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
@@ -1034,6 +1064,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
             defaultRowHeight,
             merges,
             skipMerges: Boolean(treeConfig?.skipMerges) || lazyLiteMerges,
+            cellTone,
             onProjected: (stats) => {
               treeViewportStats = stats;
               treeViewportStatsRef.current = stats;
@@ -1083,30 +1114,6 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         createRowOutlines(worksheet, rowGroups, maxDepth);
       }
       // ------ 9.5 只读区域：表头 + 维度列 + 汇总行（BeforeSheetEditStart 拦截）------
-      const readonlyColumnSet = new Set(
-        leafColumns
-          .map((column, index) => (column.editable === false ? index : -1))
-          .filter((index) => index >= 0),
-      );
-      // treeUI 默认锁定 dimensions + attribute 对应列（列配置 editable: true 时除外）
-      if (treeUI && treeConfig) {
-        const lockFields = new Set([
-          ...treeConfig.dimensions.map((item) => item.field),
-          ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
-        ]);
-        leafColumns.forEach((column, index) => {
-          if (lockFields.has(column.id) && column.editable !== true) {
-            readonlyColumnSet.add(index);
-          }
-        });
-      }
-      const dimensionFieldSet = new Set(treeConfig?.dimensions.map((item) => item.field) ?? []);
-      const editableOnReadonlyRowColumns = leafColumns
-        .map((column, index) =>
-          column.editable === true && dimensionFieldSet.has(column.id) ? index : -1,
-        )
-        .filter((index) => index >= 0);
-      const readonlyColumns = [...readonlyColumnSet];
       disposeReadonly = setupReadonlyCells(univerAPI, {
         headerRowCount: maxDepth,
         readonlyColumns,
@@ -1391,6 +1398,7 @@ export type {
   ETableAttachmentFile,
   ETableComment,
   ETableCellChangeRecord,
+  ETableCellDimensionsResult,
   ETableDimensionInfo,
   ETableCellLocator,
   ETableDataTraceNode,

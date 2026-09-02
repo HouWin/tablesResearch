@@ -1,6 +1,8 @@
 import type {
   ETableCell,
   ETableCellChangeRecord,
+  ETableCellDimensionsResult,
+  ETableCellLocator,
   ETableColumn,
   ETableDimensionInfo,
   ETableGroupConfig,
@@ -8,6 +10,7 @@ import type {
   ETableRow,
   ETableTreeConfig,
 } from './types';
+import { resolveCellLocator } from './cellValue';
 
 export type { ETableDimensionInfo } from './types';
 
@@ -202,6 +205,54 @@ export const resolveRowDimensions = (
   }
 
   return result;
+};
+
+/** 按单元格定位解析行列维度（与 onCellChange 中 enrich 逻辑一致）。 */
+export const resolveCellDimensions = (
+  locator: ETableCellLocator,
+  context: ETableEnrichCellChangeContext,
+): ETableCellDimensionsResult => {
+  const {
+    headerDepth,
+    columns,
+    leafColumns,
+    rows,
+    treeConfig,
+    groupConfig,
+    getLogicalDataRow,
+    getRowPath,
+  } = context;
+
+  const target = resolveCellLocator(locator, leafColumns, headerDepth);
+  if (!target || target.dataRow < 0 || target.dataRow >= rows.length) {
+    return { success: false };
+  }
+
+  const logicalRow = getLogicalDataRow?.(target.dataRow) ?? target.dataRow;
+  const row =
+    logicalRow >= 0 && logicalRow < rows.length ? rows[logicalRow] : undefined;
+  const rowPath = logicalRow >= 0 ? getRowPath?.(logicalRow) ?? [] : [];
+
+  const rowDimensions = resolveRowDimensions(
+    row,
+    treeConfig,
+    groupConfig,
+    rowPath.length ? rowPath : undefined,
+  );
+  const columnDimensions = resolveColumnDimensionPath(columns, target.column);
+
+  return {
+    success: true,
+    cell: target.cell,
+    field: target.field,
+    sheetRow: target.sheetRow,
+    column: target.column,
+    dataRow: target.dataRow,
+    logicalRow: logicalRow >= 0 ? logicalRow : undefined,
+    rowDimensions: rowDimensions.length ? rowDimensions : undefined,
+    columnDimensions: columnDimensions.length ? columnDimensions : undefined,
+    rowPath: rowPath.length ? rowPath : undefined,
+  };
 };
 
 /** 为单元格变更记录补充 field、行列维度与逻辑行信息。 */

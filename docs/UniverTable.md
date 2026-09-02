@@ -833,8 +833,36 @@ getRowValue(3, { preferWorksheet: false }); // 强制读内存 rows
 |-----|------|
 | `getCellValue` | 单格 |
 | `getRowValue` | 一行 |
+| `getCellDimensions` | 单格行列维度 |
 | `getTableData` | 全表（展平行） |
 | `getTreeData` | 树形源数据（含编辑） |
+
+#### 1.3.9.1 读取单元格行列维度 `getCellDimensions`
+
+与 `onCellChange` 中 `rowDimensions` / `columnDimensions` 解析逻辑一致，可在任意时刻按单元格定位查询。
+
+```ts
+const dims = tableRef.current?.getCellDimensions('D6');
+// 或 getCellDimensions({ dataRow: 3, field: 'revenue' })
+// 或 getCellDimensions({ sheetRow: 5, column: 3 })
+
+if (dims?.success) {
+  dims.field;              // 'revenue'
+  dims.rowDimensions;      // [{ field: 'category', title: '品类', value: '家具' }, ...]
+  dims.columnDimensions;   // [{ field: 'core-metrics', title: '核心经营指标' }, ...]
+  dims.rowPath;            // ['家具', '华东', '华东', '上海']
+  dims.logicalRow;         // 逻辑行下标
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `rowDimensions` | 行维度 field / title / value（树形/分组模式） |
+| `columnDimensions` | 列维度多级表头路径 |
+| `rowPath` | 树分组面包屑 |
+| `success: false` | 定位无效或超出数据区 |
+
+直接 `rows` 模式（无 `treeConfig` / `groupConfig`）时 `rowDimensions` 通常为空；`columnDimensions` 仍可从 `columns` 解析。
 
 #### 1.3.10 获取树形源数据 `getTreeData`
 
@@ -1413,6 +1441,7 @@ attachments: [{
 | `setRowValue(locator, data, options?)` | **程序化更新一行**（见 §1.3.8） |
 | `getCellValue(locator, options?)` | **读取单格当前值**（见 §1.3.9） |
 | `getRowValue(locator, options?)` | **读取一行当前值**（见 §1.3.9） |
+| `getCellDimensions(locator)` | **读取单格行列维度**（见 §1.3.9.1） |
 | `getVirtualRenderStats` / `getTreeViewportStats` | 性能状态 |
 
 ### 7.3 数据获取示例
@@ -1555,7 +1584,7 @@ onUploadAttachment={async (file, cell) => ({
 
 - `setupCellHistory()`：监听编辑、粘贴，写入 `ETableCellChangeRecord`
 - `enrichCellChangeRecord()`（`cellChangeContext.ts`）：在 `onCellChange` 回调前补充 `field`、`dataRow`、`logicalRow`、`rowDimensions`、`columnDimensions`、`rowPath`
-- 工具函数：`resolveColumnDimensionPath()`、`resolveRowDimensions()` 可单独用于测试或自定义 enrich
+- `resolveCellDimensions()` / `resolveColumnDimensionPath()` / `resolveRowDimensions()`：维度解析（`getCellDimensions` / `onCellChange` 共用）
 - 右键「查看单元格历史」→ `onViewCellHistory`
 - 右键「数据追踪」→ `onViewDataTrace`（`getDataTrace()` 构建简化血缘树）
 - 演示页右侧 Drawer 展示 `tracks` 与 `traceTree`

@@ -244,15 +244,8 @@ export const flattenTreeData = (
   const treeToggles: ETableTreeToggleBinding[] = [];
   const labelMode = config.labelMode ?? 'single';
   const treeUI = Boolean(config.treeUI);
-  const DEFAULT_ROW_BACKGROUNDS = ['#E8F3FF', '#F5FAFF', '#FFFFFF'];
-  const rowBackgrounds =
-    config.rowBackgrounds?.length
-      ? config.rowBackgrounds
-      : treeUI
-        ? DEFAULT_ROW_BACKGROUNDS
-        : [];
-  const regionDetailBackground =
-    config.regionDetailBackground ?? (treeUI ? '#FAFBFC' : undefined);
+  const rowBackgrounds = config.rowBackgrounds?.length ? config.rowBackgrounds : [];
+  const regionDetailBackground = config.regionDetailBackground;
 
   const isNodeCollapsed = (node: ETableTreeNode) =>
     node.collapsed ?? config.defaultCollapsed ?? true;

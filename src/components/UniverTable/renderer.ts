@@ -11,6 +11,8 @@ import { VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
 import { ASYNC_RENDER_ROW_THRESHOLD } from './treeDataGenerator';
 import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
+import type { ETableCellToneContext } from './cellTone';
+import { buildRowSheetValues } from './cellTone';
 
 /**
  * =========================================================
@@ -262,7 +264,12 @@ export const renderData = (
   rows: ETableRow[] = [],
   leafColumns: ETableColumn[] = [],
   startRow: number,
-  options?: { virtualScroll?: boolean; chunkSize?: number; skipWrite?: boolean },
+  options?: {
+    virtualScroll?: boolean;
+    chunkSize?: number;
+    skipWrite?: boolean;
+    cellTone?: ETableCellToneContext | null;
+  },
 ): number => {
   // 如果工作表不存在，或者没有数据，或者没有叶子列，则直接返回
   if (!worksheet || !rows.length || !leafColumns.length) {
@@ -287,17 +294,16 @@ export const renderData = (
 
   // 如果使用单次写入，则直接写入
   if (useSingleWrite) {
-    // 构建行值
-    const values = buildRowValues(rows, leafColumns);
-    // 写入行值
+    const values = buildRowValues(rows, leafColumns, { cellTone: options?.cellTone });
     worksheet.getRange(startRow, 0, values.length, leafColumns.length).setValues(values);
   } else {
-    // 分片写入
     for (let offset = 0; offset < rows.length; offset += chunkSize) {
-      // 计算分片大小
       const limit = Math.min(chunkSize, rows.length - offset);
-      // 构建行值
-      const values = buildRowValues(rows, leafColumns, { offset, limit });
+      const values = buildRowValues(rows, leafColumns, {
+        offset,
+        limit,
+        cellTone: options?.cellTone,
+      });
       // 分片写入
       worksheet.getRange(startRow + offset, 0, values.length, leafColumns.length).setValues(values);
     }
@@ -319,9 +325,14 @@ export const renderData = (
 const buildRowValues = (
   rows: ETableRow[],
   leafColumns: ETableColumn[],
-  options?: { skipRowBackgrounds?: boolean; offset?: number; limit?: number },
+  options?: {
+    skipRowBackgrounds?: boolean;
+    offset?: number;
+    limit?: number;
+    cellTone?: ETableCellToneContext | null;
+  },
 ) => {
-  // 是否跳过行背景
+  const cellTone = options?.cellTone ?? null;
   const skipRowBackgrounds = options?.skipRowBackgrounds ?? false;
   // 偏移量
   const offset = options?.offset ?? 0;
@@ -337,11 +348,18 @@ const buildRowValues = (
   const colIds = new Array<string>(colCount);
   // 遍历列
   for (let c = 0; c < colCount; c += 1) {
-    // 设置列ID
     colIds[c] = leafColumns[c].id;
   }
 
-  // 如果跳过行背景，则创建矩阵
+  if (cellTone) {
+    const matrix = new Array(rowCount);
+    for (let r = 0; r < rowCount; r += 1) {
+      const dataRow = offset + r;
+      matrix[r] = buildRowSheetValues(rows[dataRow], dataRow, leafColumns, cellTone);
+    }
+    return matrix;
+  }
+
   if (skipRowBackgrounds) {
     // 创建矩阵
     const matrix = new Array(rowCount);
@@ -461,6 +479,7 @@ export const renderDataAsync = async (
     virtualScroll?: boolean;
     chunkSize?: number;
     skipRowBackgrounds?: boolean;
+    cellTone?: ETableCellToneContext | null;
   },
 ): Promise<void> => {
   // 如果工作表不存在，或者没有数据，或者没有叶子列，或者数据开始行小于0，则直接返回
@@ -473,9 +492,12 @@ export const renderDataAsync = async (
   // 计算分片大小
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
   // 创建值选项
+  const cellTone = options?.cellTone ?? null;
   const valueOptions = {
-    // 是否跳过行背景
-    skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000,
+    skipRowBackgrounds: cellTone
+      ? false
+      : options?.skipRowBackgrounds ?? rows.length > 2000,
+    cellTone,
   };
   // 是否在分片之间让出主线程
   const yieldBetweenChunks = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
@@ -762,6 +784,26 @@ export const reapplyMergesForRowSpan = (
   });
 };
 
+/** 按数据区半开区间 [rangeStart, rangeEnd) 重新应用相交的纵向 merge */
+export const reapplyMergesInDataRange = (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[],
+  dataStartRow: number,
+  rangeStart: number,
+  rangeEnd: number,
+) => {
+  if (rangeEnd <= rangeStart) {
+    return;
+  }
+  reapplyMergesForRowSpan(
+    worksheet,
+    merges,
+    dataStartRow,
+    rangeStart,
+    rangeEnd - rangeStart,
+  );
+};
+
 /**
  * 视口投影：将逻辑行 merge 映射到当前窗口内的物理行，并垂直居中。
  */
@@ -985,60 +1027,31 @@ export const applyProjectedMerges = (
 
   // 遍历计划
   planned.forEach((projectedRange) => {
-    // 获取逻辑键
     const logicalKey = logicalMergeSignature(projectedRange);
-    // 获取前一个合并
     const prevMerge = prevByLogical.get(logicalKey);
 
-    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
-    if (
-      prevMerge &&
-      prevMerge.row === projectedRange.row &&
-      prevMerge.column === projectedRange.column &&
-      prevMerge.rowSpan === projectedRange.rowSpan &&
-      prevMerge.columnSpan === projectedRange.columnSpan
-    ) {
-      // 添加应用
-      applied.push(projectedRange);
-      return;
-    }
-
-    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
+    // 折叠/展开后物理 merge 可能已失效，不能仅凭 metadata 跳过重建
     if (prevMerge) {
-      const alreadyAtTarget =
-        prevMerge.row === projectedRange.row &&
-        prevMerge.column === projectedRange.column &&
-        prevMerge.rowSpan === projectedRange.rowSpan &&
-        prevMerge.columnSpan === projectedRange.columnSpan;
-      if (!alreadyAtTarget) {
-        // 拆分合并
-        breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
-      }
+      breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
     }
 
-    // 获取源合并
     const sourceMerge = merges.find(
       (merge) =>
         merge.row === projectedRange.logicalRow &&
         merge.column === projectedRange.column,
     );
-    // 如果源合并不存在，则直接返回
     if (!sourceMerge) {
       return;
     }
 
-    // 创建投影合并
     const projectedMerge: ETableMerge = {
       ...sourceMerge,
       row: projectedRange.row,
     };
 
     try {
-      // 应用合并
       applyMerge(worksheet, projectedMerge, dataStartRow, { preserveValue: true });
-      // 添加应用
       applied.push(projectedRange);
-      // 警告投影合并失败
     } catch (error) {
       console.warn('[ETable] projected merge failed', { merge: projectedMerge, error });
     }

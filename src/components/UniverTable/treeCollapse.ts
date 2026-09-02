@@ -9,7 +9,13 @@
  * 行数 ≥ 5000 时由 treeViewport.ts 接管（视口投影，不再全表 hideRows）。
  */
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
-import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
+
+const scheduleMergeReapply = (task: () => void) => {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(task);
+  });
+};
+import { reapplyMergesForRowSpan, reapplyMergesInDataRange } from './renderer';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
 
 const LARGE_TOGGLE_COUNT = 200;
@@ -231,7 +237,7 @@ const setRowsCollapsed = (
           mergeFix.afterReapply?.();
         };
         if (rowOptions?.deferMergeFix) {
-          requestAnimationFrame(runMergeFix);
+          scheduleMergeReapply(runMergeFix);
         } else {
           runMergeFix();
         }
@@ -391,19 +397,14 @@ export const setupTreeCellCollapse = (
   const useBatchToggle = toggles.length >= LARGE_TOGGLE_COUNT;
   const merges = options?.merges ?? [];
   const skipMergeFix = options?.skipMergeFix ?? !merges.length;
-  const mergesByAnchorRow = skipMergeFix ? new Map() : buildMergeIndexByAnchorRow(merges);
   const ensureDataRows = options?.ensureDataRows;
 
   const mergeFixForRegion = (anchorRow: number, group: Pick<ETableRowGroup, 'count'>) => {
     if (skipMergeFix) {
       return undefined;
     }
-    const relevant = mergesByAnchorRow.get(anchorRow);
-    if (!relevant?.length) {
-      return undefined;
-    }
     return {
-      merges: relevant,
+      merges,
       anchorRow,
       afterReapply: () => {
         const categoryToggle = togglesByRow.get(anchorRow)?.find(
@@ -417,6 +418,37 @@ export const setupTreeCellCollapse = (
         }
       },
     };
+  };
+
+  const reapplyMergesForToggle = (toggle: ETableTreeToggleBinding) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    const group = groupMap.get(toggle.groupId);
+    if (!group) {
+      return;
+    }
+    const rangeStart = toggle.row;
+    const rangeEnd = toggle.row + 1 + group.count;
+    scheduleMergeReapply(() => {
+      reapplyMergesInDataRange(worksheet, merges, dataStartRow, rangeStart, rangeEnd);
+    });
+  };
+
+  const reapplyMergesForCategory = (categoryGroupId: string) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    const categoryToggle = toggleByGroupId.get(categoryGroupId);
+    const categoryGroup = groupMap.get(categoryGroupId);
+    if (!categoryToggle || !categoryGroup?.count) {
+      return;
+    }
+    const rangeStart = categoryToggle.row;
+    const rangeEnd = categoryGroup.startRow + categoryGroup.count;
+    scheduleMergeReapply(() => {
+      reapplyMergesInDataRange(worksheet, merges, dataStartRow, rangeStart, rangeEnd);
+    });
   };
 
   const toggleGroupRows = (
@@ -437,7 +469,7 @@ export const setupTreeCellCollapse = (
       }
     }
     setRowsCollapsed(worksheet, dataStartRow, group, collapsed, mergeFix, {
-      deferMergeFix: useBatchToggle,
+      deferMergeFix: Boolean(mergeFix && !collapsed),
     });
   };
 
@@ -614,6 +646,19 @@ export const setupTreeCellCollapse = (
     );
   };
 
+  const reapplyAllMerges = () => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    let maxEnd = 0;
+    merges.forEach((merge) => {
+      maxEnd = Math.max(maxEnd, merge.row + merge.rowSpan);
+    });
+    scheduleMergeReapply(() => {
+      reapplyMergesInDataRange(worksheet, merges, dataStartRow, 0, maxEnd);
+    });
+  };
+
   /**
    * 品类展开：整块 unhide 子树 + 批量 hide 仍折叠的 Region 明细。
    */
@@ -626,6 +671,7 @@ export const setupTreeCellCollapse = (
       } else {
         showCategoryBodyRange(categoryGroupId);
       }
+      reapplyMergesForCategory(categoryGroupId);
       return;
     }
 
@@ -645,6 +691,7 @@ export const setupTreeCellCollapse = (
     }
 
     if (skipMergeFix || !merges.length) {
+      reapplyMergesForCategory(categoryGroupId);
       return;
     }
 
@@ -652,6 +699,7 @@ export const setupTreeCellCollapse = (
       (item) => !collapsedState.get(item.regionGroupId),
     );
     if (!expandedItems.length) {
+      reapplyMergesForCategory(categoryGroupId);
       return;
     }
 
@@ -666,6 +714,7 @@ export const setupTreeCellCollapse = (
         false,
         mergeFixForRegion(regionToggle.row, regionGroup),
       );
+      reapplyMergesForToggle(regionToggle);
     };
 
     if (useBatchToggle && expandedItems.length > 20) {
@@ -675,10 +724,12 @@ export const setupTreeCellCollapse = (
           await yieldToMain();
         }
       }
+      reapplyMergesForCategory(categoryGroupId);
       return;
     }
 
     expandedItems.forEach(expandOne);
+    reapplyMergesForCategory(categoryGroupId);
   };
 
   const hideRegionToggle = (toggle: ETableTreeToggleBinding) => {
@@ -764,6 +815,9 @@ export const setupTreeCellCollapse = (
         ? mergeFixForRegion(toggle.row, group)
         : undefined,
     );
+    if (!collapsed && toggle.kind === 'region') {
+      reapplyMergesForToggle(toggle);
+    }
   };
 
   const initDefaultCollapse = async () => {
@@ -852,6 +906,11 @@ export const setupTreeCellCollapse = (
     }
 
     const next = !collapsedState.get(groupId);
+    const scrollAnchor = captureScrollAnchor();
+
+    const restoreScroll = () => {
+      restoreScrollAnchor(scrollAnchor);
+    };
 
     const runCategoryBody = async () => {
       if (next) {
@@ -863,13 +922,17 @@ export const setupTreeCellCollapse = (
     };
 
     const runToggle = async () => {
-      if (toggle.kind === 'category' && useBatchToggle) {
-        await runCategoryBody();
-      } else {
-        const result = applyCollapsed(groupId, next);
-        if (result instanceof Promise) {
-          await result;
+      try {
+        if (toggle.kind === 'category' && useBatchToggle) {
+          await runCategoryBody();
+        } else {
+          const result = applyCollapsed(groupId, next);
+          if (result instanceof Promise) {
+            await result;
+          }
         }
+      } finally {
+        restoreScroll();
       }
     };
 
@@ -917,6 +980,7 @@ export const setupTreeCellCollapse = (
       enqueueToggleTask(async () => {
         await expandCategories();
         expandCollapsedRegions();
+        reapplyAllMerges();
         restoreScrollAnchor(scrollAnchor);
       });
       return;
@@ -928,6 +992,7 @@ export const setupTreeCellCollapse = (
       }
     });
     expandCollapsedRegions();
+    reapplyAllMerges();
     restoreScrollAnchor(scrollAnchor);
   };
 

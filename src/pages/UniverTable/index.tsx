@@ -17,7 +17,7 @@
  * 技术文档：tablesResearch/docs/UniverTable.md
  * ============================================================================
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Alert,
   Breadcrumb,
@@ -395,8 +395,6 @@ const buildTreeConfig = (extraMeasures: ETableColumn[] = []): ETableTreeConfig =
     attribute: { field: 'region', title: '区域', width: 140 },
     headerColumns: buildHeaderColumns(extraMeasures),
     measures: toMeasureFields(allMeasures),
-    rowBackgrounds: ['#E8F3FF', '#F5FAFF', '#FFFFFF'],
-    regionDetailBackground: '#FAFBFC',
     groupStatistics: {
       labelTemplate: '{label}',
       showGrandTotal: true,
@@ -697,7 +695,7 @@ interface ETableSavePayload {
 }
 
 /** 按 cell 去重：保留最新 to / 维度，from 取最早一次编辑前的值 */
-const buildSavePayload = (records: ETableCellChangeRecord[]): ETableSavePayload => {
+const dedupeTrackPatches = (records: ETableCellChangeRecord[]): Map<string, ETableCellSavePatch> => {
   const byCell = new Map<string, ETableCellSavePatch>();
 
   records.forEach((record) => {
@@ -721,11 +719,69 @@ const buildSavePayload = (records: ETableCellChangeRecord[]): ETableSavePayload 
     existing.from = record.from;
   });
 
+  return byCell;
+};
+
+const readCellDisplay = (
+  tableRef: RefObject<ETableRef | null>,
+  cell: string,
+): string | null => {
+  const result = tableRef.current?.getCellValue(cell);
+  if (!result?.success) {
+    return null;
+  }
+  return result.displayValue;
+};
+
+/**
+ * 构建保存数据：与 worksheet 当前值对齐。
+ * 已回撤还原的单元格（当前值 === from）不会出现在 patches 中。
+ */
+const buildSavePayload = (
+  records: ETableCellChangeRecord[],
+  tableRef: RefObject<ETableRef | null>,
+): ETableSavePayload => {
+  const patches: ETableCellSavePatch[] = [];
+
+  dedupeTrackPatches(records).forEach((patch) => {
+    const current = readCellDisplay(tableRef, patch.cell);
+    if (current === null || current === patch.from) {
+      return;
+    }
+    patches.push({ ...patch, to: current });
+  });
+
   return {
     updatedAt: new Date().toISOString(),
-    changeCount: byCell.size,
-    patches: Array.from(byCell.values()),
+    changeCount: patches.length,
+    patches,
   };
+};
+
+/** 回撤/重做后同步 tracks，只保留仍与初始值不同的单元格 */
+const syncTracksFromWorksheet = (
+  records: ETableCellChangeRecord[],
+  tableRef: RefObject<ETableRef | null>,
+): ETableCellChangeRecord[] => {
+  const payload = buildSavePayload(records, tableRef);
+  if (!payload.patches.length) {
+    return [];
+  }
+
+  const latestByCell = new Map<string, ETableCellChangeRecord>();
+  records.forEach((record) => {
+    if (!latestByCell.has(record.cell)) {
+      latestByCell.set(record.cell, record);
+    }
+  });
+
+  return payload.patches.map((patch) => {
+    const latest = latestByCell.get(patch.cell);
+    if (!latest) {
+      return null;
+    }
+    return { ...latest, to: patch.to };
+  }).filter(Boolean) as ETableCellChangeRecord[];
 };
 
 /**
@@ -764,6 +820,7 @@ const UniverTablePage = () => {
   const [addColumnKey, setAddColumnKey] = useState<string | undefined>();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewportRange, setViewportRange] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
   // ---------- 全屏：监听 fullscreenchange 并触发 resize 让 Univer 重算布局 ----------
   useEffect(() => {
     const syncFullscreen = () => {
@@ -1013,11 +1070,21 @@ const UniverTablePage = () => {
 
   const handleUndo = async () => {
     const ok = await tableRef.current?.undo();
+    if (ok) {
+      window.setTimeout(() => {
+        setTracks((prev) => syncTracksFromWorksheet(prev, tableRef));
+      }, 0);
+    }
     message[ok ? 'success' : 'info'](ok ? '已撤销上一步编辑' : '没有可撤销的操作');
   };
 
   const handleRedo = async () => {
     const ok = await tableRef.current?.redo();
+    if (ok) {
+      window.setTimeout(() => {
+        setTracks((prev) => syncTracksFromWorksheet(prev, tableRef));
+      }, 0);
+    }
     message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
   };
 
@@ -1035,9 +1102,9 @@ const UniverTablePage = () => {
   };
 
   const handleSave = () => {
-    const payload = buildSavePayload(tracks);
+    const payload = buildSavePayload(tracks, tableRef);
     if (!payload.patches.length) {
-      console.warn('[UniverTable] save skipped: 暂无变更数据');
+      messageApi.warning('暂无变更数据可保存，请先编辑单元格');
       return;
     }
     console.log('[UniverTable] save payload', payload);
@@ -1053,7 +1120,9 @@ const UniverTablePage = () => {
 
 
   return (
-    <div style={{ padding: 24, background: '#f0f2f5', minHeight: '100%' }}>
+    <>
+      {contextHolder}
+      <div style={{ padding: 24, background: '#f0f2f5', minHeight: '100%' }}>
       <Card style={{ marginBottom: 16 }}>
         <Row justify="space-between" align="middle">
           <Col>
@@ -1499,29 +1568,110 @@ const UniverTablePage = () => {
       </div>
 
       <Card style={{ marginTop: 16 }} size="small">
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={12}>
-            <h4>💡 功能说明</h4>
-            <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, paddingBottom: 8, margin: 0 }}>
-              <li><Tag color="green">保存：收集全部变更单元格，含 rowDimensions / columnDimensions</Tag></li>
+        <Row gutter={[24, 20]}>
+          <Col xs={24} lg={12}>
+            <h4 style={{ marginBottom: 4 }}>💡 功能说明</h4>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 8 }}>编辑与保存</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">单元格编辑：数字 / 下拉（{STATUS_OPTIONS.join(' / ')}）/ 日期列，编辑后实时 onCellChange</Tag></li>
+              <li><Tag color="green">保存：收集全部变更单元格，含 rowDimensions / columnDimensions；与 worksheet 对齐，回撤后自动过滤已撤销项</Tag></li>
+              <li><Tag color="green">无变更保存提示；侧栏展示最近 200 条变更记录</Tag></li>
+              <li><Tag color="green">回撤 / 重做：工具栏、右键菜单或 Ctrl/Cmd+Z、Ctrl/Cmd+Y</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>树形交互</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">品类列 ▶/▼ 同列缩进折叠；区域列可展开城市明细</Tag></li>
               <li><Tag color="green">展开行 / 折叠行：展开所有折叠项、收起所有展开项（含品类与区域行组）</Tag></li>
-              <li><Tag color="green">上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</Tag></li>
-              <li><Tag color="green">回撤 / 重做：工具栏按钮、右键菜单或 Ctrl/Cmd+Z / Ctrl+Y</Tag></li>
-              <li><Tag color="green">单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</Tag></li>
-              <li><Tag color="green">快速搜索：工具栏搜索或 Ctrl/Cmd+F 查找面板</Tag></li>
-              <li><Tag color="green">虚拟滚动：Canvas 仅绘制可视区；大数据分片写入（可在功能开关关闭）</Tag></li>
-              <li><Tag color="green">多层表头：主行层级 / 扩展行层级 / 核心经营指标 / 业务治理</Tag></li>
-              <li><Tag color="green">分组统计：父行按子项自动汇总净收入、订单数等</Tag></li>
-              <li><Tag color="green">净收入等数字列，核验状态下拉（{STATUS_OPTIONS.join(' / ')}），更新日期</Tag></li>
+              <li><Tag color="green">上钻 / 下钻：按当前选中行折叠或展开行组</Tag></li>
+              <li><Tag color="green">面包屑：顶部显示当前行层级路径；选中行联动刷新</Tag></li>
+              <li><Tag color="green">折叠 / 展开保持滚动位置，避免视口跳行</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>搜索与导航</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">快速搜索：工具栏输入关键字定位单元格</Tag></li>
+              <li><Tag color="green">查找面板：Ctrl/Cmd+F 或「查找面板」按钮</Tag></li>
+              <li><Tag color="green">全屏表格：右上角全屏按钮，Esc 退出</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>表格展示</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">三层表头：主行层级 / 扩展行层级 / 核心经营指标 / 业务治理</Tag></li>
+              <li><Tag color="green">分组统计：父行按子项自动汇总净收入、订单数等；支持全部合计行</Tag></li>
+              <li><Tag color="green">只读 / 可编辑背景色区分：维度列灰底只读，指标列白底可编辑</Tag></li>
+              <li><Tag color="green">冻结表头 / 网格线 / 动态追加列（功能开关可切换）</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>数据追踪</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">单元格历史：右键查看单格编辑流水</Tag></li>
+              <li><Tag color="green">数据追踪：右键或侧栏打开血缘树（Modal / Drawer）</Tag></li>
+              <li><Tag color="green">数据规模切换：树形演示 / 1万～100万行压测；支持重新生成</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>性能与扩展</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="green">虚拟滚动：Canvas 仅绘制可视区；≥5000 行启用视口投影或按页懒写入</Tag></li>
+              <li><Tag color="green">渲染耗时 / 展平行数 / 变更条数 / 数据模式统计</Tag></li>
+              <li><Tag color="green">右键菜单：复制粘贴、批注、附件、历史、追踪、下钻、搜索、撤销重做</Tag></li>
             </ul>
           </Col>
-          <Col xs={24} md={12}>
-            <h4>🔍 封装特点</h4>
-            <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, paddingBottom: 8, margin: 0 }}>
-              <li><Tag color="cyan">声明式 <code>treeData</code> + <code>treeConfig.headerColumns</code> 三层表头</Tag></li>
-              <li><Tag color="cyan">列 <code>type: number | select | date</code> + 数据验证</Tag></li>
-              <li><Tag color="cyan">Ref：drillDown / drillUp / openSearch / getDataTrace</Tag></li>
-              <li><Tag color="cyan">基于 Univer Sheets Preset 组合能力</Tag></li>
+
+          <Col xs={24} lg={12}>
+            <h4 style={{ marginBottom: 4 }}>🔍 封装特点</h4>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 8 }}>数据输入模式</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan">声明式 <code>treeData</code> + <code>treeConfig</code>：dimensions / attribute / measures / headerColumns</Tag></li>
+              <li><Tag color="cyan"><code>groupData</code> + <code>groupConfig</code>：平铺多重分组展平</Tag></li>
+              <li><Tag color="cyan">直接模式 <code>columns</code> + <code>rows</code> + <code>merges</code></Tag></li>
+              <li><Tag color="cyan"><code>groupStatistics</code>：分组汇总字段、合计行、labelTemplate 配置</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>展平与维度</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan"><code>flattenTreeData</code>：树 → rows + toggles + merges + rowGroups</Tag></li>
+              <li><Tag color="cyan"><code>dimensionContext</code> 行维度快照，避免明细行品类被清空后解析错误</Tag></li>
+              <li><Tag color="cyan"><code>onCellChange</code> 自动 enrich：field / logicalRow / rowDimensions / columnDimensions / rowPath</Tag></li>
+              <li><Tag color="cyan"><code>getCellDimensions(locator)</code>：任意时刻读取单格行列维度</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>渲染策略</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan">四路径自动选型：全量 renderData / 异步 renderDataAsync（≥1000 行）</Tag></li>
+              <li><Tag color="cyan">平铺懒虚拟 virtualRender（≥5000 行，按页 2000 行懒写入）</Tag></li>
+              <li><Tag color="cyan">树视口投影 treeViewport（treeUI + ≥5000 行，窗口 ~300 行滑动投影）</Tag></li>
+              <li><Tag color="cyan">小数据 hideRows 折叠；大数据过滤可见行，避免全表 hideRows 卡顿</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>Ref API</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan">树形：expandAllRows / collapseAllRows / drillDown / drillUp / getBreadcrumb</Tag></li>
+              <li><Tag color="cyan">数据：getTableData / getTreeData / getTracks / getCellHistory / getDataTrace</Tag></li>
+              <li><Tag color="cyan">读写：setCellValue / setRowValue / getCellValue / getRowValue / getCellDimensions</Tag></li>
+              <li><Tag color="cyan">搜索：openSearch / search；编辑：undo / redo</Tag></li>
+              <li><Tag color="cyan">批注：addComment / getComments / deleteComment；附件：addAttachment / viewAttachments</Tag></li>
+              <li><Tag color="cyan">大纲：collapseRowGroup / expandRowGroup / collapseColumnGroup 等</Tag></li>
+              <li><Tag color="cyan">性能：getVirtualRenderStats / getTreeViewportStats；底层 getUniverAPI / getWorksheet</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>只读与样式</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan"><code>setupReadonlyCells</code>：表头 + 维度列 + 汇总行 BeforeSheetEditStart 拦截</Tag></li>
+              <li><Tag color="cyan"><code>cellTone</code>：只读 #F5F5F5 / 可编辑 #FFFFFF 统一背景（treeUI 默认开启）</Tag></li>
+              <li><Tag color="cyan">列 <code>editable: true</code> 可在汇总行编辑（如子品类）；<code>type</code> 驱动数据验证</Tag></li>
+              <li><Tag color="cyan">列 <code>type: number | select | date</code> + applyColumnTypes 数据验证</Tag></li>
+            </ul>
+
+            <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>Univer 集成</div>
+            <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
+              <li><Tag color="cyan">Preset 组合：Core / Advanced / ThreadComment / Note / DataValidation / FindReplace</Tag></li>
+              <li><Tag color="cyan">自定义列头 customizeColumnHeaders；单元格合并 renderMerges（视口模式投影合并）</Tag></li>
+              <li><Tag color="cyan">自定义右键 contextMenuItems；enableContextMenu 可关闭并拦截原生菜单</Tag></li>
+              <li><Tag color="cyan">附件元数据 customMetaData + Note 角标；onReady 返回 renderMs / rowCount / treeViewport</Tag></li>
+              <li><Tag color="cyan">事件：onCellChange / onSelectionChange / onViewCellHistory / onViewDataTrace</Tag></li>
             </ul>
           </Col>
         </Row>
@@ -1544,6 +1694,7 @@ const UniverTablePage = () => {
         )}
       </Modal>
     </div>
+    </>
   );
 };
 
