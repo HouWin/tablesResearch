@@ -1663,7 +1663,6 @@ export default function Page() {
 | `src/components/UniverTable/index.tsx` | 组件实现 |
 | `src/components/UniverTable/types.ts` | 完整类型 |
 | `src/pages/UniverTable/index.tsx` | 演示与大数据生成 |
-| `kjj/表格调研/table-component-evaluation.md` | 表格方案调研 |
 
 ---
 
