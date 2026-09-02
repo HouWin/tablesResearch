@@ -15,8 +15,8 @@ export interface FinanceRow {
 
 // 网格列定义 - 直接使用ColDef，通过扩展添加自定义属性
 export type GridColDef = ColDef & {
-  field: string
-  headerName: string
+  field?: string
+  headerName?: string
   width?: number
   hide?: boolean
   editable?: boolean
