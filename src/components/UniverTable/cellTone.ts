@@ -1,7 +1,17 @@
+import { VerticalAlign } from '@univerjs/core';
 import type { ETableCell, ETableColumn, ETableRow, ETableTreeConfig } from './types';
 
 export const DEFAULT_READONLY_CELL_BG = '#F5F5F5';
 export const DEFAULT_EDITABLE_CELL_BG = '#FFFFFF';
+
+/** Univer 默认 vt=0 顶对齐，写入数据区时统一垂直居中 */
+export const DEFAULT_CELL_STYLE = { vt: VerticalAlign.MIDDLE };
+
+export const mergeCellStyle = (style?: Record<string, unknown>) => ({
+  ...DEFAULT_CELL_STYLE,
+  ...(style || {}),
+  vt: VerticalAlign.MIDDLE,
+});
 
 export interface ETableCellToneOptions {
   readonlyBackground?: string;
@@ -148,22 +158,28 @@ export const buildRowSheetValues = (
       if (cellStyle || toneStyle) {
         return {
           v: styledCell.value ?? null,
-          s: {
+          s: mergeCellStyle({
             ...(toneStyle || {}),
             ...(cellStyle || {}),
             bg: (cellStyle as { bg?: unknown })?.bg || toneStyle?.bg,
-          },
+          }),
         };
       }
-      return styledCell.value ?? null;
+      return {
+        v: styledCell.value ?? null,
+        s: DEFAULT_CELL_STYLE,
+      };
     }
 
     if (toneStyle) {
       return {
         v: cell ?? null,
-        s: toneStyle,
+        s: mergeCellStyle(toneStyle),
       };
     }
-    return cell ?? null;
+    return {
+      v: cell ?? null,
+      s: DEFAULT_CELL_STYLE,
+    };
   });
 };

@@ -9,13 +9,17 @@
  * 行数 ≥ 5000 时由 treeViewport.ts 接管（视口投影，不再全表 hideRows）。
  */
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
-
-const scheduleMergeReapply = (task: () => void) => {
-  requestAnimationFrame(() => {
-    requestAnimationFrame(task);
-  });
-};
 import { reapplyMergesForRowSpan, reapplyMergesInDataRange } from './renderer';
+import { mergeCellStyle } from './cellTone';
+import {
+  buildRegionIndex,
+  buildToggleMaps,
+  captureScrollAnchor,
+  collectRowGroups,
+  createMergeReapplyScheduler,
+  restoreScrollAnchor,
+  scheduleIdleWork,
+} from './treeShared';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
 
 const LARGE_TOGGLE_COUNT = 200;
@@ -25,23 +29,6 @@ const BULK_ROW_RANGE_CHUNK = 4000;
 const SET_ROWS_HIDDEN_CMD = 'sheet.command.set-rows-hidden';
 const SET_ROWS_VISIBLE_CMD = 'sheet.command.set-specific-rows-visible';
 const ROW_RANGE_TYPE = 1;
-
-/**
- * 收集全部行分组（含嵌套）。
- */
-const collectGroups = (groups: ETableRowGroup[]): ETableRowGroup[] => {
-  const result: ETableRowGroup[] = [];
-  const walk = (list: ETableRowGroup[]) => {
-    list.forEach((group) => {
-      result.push(group);
-      if (group.children?.length) {
-        walk(group.children);
-      }
-    });
-  };
-  walk(groups);
-  return result;
-};
 
 const yieldToMain = () =>
   new Promise<void>((resolve) => {
@@ -237,7 +224,7 @@ const setRowsCollapsed = (
           mergeFix.afterReapply?.();
         };
         if (rowOptions?.deferMergeFix) {
-          scheduleMergeReapply(runMergeFix);
+          scheduleIdleWork(runMergeFix);
         } else {
           runMergeFix();
         }
@@ -274,102 +261,6 @@ export interface ETableTreeCollapseApi {
   ready: Promise<void>;
 }
 
-const buildRegionIndex = (
-  toggles: ETableTreeToggleBinding[],
-  categoryToggles: ETableTreeToggleBinding[],
-  groupMap: Map<string, ETableRowGroup>,
-) => {
-  const regionTogglesByCategoryId = new Map<string, ETableTreeToggleBinding[]>();
-  const categoryBounds = categoryToggles
-    .map((categoryToggle) => {
-      const categoryGroup = groupMap.get(categoryToggle.groupId);
-      if (!categoryGroup) {
-        return null;
-      }
-      return {
-        categoryId: categoryToggle.groupId,
-        toggleRow: categoryToggle.row,
-        start: categoryGroup.startRow,
-        end: categoryGroup.startRow + categoryGroup.count,
-      };
-    })
-    .filter(Boolean) as Array<{
-    categoryId: string;
-    toggleRow: number;
-    start: number;
-    end: number;
-  }>;
-
-  categoryBounds.sort((a, b) => a.toggleRow - b.toggleRow);
-  categoryBounds.forEach((bound) => {
-    regionTogglesByCategoryId.set(bound.categoryId, []);
-  });
-
-  const regionToggles = toggles.filter((toggle) => toggle.kind === 'region');
-  regionToggles.sort((a, b) => a.row - b.row);
-
-  const resolveCategoryId = (
-    toggle: ETableTreeToggleBinding,
-    groupStart: number | undefined,
-    groupEnd: number,
-  ): string | null => {
-    if (!categoryBounds.length) {
-      return null;
-    }
-    let lo = 0;
-    let hi = categoryBounds.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (categoryBounds[mid].toggleRow <= toggle.row) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    if (idx < 0) {
-      return null;
-    }
-
-    const candidates: number[] = [idx];
-    if (idx > 0) {
-      candidates.unshift(idx - 1);
-    }
-    if (idx + 1 < categoryBounds.length) {
-      candidates.push(idx + 1);
-    }
-
-    for (let i = 0; i < candidates.length; i += 1) {
-      const bound = categoryBounds[candidates[i]];
-      if (toggle.groupId === bound.categoryId) {
-        continue;
-      }
-      const onSummaryRow = toggle.row === bound.toggleRow;
-      const headerInCategory = toggle.row >= bound.start && toggle.row < bound.end;
-      const bodyInCategory =
-        groupStart !== undefined && groupStart >= bound.start && groupEnd <= bound.end;
-      if (onSummaryRow || headerInCategory || bodyInCategory) {
-        return bound.categoryId;
-      }
-    }
-    return null;
-  };
-
-  for (let i = 0; i < regionToggles.length; i += 1) {
-    const toggle = regionToggles[i];
-    const regionGroup = groupMap.get(toggle.groupId);
-    const groupStart = regionGroup?.startRow;
-    const groupEnd = regionGroup ? regionGroup.startRow + regionGroup.count : -1;
-    const categoryId = resolveCategoryId(toggle, groupStart, groupEnd);
-    if (categoryId) {
-      regionTogglesByCategoryId.get(categoryId)!.push(toggle);
-    }
-  }
-
-  return regionTogglesByCategoryId;
-};
-
 /**
  * 树形 UI：用隐藏行实现折叠，折叠箭头只在单元格内（▶/▼），不使用左侧大纲栏。
  */
@@ -398,6 +289,47 @@ export const setupTreeCellCollapse = (
   const merges = options?.merges ?? [];
   const skipMergeFix = options?.skipMergeFix ?? !merges.length;
   const ensureDataRows = options?.ensureDataRows;
+
+  let pendingMergeRange: { start: number; end: number } | null = null;
+  const flushMergeReapply = createMergeReapplyScheduler(() => {
+    if (!pendingMergeRange || skipMergeFix || !merges.length) {
+      pendingMergeRange = null;
+      return;
+    }
+    const { start, end } = pendingMergeRange;
+    pendingMergeRange = null;
+    reapplyMergesInDataRange(worksheet, merges, dataStartRow, start, end);
+  });
+  const queueMergeReapply = (rangeStart: number, rangeEnd: number) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    if (!pendingMergeRange) {
+      pendingMergeRange = { start: rangeStart, end: rangeEnd };
+    } else {
+      pendingMergeRange.start = Math.min(pendingMergeRange.start, rangeStart);
+      pendingMergeRange.end = Math.max(pendingMergeRange.end, rangeEnd);
+    }
+    flushMergeReapply();
+  };
+
+  const groupMap = new Map(
+    collectRowGroups(rowGroups).map((group) => [group.id, group]),
+  );
+
+  const collapsedState = new Map(
+    toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
+  );
+
+  const { toggleByGroupId, toggleByCell, togglesByLogicalRow: togglesByRow } =
+    buildToggleMaps(toggles);
+
+  const categoryToggles = toggles.filter((item) => item.kind === 'category');
+  const regionTogglesByCategoryId = buildRegionIndex(toggles, categoryToggles, groupMap);
+
+  const captureSheetScroll = () => captureScrollAnchor(worksheet, dataStartRow);
+  const restoreSheetScroll = (anchor: { row: number; column: number } | null) =>
+    restoreScrollAnchor(worksheet, anchor);
 
   const mergeFixForRegion = (anchorRow: number, group: Pick<ETableRowGroup, 'count'>) => {
     if (skipMergeFix) {
@@ -430,9 +362,7 @@ export const setupTreeCellCollapse = (
     }
     const rangeStart = toggle.row;
     const rangeEnd = toggle.row + 1 + group.count;
-    scheduleMergeReapply(() => {
-      reapplyMergesInDataRange(worksheet, merges, dataStartRow, rangeStart, rangeEnd);
-    });
+    queueMergeReapply(rangeStart, rangeEnd);
   };
 
   const reapplyMergesForCategory = (categoryGroupId: string) => {
@@ -446,9 +376,7 @@ export const setupTreeCellCollapse = (
     }
     const rangeStart = categoryToggle.row;
     const rangeEnd = categoryGroup.startRow + categoryGroup.count;
-    scheduleMergeReapply(() => {
-      reapplyMergesInDataRange(worksheet, merges, dataStartRow, rangeStart, rangeEnd);
-    });
+    queueMergeReapply(rangeStart, rangeEnd);
   };
 
   const toggleGroupRows = (
@@ -472,28 +400,6 @@ export const setupTreeCellCollapse = (
       deferMergeFix: Boolean(mergeFix && !collapsed),
     });
   };
-
-  const groupMap = new Map(
-    collectGroups(rowGroups).map((group) => [group.id, group]),
-  );
-
-  const collapsedState = new Map(
-    toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
-  );
-
-  const toggleByGroupId = new Map(toggles.map((toggle) => [toggle.groupId, toggle]));
-  const toggleByCell = new Map<string, ETableTreeToggleBinding>();
-  const togglesByRow = new Map<number, ETableTreeToggleBinding[]>();
-
-  toggles.forEach((toggle) => {
-    toggleByCell.set(`${toggle.row}:${toggle.column}`, toggle);
-    const rowToggles = togglesByRow.get(toggle.row) ?? [];
-    rowToggles.push(toggle);
-    togglesByRow.set(toggle.row, rowToggles);
-  });
-
-  const categoryToggles = toggles.filter((item) => item.kind === 'category');
-  const regionTogglesByCategoryId = buildRegionIndex(toggles, categoryToggles, groupMap);
 
   /** 品类展开时需隐藏的 Region 明细行（预计算，避免每次 toggle 遍历数百 Region） */
   const categoryRegionHideItems = new Map<
@@ -568,45 +474,11 @@ export const setupTreeCellCollapse = (
     try {
       worksheet.getRange(dataStartRow + toggle.row, toggle.column).setValue({
         v: text,
-        s: { bl: 1 },
+        s: mergeCellStyle({ bl: 1 }),
       });
     } catch (error) {
       console.warn('[ETable] update tree toggle label failed', error);
     }
-  };
-
-  const captureScrollAnchor = () => {
-    try {
-      const state = worksheet.getScrollState?.();
-      if (!state) {
-        return null;
-      }
-      return {
-        row:
-          typeof state.sheetViewStartRow === 'number'
-            ? state.sheetViewStartRow
-            : dataStartRow,
-        column:
-          typeof state.sheetViewStartColumn === 'number'
-            ? state.sheetViewStartColumn
-            : 0,
-      };
-    } catch {
-      return null;
-    }
-  };
-
-  const restoreScrollAnchor = (anchor: { row: number; column: number } | null) => {
-    if (!anchor) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      try {
-        worksheet.scrollToCell?.(anchor.row, anchor.column, 0);
-      } catch {
-        // ignore
-      }
-    });
   };
 
   const hideCategoryBody = (categoryGroupId: string) => {
@@ -654,9 +526,7 @@ export const setupTreeCellCollapse = (
     merges.forEach((merge) => {
       maxEnd = Math.max(maxEnd, merge.row + merge.rowSpan);
     });
-    scheduleMergeReapply(() => {
-      reapplyMergesInDataRange(worksheet, merges, dataStartRow, 0, maxEnd);
-    });
+    queueMergeReapply(0, maxEnd);
   };
 
   /**
@@ -906,10 +776,10 @@ export const setupTreeCellCollapse = (
     }
 
     const next = !collapsedState.get(groupId);
-    const scrollAnchor = captureScrollAnchor();
+    const scrollAnchor = captureSheetScroll();
 
     const restoreScroll = () => {
-      restoreScrollAnchor(scrollAnchor);
+      restoreSheetScroll(scrollAnchor);
     };
 
     const runCategoryBody = async () => {
@@ -954,7 +824,7 @@ export const setupTreeCellCollapse = (
   };
 
   const expandAll = () => {
-    const scrollAnchor = captureScrollAnchor();
+    const scrollAnchor = captureSheetScroll();
 
     const expandCollapsedRegions = () => {
       toggles
@@ -981,7 +851,7 @@ export const setupTreeCellCollapse = (
         await expandCategories();
         expandCollapsedRegions();
         reapplyAllMerges();
-        restoreScrollAnchor(scrollAnchor);
+        restoreSheetScroll(scrollAnchor);
       });
       return;
     }
@@ -993,11 +863,11 @@ export const setupTreeCellCollapse = (
     });
     expandCollapsedRegions();
     reapplyAllMerges();
-    restoreScrollAnchor(scrollAnchor);
+    restoreSheetScroll(scrollAnchor);
   };
 
   const collapseAll = () => {
-    const scrollAnchor = captureScrollAnchor();
+    const scrollAnchor = captureSheetScroll();
 
     const collapseExpanded = async () => {
       toggles
@@ -1015,7 +885,7 @@ export const setupTreeCellCollapse = (
           await yieldToMain();
         }
       }
-      restoreScrollAnchor(scrollAnchor);
+      restoreSheetScroll(scrollAnchor);
     };
 
     if (useBatchToggle) {

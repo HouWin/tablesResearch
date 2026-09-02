@@ -9,10 +9,9 @@
  *
  * 对外：getLogicalDataRow（投影行 → 逻辑行）、getTreeViewportStats
  */
-import { VerticalAlign } from '@univerjs/core';
 import { applyColumnTypes } from './columnTypes';
 import type { ETableCellToneContext } from './cellTone';
-import { buildRowSheetValues } from './cellTone';
+import { buildRowSheetValues, mergeCellStyle } from './cellTone';
 import {
   applyProjectedMerges,
   breakRemovedProjectedMerges,
@@ -29,6 +28,12 @@ import type {
   ETableTreeToggleBinding,
 } from './types';
 import type { ETableTreeCollapseApi } from './treeCollapse';
+import {
+  buildToggleMaps,
+  captureScrollAnchor as captureSheetScrollAnchor,
+  collectRowGroups,
+  restoreScrollAnchor as restoreSheetScrollAnchor,
+} from './treeShared';
 
 /** 超过该行数且为 treeUI 时启用视口投影（工作表仅保留窗口行数） */
 export const TREE_VIEWPORT_THRESHOLD = 5000;
@@ -52,20 +57,6 @@ export type TreeViewportStats = {
 };
 
 type UniverWorksheet = any;
-
-const collectGroups = (groups: ETableRowGroup[]): ETableRowGroup[] => {
-  const result: ETableRowGroup[] = [];
-  const walk = (list: ETableRowGroup[]) => {
-    list.forEach((group) => {
-      result.push(group);
-      if (group.children?.length) {
-        walk(group.children);
-      }
-    });
-  };
-  walk(groups);
-  return result;
-};
 
 const toRowValues = (
   row: ETableRow,
@@ -121,10 +112,29 @@ const computeVisibleLogicalRows = (hidden: Uint8Array): number[] => {
   return visible;
 };
 
+/** 与 tree.ts liteHierarchyMerge 一致：skipMerges 时仍投影维度列小范围纵向合并 */
+const LITE_HIERARCHY_MERGE_MAX_ROW_SPAN = 16;
+
+const resolveViewportMerges = (
+  merges: ETableMerge[],
+  skipHeavyMerges: boolean,
+): ETableMerge[] => {
+  if (!skipHeavyMerges) {
+    return merges;
+  }
+  return merges.filter(
+    (merge) =>
+      merge.rowSpan > 1 &&
+      merge.rowSpan <= LITE_HIERARCHY_MERGE_MAX_ROW_SPAN &&
+      merge.columnSpan === 1,
+  );
+};
+
 export interface ETableTreeViewportOptions {
   defaultRowHeight?: number;
   windowSize?: number;
   merges?: ETableMerge[];
+  /** 跳过跨 Region 大 merge；仍保留 rowSpan≤16 的维度列 lite 纵向合并 */
   skipMerges?: boolean;
   cellTone?: ETableCellToneContext | null;
   onProjected?: (stats: TreeViewportStats) => void;
@@ -134,6 +144,8 @@ export type ETableTreeViewportApi = ETableTreeCollapseApi & {
   getStats: () => TreeViewportStats;
   /** 投影行（0-based 数据区）→ 逻辑行 */
   getLogicalDataRow: (projectedDataRow: number) => number | null;
+  /** 逻辑行 → 当前窗口内投影行（不可见或不在窗口内为 null） */
+  getProjectedDataRow: (logicalRow: number) => number | null;
 };
 
 /**
@@ -168,6 +180,7 @@ export const setupTreeViewport = (
       displayRangeEnd: 0,
     }),
     getLogicalDataRow: () => null,
+    getProjectedDataRow: () => null,
     ready: Promise.resolve(),
   };
 
@@ -178,31 +191,27 @@ export const setupTreeViewport = (
   const defaultRowHeight = options?.defaultRowHeight ?? 30;
   const windowSize = options?.windowSize ?? TREE_VIEWPORT_WINDOW_SIZE;
   const cellTone = options?.cellTone ?? null;
-  const sheetMerges = options?.merges ?? [];
+  const sheetMerges = resolveViewportMerges(
+    options?.merges ?? [],
+    options?.skipMerges ?? false,
+  );
+  const mergeProjectionEnabled = sheetMerges.length > 0;
   const mergesByAnchorRow = sheetMerges.length
     ? buildMergeIndexByAnchorRow(sheetMerges)
     : new Map<number, ETableMerge[]>();
   let lastProjectedMerges: PlannedProjectedMerge[] = [];
 
   const groupMap = new Map(
-    collectGroups(rowGroups).map((group) => [group.id, group]),
+    collectRowGroups(rowGroups).map((group) => [group.id, group]),
   );
   const collapsedState = new Map(
     toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
   );
-  const toggleByGroupId = new Map(toggles.map((toggle) => [toggle.groupId, toggle]));
-  const toggleByCell = new Map<string, ETableTreeToggleBinding>();
-  const togglesByLogicalRow = new Map<number, ETableTreeToggleBinding[]>();
+  const { toggleByGroupId, toggleByCell, togglesByLogicalRow } = buildToggleMaps(toggles);
   const categoryToggles = toggles.filter((item) => item.kind === 'category');
 
-  toggles.forEach((toggle) => {
-    toggleByCell.set(`${toggle.row}:${toggle.column}`, toggle);
-    const rowToggles = togglesByLogicalRow.get(toggle.row) ?? [];
-    rowToggles.push(toggle);
-    togglesByLogicalRow.set(toggle.row, rowToggles);
-  });
-
   let visibleLogicalRows: number[] = [];
+  let visibleIndexByLogical = new Map<number, number>();
   let projectedToLogical: number[] = [];
   /** 投影行 → 单元格 toggle（避免逻辑行号映射误差导致无法展开） */
   let projectedToggleByCell = new Map<string, ETableTreeToggleBinding>();
@@ -235,6 +244,21 @@ export const setupTreeViewport = (
     return projectedToLogical[projectedDataRow];
   };
 
+  const getProjectedDataRow = (logicalRow: number): number | null => {
+    const visibleIndex = visibleIndexByLogical.get(logicalRow);
+    if (visibleIndex === undefined) {
+      return null;
+    }
+    const projected = visibleIndex - windowOffset;
+    if (projected < 0 || projected >= projectedToLogical.length) {
+      return null;
+    }
+    if (projectedToLogical[projected] !== logicalRow) {
+      return null;
+    }
+    return projected;
+  };
+
   const syncCategoryRegionCollapsedState = (categoryGroupId: string, collapsed: boolean) => {
     const categoryToggle = toggleByGroupId.get(categoryGroupId);
     const categoryGroup = groupMap.get(categoryGroupId);
@@ -260,6 +284,10 @@ export const setupTreeViewport = (
   const recomputeVisible = () => {
     const hidden = buildHiddenMask(rows.length, toggles, groupMap, collapsedState);
     visibleLogicalRows = computeVisibleLogicalRows(hidden);
+    visibleIndexByLogical = new Map<number, number>();
+    for (let i = 0; i < visibleLogicalRows.length; i += 1) {
+      visibleIndexByLogical.set(visibleLogicalRows[i], i);
+    }
     const maxOffset = Math.max(0, visibleLogicalRows.length - windowSize);
     if (windowOffset > maxOffset) {
       windowOffset = maxOffset;
@@ -389,7 +417,7 @@ export const setupTreeViewport = (
           : undefined;
       next[toggle.column] = {
         v: text,
-        s: { ...(existingStyle || {}), bl: 1 },
+        s: mergeCellStyle({ ...(existingStyle || {}), bl: 1 }),
       } as (typeof next)[number];
     });
     return next;
@@ -409,26 +437,7 @@ export const setupTreeViewport = (
     }
   };
 
-  const captureScrollAnchor = () => {
-    try {
-      const state = worksheet.getScrollState?.();
-      if (!state) {
-        return null;
-      }
-      return {
-        row:
-          typeof state.sheetViewStartRow === 'number'
-            ? state.sheetViewStartRow
-            : dataStartRow,
-        column:
-          typeof state.sheetViewStartColumn === 'number'
-            ? state.sheetViewStartColumn
-            : 0,
-      };
-    } catch {
-      return null;
-    }
-  };
+  const captureScrollAnchor = () => captureSheetScrollAnchor(worksheet, dataStartRow);
 
   const restoreScrollAnchor = (anchor: { row: number; column: number }) => {
     scrollAdjustLock = true;
@@ -517,6 +526,34 @@ export const setupTreeViewport = (
       .setValues(values);
   };
 
+  const writeProjectedRowsBatch = (
+    startProjected: number,
+    endProjected: number,
+    slice: number[],
+  ) => {
+    const count = endProjected - startProjected;
+    if (count <= 0) {
+      return;
+    }
+    const matrix = slice
+      .slice(startProjected, endProjected)
+      .map((logicalRow) =>
+        patchToggleLabels(
+          logicalRow,
+          toRowValues(rows[logicalRow], logicalRow, leafColumns, cellTone),
+        ),
+      );
+    try {
+      worksheet
+        .getRange(dataStartRow + startProjected, 0, count, leafColumns.length)
+        .setValues(matrix);
+    } catch {
+      for (let i = startProjected; i < endProjected; i += 1) {
+        writeProjectedRow(i, slice[i]);
+      }
+    }
+  };
+
   const patchProjectedToggleLabels = (projectedIndex: number, logicalRow: number) => {
     const rowToggles = togglesByLogicalRow.get(logicalRow);
     if (!rowToggles?.length) {
@@ -528,7 +565,7 @@ export const setupTreeViewport = (
       try {
         worksheet.getRange(dataStartRow + projectedIndex, toggle.column).setValue({
           v: text,
-          s: { bl: 1, vt: VerticalAlign.MIDDLE },
+          s: mergeCellStyle({ bl: 1 }),
         });
       } catch {
         // ignore label patch
@@ -540,6 +577,7 @@ export const setupTreeViewport = (
     scrollRow?: number;
     preserveScroll?: boolean;
     forceRewrite?: boolean;
+    forceMergeRebuild?: boolean;
   }) => {
     if (disposed) {
       return;
@@ -559,23 +597,39 @@ export const setupTreeViewport = (
       windowOffset,
       windowOffset + slotSize,
     );
-    const mergesForSlice = collectMergesForSlice(slice);
-    const plannedMerges = planProjectedMerges(mergesForSlice, slice);
+    const mergesForSlice = mergeProjectionEnabled ? collectMergesForSlice(slice) : [];
+    const plannedMerges = mergeProjectionEnabled
+      ? planProjectedMerges(mergesForSlice, slice)
+      : [];
 
-    breakStaleProjectedMerges(worksheet, dataStartRow, prevMerges, plannedMerges);
+    if (mergeProjectionEnabled) {
+      breakStaleProjectedMerges(worksheet, dataStartRow, prevMerges, plannedMerges);
+    }
 
     projectedToLogical = slice;
     rebuildProjectedToggleIndex();
 
     if (slice.length) {
       const forceRewrite = scrollOptions?.forceRewrite ?? false;
+      let batchStart: number | null = null;
       for (let i = 0; i < slice.length; i += 1) {
         const logicalRow = slice[i];
-        if (!forceRewrite && i < prevSlice.length && prevSlice[i] === logicalRow) {
+        const needsWrite =
+          forceRewrite || i >= prevSlice.length || prevSlice[i] !== logicalRow;
+        if (needsWrite) {
+          if (batchStart === null) {
+            batchStart = i;
+          }
+        } else if (batchStart !== null) {
+          writeProjectedRowsBatch(batchStart, i, slice);
+          batchStart = null;
           patchProjectedToggleLabels(i, logicalRow);
-          continue;
+        } else {
+          patchProjectedToggleLabels(i, logicalRow);
         }
-        writeProjectedRow(i, logicalRow);
+      }
+      if (batchStart !== null) {
+        writeProjectedRowsBatch(batchStart, slice.length, slice);
       }
 
       if (slice.length !== lastProjectedCount) {
@@ -595,16 +649,20 @@ export const setupTreeViewport = (
         clearTrailingRows(slice.length, lastProjectedCount);
       }
 
-      lastProjectedMerges = mergesForSlice.length
-        ? applyProjectedMerges(
-            worksheet,
-            mergesForSlice,
-            dataStartRow,
-            slice,
-            prevMerges,
-          )
-        : [];
-      if (lastProjectedMerges.length) {
+      if (!mergeProjectionEnabled) {
+        lastProjectedMerges = [];
+      } else if (mergesForSlice.length) {
+        lastProjectedMerges = applyProjectedMerges(
+          worksheet,
+          mergesForSlice,
+          dataStartRow,
+          slice,
+          prevMerges,
+          {
+            planned: plannedMerges,
+            forceRebuild: scrollOptions?.forceMergeRebuild ?? false,
+          },
+        );
         const patchedLogical = new Set<number>();
         lastProjectedMerges.forEach((merge) => {
           if (patchedLogical.has(merge.logicalRow)) {
@@ -613,9 +671,13 @@ export const setupTreeViewport = (
           patchedLogical.add(merge.logicalRow);
           patchProjectedToggleLabels(merge.row, merge.logicalRow);
         });
+      } else {
+        lastProjectedMerges = [];
       }
     } else if (lastProjectedCount > 0) {
-      breakRemovedProjectedMerges(worksheet, dataStartRow, prevMerges, []);
+      if (mergeProjectionEnabled) {
+        breakRemovedProjectedMerges(worksheet, dataStartRow, prevMerges, []);
+      }
       clearTrailingRows(0, lastProjectedCount);
       lastProjectedMerges = [];
     }
@@ -647,6 +709,7 @@ export const setupTreeViewport = (
     preserveScroll?: boolean;
     viewportAnchor?: { logicalRow: number; projectedSlot: number } | null;
     forceRewrite?: boolean;
+    forceMergeRebuild?: boolean;
   }) => {
     scrollAdjustLock = true;
     recomputeVisible();
@@ -657,6 +720,7 @@ export const setupTreeViewport = (
       scrollRow: scrollOptions?.scrollRow,
       preserveScroll: scrollOptions?.preserveScroll ?? scrollOptions?.scrollRow === undefined,
       forceRewrite: scrollOptions?.forceRewrite,
+      forceMergeRebuild: scrollOptions?.forceMergeRebuild,
     });
     window.setTimeout(() => {
       scrollAdjustLock = false;
@@ -698,7 +762,7 @@ export const setupTreeViewport = (
     if (toggle.kind === 'category' && collapsed) {
       syncCategoryRegionCollapsedState(groupId, true);
     }
-    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
+    refresh({ preserveScroll: true, viewportAnchor, forceMergeRebuild: true });
   };
 
   const toggleGroup = (groupId: string) => {
@@ -852,6 +916,7 @@ export const setupTreeViewport = (
 
   const expandAll = () => {
     const viewportAnchor = captureTopViewportAnchor();
+    const scrollAnchor = captureScrollAnchor();
     categoryToggles.forEach((toggle) => {
       collapsedState.set(toggle.groupId, false);
     });
@@ -860,16 +925,19 @@ export const setupTreeViewport = (
         collapsedState.set(toggle.groupId, false);
       }
     });
-    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
+    refresh({ preserveScroll: true, viewportAnchor, forceMergeRebuild: true });
+    restoreSheetScrollAnchor(worksheet, scrollAnchor);
   };
 
   const collapseAll = () => {
     const viewportAnchor = captureTopViewportAnchor();
+    const scrollAnchor = captureScrollAnchor();
     categoryToggles.forEach((toggle) => {
       collapsedState.set(toggle.groupId, true);
       syncCategoryRegionCollapsedState(toggle.groupId, true);
     });
-    refresh({ preserveScroll: true, viewportAnchor, forceRewrite: true });
+    refresh({ preserveScroll: true, viewportAnchor, forceMergeRebuild: true });
+    restoreSheetScrollAnchor(worksheet, scrollAnchor);
   };
 
   const resolveToggleHit = (
@@ -959,6 +1027,7 @@ export const setupTreeViewport = (
     getBreadcrumb,
     getStats,
     getLogicalDataRow,
+    getProjectedDataRow,
     ready: Promise.resolve(),
   };
 };

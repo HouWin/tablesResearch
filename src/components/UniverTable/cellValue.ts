@@ -122,9 +122,13 @@ const readSheetDisplayValue = (worksheet: any, sheetRow: number, column: number)
 const findProjectedDataRow = (
   logicalRow: number,
   getLogicalDataRow: (projectedDataRow: number) => number | null,
-  windowSize: number,
+  getProjectedDataRow: ((logicalRow: number) => number | null) | undefined,
+  treeViewportWindowSize: number,
 ) => {
-  for (let projected = 0; projected < windowSize; projected += 1) {
+  if (getProjectedDataRow) {
+    return getProjectedDataRow(logicalRow);
+  }
+  for (let projected = 0; projected < treeViewportWindowSize; projected += 1) {
     if (getLogicalDataRow(projected) === logicalRow) {
       return projected;
     }
@@ -137,12 +141,14 @@ const resolveSheetRowForDataRow = (
   headerDepth: number,
   useTreeViewport: boolean,
   getLogicalDataRow: ((projectedDataRow: number) => number | null) | undefined,
+  getProjectedDataRow: ((logicalRow: number) => number | null) | undefined,
   treeViewportWindowSize: number,
 ) => {
   if (useTreeViewport && getLogicalDataRow) {
     const projected = findProjectedDataRow(
       dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {
@@ -210,6 +216,7 @@ export const getCellValueFromTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   options?: ETableGetCellValueOptions;
 }): ETableGetCellValueResult => {
@@ -221,6 +228,7 @@ export const getCellValueFromTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     options,
   } = params;
@@ -238,6 +246,7 @@ export const getCellValueFromTable = (params: {
       headerDepth,
       useTreeViewport,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     )
     : null;
@@ -279,6 +288,7 @@ export const getRowValueFromTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   options?: ETableGetRowValueOptions;
 }): ETableGetRowValueResult => {
@@ -290,6 +300,7 @@ export const getRowValueFromTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     options,
   } = params;
@@ -311,6 +322,7 @@ export const getRowValueFromTable = (params: {
       headerDepth,
       useTreeViewport,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     )
     : null;
@@ -352,6 +364,7 @@ export const setCellValueOnTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   recordChange?: (row: number, column: number, from: string, to: string) => void;
   options?: ETableSetCellValueOptions;
@@ -365,6 +378,7 @@ export const setCellValueOnTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     recordChange,
     options,
@@ -397,6 +411,7 @@ export const setCellValueOnTable = (params: {
     const projected = findProjectedDataRow(
       target.dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {
@@ -465,6 +480,7 @@ export const setRowValueOnTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   recordChange?: (row: number, column: number, from: string, to: string) => void;
   options?: ETableSetCellValueOptions;
@@ -478,6 +494,7 @@ export const setRowValueOnTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     recordChange,
     options,
@@ -509,6 +526,7 @@ export const setRowValueOnTable = (params: {
     const projected = findProjectedDataRow(
       dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {

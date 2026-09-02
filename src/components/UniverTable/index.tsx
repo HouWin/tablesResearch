@@ -290,6 +290,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const logicalRowResolverRef = useRef<((projectedDataRow: number) => number | null) | null>(
     null,
   );
+  const projectedDataRowResolverRef = useRef<((logicalRow: number) => number | null) | null>(
+    null,
+  );
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
@@ -729,6 +732,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         recordChange: cellHistoryApiRef.current?.recordChange,
         options,
@@ -748,6 +752,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         recordChange: cellHistoryApiRef.current?.recordChange,
         options,
@@ -765,6 +770,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         options,
       });
@@ -781,6 +787,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         options,
       });
@@ -1073,11 +1080,13 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         );
         treeCollapseApiRef.current = api;
         logicalRowResolverRef.current = api.getLogicalDataRow;
+        projectedDataRowResolverRef.current = api.getProjectedDataRow;
         collapseReady = api.ready;
         disposeTreeCollapse = () => {
           api.dispose();
           treeCollapseApiRef.current = null;
           logicalRowResolverRef.current = null;
+          projectedDataRowResolverRef.current = null;
           treeViewportStatsRef.current = null;
         };
       } else if (treeUI && treeToggles.length) {
@@ -1335,6 +1344,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       workbookRef.current = null;
       worksheetRef.current = null;
       logicalRowResolverRef.current = null;
+      projectedDataRowResolverRef.current = null;
     };
   }, [needsFlatten, flattenPreparing, flattened]);
 

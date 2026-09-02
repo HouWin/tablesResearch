@@ -908,6 +908,7 @@ UniverTable/
 ├── treeMerge.ts        # 展平行合并回树形源数据（getTreeData）
 ├── treeCollapse.ts     # 中小数据树折叠（hideRows）
 ├── treeViewport.ts     # 大数据树视口投影（≥5000 行）
+├── treeShared.ts       # treeCollapse / treeViewport 共用（toggle 索引、滚动锚点、merge 调度）
 ├── treeDataGenerator.ts# 演示数据生成、性能阈值常量
 ├── virtualRender.ts    # 平铺表懒虚拟写入
 ├── groupData.ts        # 平铺多重分组展平
@@ -990,7 +991,7 @@ UniverTable/
 | `groupStatistics` | 子节点自动汇总行（小计/总计） |
 | `liteMode` | 轻量展平，配合大数据生成器 |
 | `compactLiteRows` | 每叶子 1 行，跳过城市明细与 Region toggle |
-| `skipMerges` | 跳过海量跨行 merge（视口模式下 merge 懒应用） |
+| `skipMerges` | 视口模式跳过跨 Region 大 merge；仍保留维度列 `rowSpan≤16` 的 lite 纵向合并与垂直居中 |
 
 **折叠层级**
 
@@ -1377,14 +1378,22 @@ attachments: [{
 - 全量逻辑行保留在内存（`visibleLogicalRows`）
 - 工作表仅投影约 300 行窗口（`windowOffset` 随滚动翻页）
 - 折叠/展开过滤可见逻辑行，而非对全表 `hideRows`
-- 合并单元格按逻辑锚点增量更新（`planProjectedMerges` / `breakStaleProjectedMerges`）
+- 合并单元格按逻辑锚点增量更新（`planProjectedMerges` / `breakStaleProjectedMerges`）；`skipMerges: true` 时仅跳过跨 Region 大块 merge，维度列 lite 合并仍投影
+- 行写入：仅重写 slice 内变化的逻辑行，连续脏行批量 `setValues`；toggle 时 `forceMergeRebuild` 强制 merge 重建
 - 行号通过 `customizeRowHeader` 显示可见列表序号（1-based），非工作表物理行号
+
+**Ref 映射（视口模式）**
+
+| 方法 | 方向 | 说明 |
+|------|------|------|
+| `getLogicalDataRow(projected)` | 投影行 → 逻辑行 | 点击/读取 sheet 时用 |
+| `getProjectedDataRow(logical)` | 逻辑行 → 投影行 | `setCellValue` 等 API 写入时用；不在当前窗口返回 `null` |
 
 **统计**：`ref.getTreeViewportStats()` → `TreeViewportStats`（`displayRangeStart/End` 等）
 
 ### 6.3 树形 hideRows 模式（< 5000 行）
 
-`setupTreeCellCollapse()`：对全量工作表行使用 `hideRows` / `showRows`，展开 Region 后 `reapplyMergesForRowSpan` 修复 merge。
+`setupTreeCellCollapse()`：对全量工作表行使用 `hideRows` / `showRows`，展开 Region 后 `reapplyMergesInDataRange` 修复 merge。同一帧内多次 merge 重应用通过 `treeShared.createMergeReapplyScheduler` 合并为一次区间写入。
 
 ### 6.4 平铺懒虚拟
 

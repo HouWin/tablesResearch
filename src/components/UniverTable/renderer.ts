@@ -177,8 +177,11 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
     }
     // 获取当前表头区域。
     const range = worksheet.getRange(item.startRow, item.startColumn, item.rowSpan, item.columnSpan);
-    // 写入标题。
-    range.setValue(item.title);
+    // 写入标题（Univer 默认顶对齐，表头统一垂直居中）
+    range.setValue({
+      v: item.title,
+      s: { vt: VerticalAlign.MIDDLE },
+    });
 
     /**
      * -----------------------------------------------------
@@ -1010,35 +1013,47 @@ export const applyProjectedMerges = (
   dataStartRow: number,
   projectedLogicalRows: number[],
   previousMerges: PlannedProjectedMerge[] = [],
+  options?: {
+    planned?: PlannedProjectedMerge[];
+    forceRebuild?: boolean;
+  },
 ): PlannedProjectedMerge[] => {
-  // 如果工作表不存在，或者没有合并，或者没有逻辑行，则直接返回
   if (!worksheet || !merges.length || !projectedLogicalRows.length) {
     return [];
   }
 
-  // 创建应用的合并
   const applied: PlannedProjectedMerge[] = [];
-  // 创建计划
-  const planned = planProjectedMerges(merges, projectedLogicalRows);
-  // 创建逻辑到合并的映射
+  const planned = options?.planned ?? planProjectedMerges(merges, projectedLogicalRows);
+  const forceRebuild = options?.forceRebuild ?? false;
+  const mergeByKey = new Map<string, ETableMerge>();
+  merges.forEach((merge) => {
+    mergeByKey.set(`${merge.row}:${merge.column}`, merge);
+  });
   const prevByLogical = new Map(
     previousMerges.map((merge) => [logicalMergeSignature(merge), merge]),
   );
 
-  // 遍历计划
   planned.forEach((projectedRange) => {
     const logicalKey = logicalMergeSignature(projectedRange);
     const prevMerge = prevByLogical.get(logicalKey);
+    const matchesPrev =
+      prevMerge &&
+      prevMerge.row === projectedRange.row &&
+      prevMerge.column === projectedRange.column &&
+      prevMerge.rowSpan === projectedRange.rowSpan &&
+      prevMerge.columnSpan === projectedRange.columnSpan;
 
-    // 折叠/展开后物理 merge 可能已失效，不能仅凭 metadata 跳过重建
+    if (!forceRebuild && matchesPrev) {
+      applied.push(projectedRange);
+      return;
+    }
+
     if (prevMerge) {
       breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
     }
 
-    const sourceMerge = merges.find(
-      (merge) =>
-        merge.row === projectedRange.logicalRow &&
-        merge.column === projectedRange.column,
+    const sourceMerge = mergeByKey.get(
+      `${projectedRange.logicalRow}:${projectedRange.column}`,
     );
     if (!sourceMerge) {
       return;
