@@ -88,6 +88,7 @@ export default defineConfig({
     {
       name: 'SpreadJS Demo',
       path: '/spreadjs-demo',
+      layout: false,
       routes: [
         {
           path: '/spreadjs-demo',
@@ -105,9 +106,19 @@ export default defineConfig({
       ],
     },
   ],
-  npmClient: 'yarn',
-  utoopack: {},
+  npmClient: 'pnpm',
+  jsMinifierOptions: {
+    target: ['chrome80', 'es2020'],
+  },
   alias: {
+    '@univerjs/preset-sheets-data-validation/locales/zh-CN$': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/preset-sheets-data-validation/lib/es/locales/zh-CN.js',
+    ),
+    '@univerjs/preset-sheets-find-replace/locales/zh-CN$': path.resolve(
+      __dirname,
+      'node_modules/@univerjs/preset-sheets-find-replace/lib/es/locales/zh-CN.js',
+    ),
     '@univerjs/preset-sheets-data-validation': path.resolve(
       __dirname,
       'node_modules/@univerjs/preset-sheets-data-validation',

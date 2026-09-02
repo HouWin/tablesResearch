@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
+  CalendarDays,
   Eye,
   EyeOff,
   Info,
@@ -27,6 +28,7 @@ import {
 } from '../spreadsheet/business-cell-coordinate';
 import {
   COLUMNS,
+  COLUMN_HEADER_SECTIONS,
   FEATURES,
   HIERARCHY_COLUMN_COUNT,
   formatStatistic,
@@ -90,9 +92,11 @@ function useAnchoredPopover(anchorRef: RefObject<HTMLElement>) {
 
 export function DemoHeader({
   status,
+  licenseConfigured,
   onOpenFeatures,
 }: {
   status: DemoStatus;
+  licenseConfigured: boolean;
   onOpenFeatures: () => void;
 }) {
   const statusLabel =
@@ -106,33 +110,41 @@ export function DemoHeader({
     <header className="demo-header">
       <div className="title-lockup">
         <div className="logo-mark" aria-hidden="true">
-          S
+          经
         </div>
         <div>
-          <div className="eyebrow">SpreadJS 19.1 · 功能验收 Demo</div>
+          <div className="eyebrow">经营分析工作台 · SpreadJS 19.1</div>
           <h1>经营数据表</h1>
         </div>
       </div>
       <div className="header-meta">
-        <span className="meta-pill">
-          <TableProperties size={13} />
-          电子表格内核
+        <span className="meta-pill period">
+          <CalendarDays size={14} />
+          2026 年 8 月 · CNY
         </span>
-        <span className="meta-pill warning">
-          <Info size={13} />
-          评估许可 · localhost
-        </span>
+        {licenseConfigured ? (
+          <span className="meta-pill licensed">
+            <TableProperties size={14} />
+            生产许可已配置
+          </span>
+        ) : (
+          <span className="meta-pill warning">
+            <Info size={14} />
+            评估许可 · 仅限本地
+          </span>
+        )}
         <button
           className="feature-count"
           type="button"
           aria-haspopup="dialog"
+          aria-label={`${FEATURES.length} 项能力清单`}
           onClick={onOpenFeatures}
         >
           <CheckCircle2 size={14} />
           <span>{FEATURES.length} 项能力</span>
         </button>
         <span
-          className={`ready-state ${status === 'error' ? 'is-error' : ''}`}
+          className={`ready-state is-${status}`}
           role="status"
           aria-live="polite"
         >
@@ -149,6 +161,7 @@ export function SearchPopover({
   query,
   result,
   busy,
+  onClose,
   onQueryChange,
   onSearch,
 }: {
@@ -156,6 +169,7 @@ export function SearchPopover({
   query: string;
   result: string;
   busy: boolean;
+  onClose: () => void;
   onQueryChange: (query: string) => void;
   onSearch: (direction: 1 | -1) => void;
 }) {
@@ -176,7 +190,21 @@ export function SearchPopover({
       aria-label="搜索全部业务层级"
       aria-busy={busy}
     >
-      <label htmlFor="sheet-search">搜索全部业务层级（包括已折叠内容）</label>
+      <div className="popover-title">
+        <div>
+          <Search size={15} />
+          <span>全表搜索</span>
+        </div>
+        <button
+          className="popover-close-button"
+          type="button"
+          onClick={onClose}
+          aria-label="关闭搜索"
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <label htmlFor="sheet-search">关键词（包含已折叠层级）</label>
       <div className="search-input-row">
         <Search size={15} />
         <input
@@ -192,7 +220,7 @@ export function SearchPopover({
             if (busy) return;
             onSearch(event.shiftKey ? -1 : 1);
           }}
-          placeholder="搜索任意单元格内容…"
+          placeholder="输入产品、区域、负责人或数值…"
         />
         {query ? (
           <button
@@ -323,7 +351,17 @@ export function DimensionLocatorPopover({
           <LocateFixed size={14} />
           <span id="dimension-locator-title">按业务维度定位</span>
         </div>
-        <small>仅用于验证</small>
+        <div>
+          <small>高级工具</small>
+          <button
+            className="popover-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭精确定位"
+          >
+            <X size={15} />
+          </button>
+        </div>
       </div>
       <label htmlFor="dimension-locator-input">行维与列维 JSON</label>
       <textarea
@@ -362,11 +400,13 @@ export function DimensionLocatorPopover({
 export function ColumnVisibilityPopover({
   anchorRef,
   visibility,
+  onClose,
   onToggle,
   onShowAll,
 }: {
   anchorRef: RefObject<HTMLElement>;
   visibility: boolean[];
+  onClose: () => void;
   onToggle: (column: number, visible: boolean) => void;
   onShowAll: () => void;
 }) {
@@ -383,10 +423,13 @@ export function ColumnVisibilityPopover({
       aria-label="显示或隐藏列"
     >
       <div className="popover-title">
-        <span>显示 / 隐藏列</span>
+        <div>
+          <Eye size={14} />
+          <span>列管理</span>
+        </div>
         <div>
           <small>
-            {visibleCount}/{COLUMNS.length}
+            已显示 {visibleCount}/{COLUMNS.length}
           </small>
           <button
             type="button"
@@ -395,21 +438,40 @@ export function ColumnVisibilityPopover({
           >
             全部显示
           </button>
+          <button
+            className="popover-close-button"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭列管理"
+          >
+            <X size={15} />
+          </button>
         </div>
       </div>
       <div className="column-list">
-        {COLUMNS.map((column, index) => (
-          <label key={column.field}>
-            <input
-              type="checkbox"
-              checked={visibility[index]}
-              disabled={index < HIERARCHY_COLUMN_COUNT}
-              onChange={(event) => onToggle(index, event.target.checked)}
-            />
-            {visibility[index] ? <Eye size={13} /> : <EyeOff size={13} />}
-            <span>{column.label}</span>
-            {index < HIERARCHY_COLUMN_COUNT ? <small>固定</small> : null}
-          </label>
+        {COLUMN_HEADER_SECTIONS.map((section) => (
+          <section key={section.id} className="column-section">
+            <h3>{section.label}</h3>
+            {COLUMNS.slice(
+              section.startCol,
+              section.startCol + section.colCount,
+            ).map((column, sectionIndex) => {
+              const index = section.startCol + sectionIndex;
+              return (
+                <label key={column.field}>
+                  <input
+                    type="checkbox"
+                    checked={visibility[index]}
+                    disabled={index < HIERARCHY_COLUMN_COUNT}
+                    onChange={(event) => onToggle(index, event.target.checked)}
+                  />
+                  {visibility[index] ? <Eye size={14} /> : <EyeOff size={14} />}
+                  <span>{column.label}</span>
+                  {index < HIERARCHY_COLUMN_COUNT ? <small>固定</small> : null}
+                </label>
+              );
+            })}
+          </section>
         ))}
       </div>
     </div>
@@ -496,7 +558,10 @@ export function Drawer({
 }) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const titleId = useId();
+  const subtitleId = useId();
 
   useEffect(() => {
     const previousFocus =
@@ -507,6 +572,11 @@ export function Drawer({
     (initialFocusRef?.current ?? closeButtonRef.current)?.focus();
 
     const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
       if (event.key !== 'Tab' || !drawer) return;
       const focusable = [
         ...drawer.querySelectorAll<HTMLElement>(
@@ -547,10 +617,11 @@ export function Drawer({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={subtitleId}
       >
         <header className="drawer-header">
           <div>
-            <span>{subtitle}</span>
+            <span id={subtitleId}>{subtitle}</span>
             <h2 id={titleId}>{title}</h2>
           </div>
           <button

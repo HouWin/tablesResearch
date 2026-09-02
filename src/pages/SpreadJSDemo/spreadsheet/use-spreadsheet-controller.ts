@@ -195,11 +195,23 @@ export type SpreadsheetActions = {
   locateBusinessCell: (dimension: BusinessCellDimension) => boolean;
 };
 
-export const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
+export const ATTACHMENT_ACCEPT =
+  'image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.xls,.xlsx';
 export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_CELL = 10;
 const ATTACHMENT_EXTENSION_PATTERN =
-  /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
+  /\.(?:gif|jpe?g|png|webp|pdf|docx?|xlsx?)$/i;
+const ACCEPTED_ATTACHMENT_MIME_TYPES = new Set([
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
 
 type RegularSearchMatch = {
   nodeId: string;
@@ -232,7 +244,7 @@ function attachmentIconDataUrl(count: number) {
 
 function isAcceptedAttachment(file: File) {
   return (
-    file.type.startsWith('image/') ||
+    ACCEPTED_ATTACHMENT_MIME_TYPES.has(file.type) ||
     ATTACHMENT_EXTENSION_PATTERN.test(file.name)
   );
 }
@@ -517,7 +529,7 @@ export function useSpreadsheetController(
       ])) as [GCModule, unknown];
       if (cancelled || !hostRef.current) return;
 
-      const licenseKey = process.env.NEXT_PUBLIC_SPREADJS_LICENSE_KEY;
+      const licenseKey = process.env.UMI_APP_SPREADJS_LICENSE_KEY;
       if (licenseKey) GC.Spread.Sheets.LicenseKey = licenseKey;
       GC.Spread.Common.CultureManager.culture('zh-cn');
 
@@ -2697,14 +2709,16 @@ export function useSpreadsheetController(
             0,
           );
           const accepted: File[] = [];
+          const signatures = new Set(
+            current.map(
+              (attachment) =>
+                `${attachment.name}:${attachment.size}:${attachment.lastModified}`,
+            ),
+          );
           let rejected = 0;
           files.forEach((file) => {
-            const duplicate = current.some(
-              (attachment) =>
-                attachment.name === file.name &&
-                attachment.size === file.size &&
-                attachment.lastModified === file.lastModified,
-            );
+            const signature = `${file.name}:${file.size}:${file.lastModified}`;
+            const duplicate = signatures.has(signature);
             if (
               !isAcceptedAttachment(file) ||
               file.size > MAX_ATTACHMENT_SIZE ||
@@ -2715,6 +2729,7 @@ export function useSpreadsheetController(
               return;
             }
             accepted.push(file);
+            signatures.add(signature);
           });
           if (!accepted.length) {
             notify(
@@ -2891,12 +2906,14 @@ export function useSpreadsheetController(
             }`,
             'error',
           );
-          console.info('[SpreadJS Demo][编辑已阻止]', {
-            cell: `${columnName(args.col)}${args.row + 1}`,
-            rowId: activeRows[args.row]?.id,
-            field: COLUMNS[args.col]?.field,
-            reason: editability.reason,
-          });
+          if (process.env.NODE_ENV !== 'production') {
+            console.info('[SpreadJS Demo][编辑已阻止]', {
+              cell: `${columnName(args.col)}${args.row + 1}`,
+              rowId: activeRows[args.row]?.id,
+              field: COLUMNS[args.col]?.field,
+              reason: editability.reason,
+            });
+          }
         },
       );
       sheet.bind(
@@ -2958,14 +2975,16 @@ export function useSpreadsheetController(
               }：${readonlyTarget.reason}`,
               'error',
             );
-            console.warn('[SpreadJS Demo][粘贴已阻止]', {
-              cell: `${columnName(readonlyTarget.col)}${
-                readonlyTarget.row + 1
-              }`,
-              reason: readonlyTarget.reason,
-              pasteRowCount,
-              pasteColCount,
-            });
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('[SpreadJS Demo][粘贴已阻止]', {
+                cell: `${columnName(readonlyTarget.col)}${
+                  readonlyTarget.row + 1
+                }`,
+                reason: readonlyTarget.reason,
+                pasteRowCount,
+                pasteColCount,
+              });
+            }
             return;
           }
           clipboardHistorySnapshot = captureClipboardHistory(
@@ -3376,7 +3395,10 @@ export function useSpreadsheetController(
     toast,
     datasetLabel,
     aggregateValue,
+    licenseConfigured: Boolean(process.env.UMI_APP_SPREADJS_LICENSE_KEY),
     openPanel,
     tableBusy,
   };
 }
+
+export type SpreadsheetController = ReturnType<typeof useSpreadsheetController>;
