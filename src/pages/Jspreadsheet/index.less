@@ -50,6 +50,14 @@
   min-height: 0;
 }
 
+.jss-page__body--side-collapsed {
+  grid-template-columns: 1fr;
+}
+
+.jss-page__body--side-collapsed .jss-page__side {
+  display: none;
+}
+
 .jss-page__sheet {
   min-width: 0;
   min-height: 0;
@@ -104,6 +112,16 @@
 .jss-page__sheet :global(.jss_toolbar) {
   flex-shrink: 0;
   overflow: visible;
+}
+
+.jss-page__sheet :global(.jss_toolbar .jss-toolbar-label) {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 24px;
+  white-space: nowrap;
+  color: #333;
+  cursor: pointer;
 }
 
 .jss-page__sheet :global(.jtoolbar .material-icons),

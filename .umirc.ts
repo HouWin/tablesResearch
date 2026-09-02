@@ -68,7 +68,22 @@ export default defineConfig({
     {
       name: 'Jspreadsheet',
       path: '/jspreadsheet',
-      component: './Jspreadsheet',
+      routes: [
+        {
+          path: '/jspreadsheet',
+          redirect: '/jspreadsheet/demo',
+        },
+        {
+          name: '大数据演示',
+          path: '/jspreadsheet/demo',
+          component: './Jspreadsheet/Demo',
+        },
+        {
+          name: '扩展页',
+          path: '/jspreadsheet/lab',
+          component: './Jspreadsheet/Lab',
+        },
+      ],
     },
     {
       name: 'SpreadJS Demo',
