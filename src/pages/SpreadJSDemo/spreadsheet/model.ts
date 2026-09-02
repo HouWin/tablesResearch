@@ -1,3 +1,47 @@
+import {
+  AVG_ORDER_COLUMN,
+  COLUMNS,
+  COMPLETION_COLUMN,
+  DECIMAL_COLUMN,
+  PRODUCT_ATTRIBUTE_COLUMN,
+  PRODUCT_HIERARCHY_COLUMN,
+  REGION_HIERARCHY_COLUMN,
+  REVENUE_COLUMN,
+  SERVICE_REVENUE_COLUMN,
+} from './business-column-schema';
+
+export {
+  BUSINESS_COLUMN_DATA,
+  COLUMNS,
+  COLUMN_GROUPS,
+  COLUMN_HEADER_CELLS,
+  COLUMN_HEADER_GROUPS,
+  COLUMN_HEADER_ROW_COUNT,
+  COLUMN_HEADER_SECTIONS,
+  HIERARCHY_COLUMN_COUNT,
+  AVG_ORDER_COLUMN,
+  COMPLETION_COLUMN,
+  DECIMAL_COLUMN,
+  ORDERS_COLUMN,
+  PRODUCT_ATTRIBUTE_COLUMN,
+  PRODUCT_HIERARCHY_COLUMN,
+  REGION_HIERARCHY_COLUMN,
+  REVENUE_COLUMN,
+  SERVICE_REVENUE_COLUMN,
+  STATUS_COLUMN,
+  STRESS_TEXT_SEARCH_COLUMNS,
+  UPDATED_AT_COLUMN,
+  VERIFIED_COLUMN,
+} from './business-column-schema';
+export type {
+  BusinessColumnGroup,
+  BusinessColumnLeaf,
+  BusinessColumnNode,
+  ColumnDefinition,
+  ColumnHeaderCell,
+  ColumnValueType,
+} from './business-column-schema';
+
 export type Status = '已核验' | '待复核' | '异常';
 export type PanelName =
   | 'comment'
@@ -23,6 +67,7 @@ export type ToastState = {
 };
 
 export type BusinessNode = {
+  /** 后台记录 ID；汇总节点和明细节点都必须全局唯一。 */
   id: string;
   name: string;
   hierarchyRole: HierarchyRole;
@@ -91,54 +136,6 @@ export type ViewRow = BusinessNode & {
   regionExpanded: boolean;
 };
 
-export const BUSINESS_CELL_COORDINATE_SCHEMA = 'business-cell/v1' as const;
-
-/**
- * 前后端共同使用的业务单元格坐标。
- *
- * 行号和 ViewRow.id 都属于当前可见投影，展开、折叠或下钻后可能变化；
- * 这里仅使用后端业务 ID 描述产品、区域、底层记录和指标字段。
- */
-export type BusinessCellCoordinate = {
-  schema: typeof BUSINESS_CELL_COORDINATE_SCHEMA;
-  dataset: Exclude<DataMode, 'loading'>;
-  dimensions: {
-    product: {
-      id: string;
-      parentId: string | null;
-      label: string;
-      level: 'category' | 'subcategory';
-    };
-    region: {
-      id: string;
-      label: string;
-      level: 'region' | 'detail';
-      member: {
-        id: string;
-        label: string;
-      } | null;
-    };
-  };
-  record: {
-    id: string;
-    role: HierarchyRole;
-  };
-  metric: {
-    field: BusinessField;
-    label: string;
-  };
-};
-
-export type BusinessCellLocation = {
-  row: number;
-  col: number;
-  projectionRowId: string;
-  productId: string;
-  productParentId: string | null;
-  regionRootId: string;
-  regionDepth: 0 | 1;
-};
-
 export type OutlineDimension = 'product' | 'region';
 export type ExtensionExpansionState = ReadonlyMap<string, ReadonlySet<string>>;
 export type OutlineSnapshot = {
@@ -195,12 +192,6 @@ export type HistoryItem = {
   createdAt: number;
 };
 
-export type ColumnDefinition = {
-  field: ColumnField;
-  label: string;
-  width: number;
-};
-
 export const AGGREGATE_MODES = [
   'SUM',
   'AVG',
@@ -210,68 +201,9 @@ export const AGGREGATE_MODES = [
   'CUSTOM',
 ] as const satisfies readonly AggregateMode[];
 
-export const COLUMNS: ColumnDefinition[] = [
-  { field: 'productHierarchy', label: '产品层级', width: 178 },
-  { field: 'productAttribute', label: '产品属性', width: 144 },
-  { field: 'regionHierarchy', label: '区域层级', width: 168 },
-  { field: 'revenue', label: '净收入', width: 112 },
-  { field: 'productRevenue', label: '商品收入', width: 108 },
-  { field: 'serviceRevenue', label: '服务收入', width: 108 },
-  { field: 'orders', label: '订单数', width: 92 },
-  { field: 'onlineOrders', label: '线上订单', width: 92 },
-  { field: 'offlineOrders', label: '线下订单', width: 92 },
-  { field: 'avgOrder', label: '客单价', width: 98 },
-  { field: 'completion', label: '目标达成', width: 96 },
-  { field: 'owner', label: '负责人', width: 84 },
-  { field: 'status', label: '核验状态', width: 96 },
-  { field: 'verified', label: '已核验', width: 82 },
-  { field: 'updatedAt', label: '更新日期', width: 104 },
-  { field: 'adjustmentFactor', label: '调整系数', width: 96 },
-];
-
-export const COLUMN_GROUPS = [
-  { summaryCol: 3, detailStart: 4, detailCount: 7 },
-  { summaryCol: 3, detailStart: 4, detailCount: 2 },
-  { summaryCol: 6, detailStart: 7, detailCount: 3 },
-  { summaryCol: 11, detailStart: 12, detailCount: 4 },
-  { summaryCol: 11, detailStart: 12, detailCount: 2 },
-] as const;
-
-export const COLUMN_HEADER_SECTIONS = [
-  { label: '业务维度', startCol: 0, colCount: 3 },
-  { label: '核心经营指标', startCol: 3, colCount: 8 },
-  { label: '业务治理', startCol: 11, colCount: 5 },
-] as const;
-
-// 业务维度列（产品树/产品属性/区域树）没有真实的二级表头细分，
-// 因此不在此处列出——渲染时会让 COLUMN_HEADER_SECTIONS 的对应
-// 表头纵向合并两行，避免出现内部代码名（rowTree / extensionRows）
-// 这类开发调试信息展示给业务用户。
-export const COLUMN_HEADER_GROUPS = [
-  { label: '收入指标', startCol: 3, colCount: 3 },
-  { label: '订单指标', startCol: 6, colCount: 4 },
-  { label: '目标管理', startCol: 10, colCount: 1 },
-  { label: '责任与核验', startCol: 11, colCount: 3 },
-  { label: '记录信息', startCol: 14, colCount: 2 },
-] as const;
-
-export const PRODUCT_HIERARCHY_COLUMN = 0;
-export const PRODUCT_ATTRIBUTE_COLUMN = 1;
-export const REGION_HIERARCHY_COLUMN = 2;
-export const HIERARCHY_COLUMN_COUNT = 3;
-export const REVENUE_COLUMN = 3;
-export const SERVICE_REVENUE_COLUMN = 5;
-export const ORDERS_COLUMN = 6;
-export const AVG_ORDER_COLUMN = 9;
-export const COMPLETION_COLUMN = 10;
-export const STATUS_COLUMN = 12;
-export const VERIFIED_COLUMN = 13;
-export const UPDATED_AT_COLUMN = 14;
-export const DECIMAL_COLUMN = 15;
 export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
-export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 11, 12, 13, 14]);
 // 模拟一次“分批拉取”的后端网络往返耗时：滚动到已加载数据底部时，
 // 每批新数据都会先经历这段延迟，再返回给前端写入表格。
 export const STRESS_PAGE_FETCH_DELAY_MS = 220;
@@ -1050,7 +982,14 @@ function backendRegionSummary(
   };
 }
 
-export const BUSINESS_DATA = [
+/**
+ * 模拟后台返回的完整树形业务数据。
+ *
+ * children 表达实际业务层级；每一级节点都包含后台给出的完整指标，
+ * 因此 category、subcategory、region 汇总和 detail 明细都能独立编辑。
+ * category 的 regionSummaries 是跨子类区域汇总，不由前端重新计算。
+ */
+export const BUSINESS_DATA: BusinessNode[] = [
   makeGroup(
     'furniture',
     '家具',
@@ -1297,6 +1236,30 @@ export const BUSINESS_DATA = [
   ),
 ];
 
+/**
+ * 在接入真实接口时尽早暴露列字段与业务数据不匹配的问题。
+ * recordId 必须唯一，所有非投影列都必须能在每个业务节点上读取。
+ */
+function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
+  const recordIds = new Set<string>();
+  const visit = (node: BusinessNode) => {
+    if (recordIds.has(node.id))
+      throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
+    recordIds.add(node.id);
+    COLUMNS.forEach((column) => {
+      if (!isHierarchyField(column.field) && !(column.field in node))
+        throw new Error(
+          `BUSINESS_DATA 记录 ${node.id} 缺少列字段：${column.field}`,
+        );
+    });
+    node.children?.forEach(visit);
+    node.regionSummaries?.forEach(visit);
+  };
+  nodes.forEach(visit);
+}
+
+assertBusinessDataMatchesColumns(BUSINESS_DATA);
+
 export const INITIAL_PRODUCT_EXPANDED = ['furniture'] as const;
 
 const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
@@ -1310,6 +1273,24 @@ const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
   'technology-mobile': '移动终端',
   'technology-equipment': '商用硬件',
 };
+
+const REGION_KEYS: Readonly<Record<string, string>> = {
+  华东: 'east',
+  华中: 'central',
+  华南: 'south',
+  华北: 'north',
+};
+
+function normalizedTreeKey(label: string) {
+  return (
+    REGION_KEYS[label] ??
+    label
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^\p{Letter}\p{Number}-]/gu, '')
+  );
+}
 
 type VisibleProductNode = {
   node: BusinessNode;
@@ -1426,24 +1407,6 @@ function productRegionSources(product: BusinessNode) {
       : [product];
   return productNodes.flatMap((node) =>
     (node.children ?? []).filter((child) => child.hierarchyRole === 'region'),
-  );
-}
-
-const REGION_KEYS: Readonly<Record<string, string>> = {
-  华东: 'east',
-  华中: 'central',
-  华南: 'south',
-  华北: 'north',
-};
-
-function normalizedTreeKey(label: string) {
-  return (
-    REGION_KEYS[label] ??
-    label
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^\p{Letter}\p{Number}-]/gu, '')
   );
 }
 
@@ -1691,142 +1654,6 @@ export function viewForNode(
 
 export function stableCellKey(nodeId: string, field: string) {
   return `${nodeId}::${field}`;
-}
-
-/** 将当前投影行转换成可传给后端的稳定业务坐标。 */
-export function toBusinessCellCoordinate(
-  row: ViewRow | undefined,
-  col: number,
-  dataset: Exclude<DataMode, 'loading'>,
-): BusinessCellCoordinate | null {
-  const column = COLUMNS[col];
-  const sourceNode = row?.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
-  if (!row || !column || isHierarchyField(column.field) || !sourceNode)
-    return null;
-  return {
-    schema: BUSINESS_CELL_COORDINATE_SCHEMA,
-    dataset,
-    dimensions: {
-      product: {
-        id: row.productId,
-        parentId: row.productParentId,
-        label: row.productLabel,
-        level: row.productIsGroup ? 'category' : 'subcategory',
-      },
-      region: {
-        id: row.regionBusinessId,
-        label: row.regionRootLabel,
-        level: row.regionDepth === 0 ? 'region' : 'detail',
-        member:
-          row.regionDepth === 0
-            ? null
-            : { id: sourceNode.id, label: row.regionLabel },
-      },
-    },
-    record: {
-      id: sourceNode.id,
-      role: sourceNode.hierarchyRole,
-    },
-    metric: {
-      field: column.field,
-      label: column.label,
-    },
-  };
-}
-
-/**
- * 业务坐标的稳定序列化形式，可作为 API 幂等键或日志关联键。
- * 显示标签不参与身份判断，改名不会产生新的业务单元格。
- */
-export function businessCellCoordinateKey(coordinate: BusinessCellCoordinate) {
-  return [
-    coordinate.schema,
-    coordinate.dataset,
-    coordinate.dimensions.product.id,
-    coordinate.dimensions.region.id,
-    coordinate.record.id,
-    coordinate.metric.field,
-  ]
-    .map((part) => encodeURIComponent(part))
-    .join('|');
-}
-
-/** 运行时校验后端返回值，避免不完整坐标进入定位流程。 */
-export function isBusinessCellCoordinate(
-  value: unknown,
-): value is BusinessCellCoordinate {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<BusinessCellCoordinate>;
-  const product = candidate.dimensions?.product;
-  const region = candidate.dimensions?.region;
-  const regionMember = region?.member;
-  const record = candidate.record;
-  const metric = candidate.metric;
-  return (
-    candidate.schema === BUSINESS_CELL_COORDINATE_SCHEMA &&
-    (candidate.dataset === 'regular' || candidate.dataset === 'stress') &&
-    typeof product?.id === 'string' &&
-    (product.parentId === null || typeof product.parentId === 'string') &&
-    typeof product.label === 'string' &&
-    (product.level === 'category' || product.level === 'subcategory') &&
-    typeof region?.id === 'string' &&
-    typeof region.label === 'string' &&
-    (region.level === 'region' || region.level === 'detail') &&
-    (regionMember === null ||
-      (typeof regionMember?.id === 'string' &&
-        typeof regionMember.label === 'string')) &&
-    ((region.level === 'region' && regionMember === null) ||
-      (region.level === 'detail' && regionMember !== null)) &&
-    typeof record?.id === 'string' &&
-    (regionMember === null || regionMember.id === record.id) &&
-    (record.role === 'category' ||
-      record.role === 'subcategory' ||
-      record.role === 'region' ||
-      record.role === 'detail') &&
-    typeof metric?.field === 'string' &&
-    typeof metric.label === 'string' &&
-    COLUMNS.some(
-      (column) =>
-        !isHierarchyField(column.field) && column.field === metric.field,
-    )
-  );
-}
-
-/**
- * 将后端返回的业务坐标反解为当前 rows 中的实际行列位置。
- * 调用方可以先传入全展开投影获取祖先信息，再展开必要层级并对可见行重试。
- */
-export function resolveBusinessCellCoordinate(
-  rows: readonly ViewRow[],
-  coordinate: BusinessCellCoordinate,
-): BusinessCellLocation | null {
-  if (!isBusinessCellCoordinate(coordinate)) return null;
-  const col = COLUMNS.findIndex(
-    (column) => column.field === coordinate.metric.field,
-  );
-  if (col < 0 || isHierarchyField(COLUMNS[col].field)) return null;
-  const row = rows.findIndex(
-    (candidate) =>
-      candidate.productId === coordinate.dimensions.product.id &&
-      candidate.regionBusinessId === coordinate.dimensions.region.id &&
-      (candidate.regionDepth === 0
-        ? coordinate.dimensions.region.member === null
-        : coordinate.dimensions.region.member?.id ===
-          candidate.sourceNodes[0]?.id) &&
-      candidate.sourceNodes.length === 1 &&
-      candidate.sourceNodes[0].id === coordinate.record.id,
-  );
-  if (row < 0) return null;
-  const match = rows[row];
-  return {
-    row,
-    col,
-    projectionRowId: match.id,
-    productId: match.productId,
-    productParentId: match.productParentId,
-    regionRootId: match.regionRootId,
-    regionDepth: match.regionDepth,
-  };
 }
 
 export function columnName(col: number) {
@@ -2491,34 +2318,33 @@ export function getCellEditability(
   const column = COLUMNS[col];
   if (!row || !column)
     return { editable: false, reason: '单元格不存在', sourceNode: null };
-  if (isHierarchyField(column.field)) {
+  if (!column.editable) {
     return {
       editable: false,
-      reason: '层级和属性字段由业务数据源维护',
-      sourceNode: null,
-    };
-  }
-  if (column.field === 'avgOrder') {
-    return {
-      editable: false,
-      reason: '客单价由净收入 ÷ 订单数自动计算',
+      reason: isHierarchyField(column.field)
+        ? '层级和属性字段由业务数据源维护'
+        : column.field === 'avgOrder'
+        ? '客单价由净收入 ÷ 订单数自动计算'
+        : '后台列配置将该字段设为只读',
       sourceNode: null,
     };
   }
   const sourceNode = row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
-  if (
-    row.regionDepth === 0 ||
-    !sourceNode ||
-    sourceNode.hierarchyRole !== 'detail' ||
-    sourceNode.children?.length
-  ) {
+  if (!sourceNode) {
     return {
       editable: false,
-      reason: '汇总数据由下级明细自动聚合，不能直接编辑',
+      reason: '当前投影无法唯一映射到一条后台业务记录',
       sourceNode: null,
     };
   }
-  return { editable: true, reason: '可编辑明细单元格', sourceNode };
+  return {
+    editable: true,
+    reason:
+      sourceNode.hierarchyRole === 'detail'
+        ? '可编辑明细记录'
+        : '可编辑后台汇总记录',
+    sourceNode,
+  };
 }
 
 export function viewRowCellValue(row: ViewRow, col: number) {
@@ -2686,13 +2512,10 @@ export function roundToTwoDecimals(value: number) {
 export function numericDisplayForColumn(
   col: number,
 ): Exclude<NumericDisplay, 'mixed'> {
-  if (
-    (col >= REVENUE_COLUMN && col <= SERVICE_REVENUE_COLUMN) ||
-    col === AVG_ORDER_COLUMN
-  )
-    return 'currency';
-  if (col === COMPLETION_COLUMN) return 'percent';
-  if (col === DECIMAL_COLUMN) return 'decimal';
+  const valueType = COLUMNS[col]?.valueType;
+  if (valueType === 'currency') return 'currency';
+  if (valueType === 'percent') return 'percent';
+  if (valueType === 'decimal') return 'decimal';
   return 'number';
 }
 

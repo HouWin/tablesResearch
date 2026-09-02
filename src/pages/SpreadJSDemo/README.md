@@ -10,6 +10,8 @@
 - 页面入口：[`index.tsx`](./index.tsx)
 - React 通用界面：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)
 - 数据模型与二维投影：[`spreadsheet/model.ts`](./spreadsheet/model.ts)
+- 后台树形列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts)
+- 前后端业务维度：[`spreadsheet/business-cell-coordinate.ts`](./spreadsheet/business-cell-coordinate.ts)
 - SpreadJS 初始化、渲染和事件：[`spreadsheet/use-spreadsheet-controller.ts`](./spreadsheet/use-spreadsheet-controller.ts)
 - 剪贴板回调适配：[`spreadsheet/clipboard.ts`](./spreadsheet/clipboard.ts)
 - 页面样式：[`index.less`](./index.less)
@@ -24,7 +26,9 @@ SpreadJSDemoPage（React 页面）
     ↓ useSpreadsheetController()
 创建 SpreadJS Workbook，并注册命令与事件
     ↓
-BUSINESS_DATA + 产品展开状态 + 区域展开状态
+BUSINESS_DATA（children 行树，包含全部汇总与明细）
+    + BUSINESS_COLUMN_DATA（children 列树）
+    + 产品展开状态 + 区域展开状态
     ↓ createBusinessProjectionRows()
 ViewRow[]
     ↓ viewRowValues() / renderRows()
@@ -36,6 +40,72 @@ SpreadJS Worksheet
 ---
 
 ## 1. 表格实现的功能
+
+### 1.0 后台业务数据结构
+
+`BUSINESS_DATA` 使用与业务层级一致的 `children` 树。`id` 就是后台记录 ID，每一级节点都直接包含自己的完整指标：
+
+```ts
+[
+  {
+    id: 'furniture',
+    name: '家具',
+    hierarchyRole: 'category',
+    revenue: 15099200, // 家具汇总，由后台直接返回
+    // ...其他完整指标
+    children: [
+      {
+        id: 'furniture-chairs',
+        name: '座椅',
+        hierarchyRole: 'subcategory',
+        revenue: 9081200, // 座椅汇总
+        children: [
+          {
+            id: 'chairs-east',
+            name: '华东',
+            hierarchyRole: 'region',
+            revenue: 4267000, // 座椅 × 华东汇总
+            children: [
+              {
+                id: 'chairs-zhejiang',
+                name: '浙江',
+                hierarchyRole: 'detail',
+                revenue: 2483500
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    regionSummaries: [
+      {
+        id: 'furniture-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 7991800,
+        detailIds: ['bookcases-shanghai', 'bookcases-jiangsu', 'chairs-zhejiang', 'chairs-anhui']
+      }
+    ]
+  }
+]
+```
+
+结构约定：
+
+- 主业务层级始终通过 `children` 表达：产品大类 → 产品子类 → 区域 → 明细；
+- `category`、`subcategory`、`region` 都是后台返回的可编辑汇总记录，不由前端根据子节点重算；
+- `detail` 是叶子明细；
+- 顶层产品大类的 `regionSummaries` 是跨多个产品子类的区域汇总。它同样由后台直接返回；`detailIds` 只引用树中已有明细，避免复制同一条记录；
+- 所有节点 `id` 全局唯一，因此 `id + metricField` 可以唯一确定一个业务单元格。
+
+例如，后台编辑“座椅 × 华东”的净收入时，只需要：
+
+```ts
+    {
+      recordId: 'chairs-east',
+      metricField: 'revenue'
+    }
+```
 
 ### 1.1 业务维度和双列独立折叠
 
@@ -69,7 +139,58 @@ regionExpandedByProduct: Map<productId, Set<regionId>>
 
 ### 1.2 多级表头、冻结列和列分组
 
-`COLUMNS` 定义 16 个业务字段；`COLUMN_HEADER_SECTIONS` 和 `COLUMN_HEADER_GROUPS` 生成三级表头：
+列配置同样模拟由后台返回。后台只需要返回一棵直观的 `BUSINESS_COLUMN_DATA` 树，不再分别维护平铺列、表头合并范围和 Outline 数字：
+
+```ts
+{
+  id: 'core-metrics',
+  label: '核心经营指标',
+  summaryField: 'revenue', // 整组折叠后保留净收入
+  children: [
+    {
+      id: 'income-metrics',
+      label: '收入指标',
+      summaryField: 'revenue',
+      children: [
+        {
+          id: 'revenue',
+          field: 'revenue',
+          label: '净收入',
+          width: 112,
+          valueType: 'currency',
+          editable: true
+        },
+        // 商品收入、服务收入……
+      ]
+    }
+  ]
+}
+```
+
+其中：
+
+- 有 `children` 的节点是合并表头分组；
+- 有 `field` 的节点是实际数据列；
+- 数组顺序就是最终列顺序；
+- `summaryField` 指定列组折叠后常驻的汇总列；
+- `frozen` 指定需要冻结的根分组；
+- `valueType` 控制金额、整数、百分比、日期等显示格式；
+- `editable` 控制该字段是否允许编辑。
+
+前端通过 `buildBusinessColumnModel()` 一次性派生：
+
+```text
+BUSINESS_COLUMN_DATA
+  ├─ COLUMNS：叶子列顺序
+  ├─ COLUMN_HEADER_CELLS：任意层级表头及合并范围
+  ├─ COLUMN_GROUPS：SpreadJS 列 Outline
+  ├─ HIERARCHY_COLUMN_COUNT：左侧冻结列数
+  └─ field → columnIndex：业务字段到物理列号
+```
+
+列树与 `BUSINESS_DATA` 通过 `field` 配合：普通叶子列的 `field` 必须是业务节点上的字段，例如 `revenue`；产品层级、产品属性和区域层级是投影字段。应用启动时会检查所有 `recordId` 唯一，并检查每个业务节点是否具有后台列配置要求的字段，配置错误会立即报出。
+
+最终生成的表头包括：
 
 - 业务维度；
 - 核心经营指标；
@@ -105,22 +226,24 @@ DrillView 路径
 - 状态与“已核验”字段联动；
 - 收入、商品收入、服务收入与客单价保持计算一致；
 - 订单数、线上订单、线下订单与客单价保持计算一致；
-- 层级列、产品属性、自动计算的客单价和所有汇总数据只读。
+- 层级列、产品属性和自动计算的客单价只读；后台返回的汇总记录与明细记录都可编辑。
 
-`getCellEditability()` 是唯一的可编辑策略入口。只有能够唯一映射到一个底层叶子明细的业务单元格才允许编辑；区域汇总、产品汇总以及由多个明细合并出的城市数据都不能直接改写。控制器同时使用 SpreadJS 单元格锁定、`EditStarting` 和粘贴前校验执行这套规则，不能只依赖灰色样式。
+`getCellEditability()` 是唯一的可编辑策略入口。只要当前投影单元格能够唯一映射到 `BUSINESS_DATA` 中的一条后台记录，就允许编辑；这既包括叶子明细，也包括产品、子类和区域汇总。只有层级/属性字段、自动派生的客单价或无法唯一映射的投影数据只读。控制器同时使用 SpreadJS 单元格锁定、`EditStarting` 和粘贴前校验执行这套规则，不能只依赖样式。
+
+`BUSINESS_DATA` 是完整的后台业务树，必须包含所有汇总数据：产品汇总、区域汇总和叶子明细都各自拥有稳定 `id` 与完整指标。前端不会根据明细重新聚合或覆盖汇总值；编辑汇总节点也只更新该节点，不会自动向下分摊到明细。
 
 所有业务值修改最终批量进入 `commitBusinessCellValues()`：
 
 ```text
 单格编辑 / 粘贴 / 清空 / 撤销 / 重做
   ↓ getCellEditability()
-定位唯一底层 BusinessNode 叶子
-  ↓ toBusinessCellCoordinate()
-生成产品 + 区域 + 底层记录 + 指标字段的后端业务坐标
+定位唯一 BUSINESS_DATA 树节点（汇总或明细）
+  ↓ toBusinessCellDimension()
+生成扁平、稳定的业务维度
   ↓ updateBusinessNode()
 更新直接字段及收入、订单、状态等同级联动字段
   ↓ createBusinessProjectionRows() / createStressProjectionRows()
-常规模式重新读取 BUSINESS_DATA；压力模式重新生成当前投影
+常规模式直接更新 BUSINESS_DATA 节点并重新投影；压力模式重新生成当前投影
   ↓ 比较修改前后的 ViewRow[]
 刷新直接修改和同级字段联动，并写入历史
 ```
@@ -132,48 +255,38 @@ DrillView 路径
 - 修改订单数：按修改前占比同步分摊线上和线下订单，并重算客单价；
 - 修改线上订单或线下订单：重算订单数和客单价；
 - 修改状态或“已核验”：双向同步另一字段；
-- 常规模式的产品、子类和区域汇总指标由后端直接返回，Demo 将这些静态值明确保存在 `BUSINESS_DATA`。`regionSummaries` 保存产品大类下的区域汇总，`detailIds` 只声明展开后对应哪些明细；前端不再根据明细执行求和、平均值或状态归并。因此编辑明细只改变该明细及其同级派生字段，不会擅自修改后端汇总值。
+- 常规模式的产品和区域汇总指标由后端直接返回，并保存在对应的 `BUSINESS_DATA` 树节点上。编辑明细只改变该明细节点，编辑汇总也只改变对应汇总节点；两者都只联动同一节点内的派生字段。
 
-#### 前后端业务单元格坐标
+#### 前后端业务单元格维度
 
-不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们都属于当前可见投影，折叠、展开、下钻或切换数据集后可能改变。编辑回调改用 `BusinessCellCoordinate`：
+不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们会随着折叠、展开和下钻变化。编辑回调只返回修改前值、修改后值和一个扁平业务维度：
 
 ```ts
 {
-  schema: 'business-cell/v1',
-  dataset: 'regular',
-  dimensions: {
-    product: {
-      id: 'furniture-bookcases',
-      parentId: 'furniture',
-      label: '书柜',
-      level: 'subcategory'
-    },
-    region: {
-      id: 'bookcases-east',
-      label: '华东',
-      level: 'detail',
-      member: { id: 'bookcases-shanghai', label: '上海' }
-    }
-  },
-  record: { id: 'bookcases-shanghai', role: 'detail' },
-  metric: { field: 'revenue', label: '净收入' }
+  oldValue: 3724800,
+  newValue: 3800000,
+  dimension: {
+    label: '书柜 / 华东 / 净收入',
+    dataset: 'regular',
+    recordId: 'bookcases-east',
+    metricField: 'revenue'
+  }
 }
 ```
 
-其中只有 ID、层级和字段参与定位，中文标签只用于日志和排查。区域维度同时区分区域根 `华东` 和当前成员 `上海`；汇总行的 `member` 为 `null`。`regionBusinessId` 专门保存后端区域维度 ID，`regionRootId` 仍只负责前端区域树的展开状态，两者不能混用。
+`label` 让日志一眼可读；后台通信和反向定位只需要唯一的 `recordId` 与 `metricField`。产品、区域、成员等完整维度可以沿 `BUSINESS_DATA` 的父子路径获得，不在每次修改回调里重复传输。
 
 转换方向如下：
 
 ```text
 表格行列位置
-  ↓ toBusinessCellCoordinate(row, col, dataMode)
-BusinessCellCoordinate（请求后端）
-  ↓ 后端原样返回 coordinate
-isBusinessCellCoordinate() 运行时校验
-  ↓ resolveBusinessCellCoordinate()
+  ↓ toBusinessCellDimension(row, col, dataMode)
+BusinessCellDimension（随修改请求发给后台）
+  ↓ 后端原样返回 dimension
+isBusinessCellDimension() 运行时校验
+  ↓ resolveBusinessCellDimension()
 全展开投影中的目标及祖先
-  ↓ actionsRef.current.locateBusinessCell(coordinate)
+  ↓ actionsRef.current.locateBusinessCell(dimension)
 只展开必要产品/区域，选中并滚动到实际单元格
 ```
 
@@ -182,19 +295,17 @@ isBusinessCellCoordinate() 运行时校验
 ```ts
 useSpreadsheetController({
   onBusinessCellChange(payload) {
-    // payload.coordinate 是业务主坐标；payload.change 是新旧值和操作来源。
+    // payload 只有 oldValue、newValue、dimension。
     void saveCellChange(payload);
   },
 });
 ```
 
-后端响应中的坐标可反向定位：
+后端响应中的维度可直接反向定位：
 
 ```ts
-actionsRef.current?.locateBusinessCell(response.coordinate);
+actionsRef.current?.locateBusinessCell(response.dimension);
 ```
-
-`businessCellCoordinateKey()` 生成不依赖中文名称的稳定序列化键，可用作接口幂等键或日志关联键。
 
 ### 1.5 撤销、重做和单元格历史
 
@@ -212,7 +323,7 @@ actionsRef.current?.locateBusinessCell(response.coordinate);
 
 粘贴场景在 `ClipboardPasting` 中保存操作前快照，在 `ClipboardPasted` 中比较新旧值。批量范围操作由 `RangeChanged` 兜底。
 
-开发环境中，每个直接修改都会输出 `[SpreadJS Demo][单元格修改]`。日志包含 `coordinate`、稳定的 `coordinateKey`、操作来源、新旧值，以及仅用于前端排查的 Sheet 名称、A1 地址和 `projectionRowId`。后端身份只认 `coordinate`，不能使用 A1 地址或 `projectionRowId`。生产构建不会输出这些调试日志；正式接入使用 `onBusinessCellChange` 回调。
+开发环境中，每个直接修改都会输出 `[SpreadJS Demo][单元格修改]`，对象中只有 `oldValue`、`newValue` 和 `dimension`。生产构建不会输出这些调试日志；正式接入使用 `onBusinessCellChange` 回调。
 
 ### 1.6 快速搜索
 
@@ -330,7 +441,7 @@ const { hostRef, actionsRef, ...uiState } = useSpreadsheetController();
 该文件应尽量保持为“不依赖 React、不直接操作 SpreadJS”的模型层，主要负责：
 
 - 业务类型：`BusinessNode`、`ViewRow`、`SelectedCell` 等；
-- 列定义和列号常量；
+- `BUSINESS_DATA` 行树及其二维投影；
 - 常规演示数据；
 - 后端汇总节点与明细节点的二维投影；
 - 产品和区域投影；
@@ -340,6 +451,8 @@ const { hostRef, actionsRef, ...uiState } = useSpreadsheetController();
 - 搜索文本和数字格式；
 - 业务字段更新；
 - 选区统计结果计算。
+
+`business-column-schema.ts` 单独负责后台列树 Mock、列配置校验，以及平铺列、表头合并、冻结列和 Outline 的派生，模型层和控制器不再维护硬编码列号。
 
 阅读该文件时建议从以下链路入手：
 
@@ -503,8 +616,9 @@ index.tsx 增加按钮或面板
 
 建议将下面几类内存 Map 抽象成单独的数据仓库或 API 层：
 
-- `BUSINESS_DATA` / 压力数据叶子节点：业务明细；
-- `BusinessCellCoordinate`：编辑接口的产品、区域、记录和指标坐标；
+- `BUSINESS_DATA`：包含全部汇总与明细记录的完整业务快照；
+- 压力数据叶子节点：10 万行模式的模拟明细；
+- `BusinessCellDimension`：编辑接口的产品、区域、记录和指标维度；
 - `commentsRef`：批注；
 - `historyRef`：审计历史；
 - `attachmentsRef`：附件元数据。
