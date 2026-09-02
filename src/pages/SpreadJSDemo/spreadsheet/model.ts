@@ -1457,15 +1457,14 @@ function getRegionRoots(product: BusinessNode) {
       : region.children ?? [];
     return {
       id: rootId,
-      label,
-      sourceNodes: [...groupedDetails.values()].flat(),
-      children: [...groupedDetails.entries()].map(
-        ([detailLabel, sourceNodes]) => ({
-          id: `${rootId}:detail:${normalizedTreeKey(detailLabel)}`,
-          label: detailLabel,
-          sourceNodes,
-        }),
-      ),
+      businessId: region.id,
+      label: region.name,
+      sourceNodes: [region],
+      children: details.map((detail) => ({
+        id: `${rootId}:detail:${normalizedTreeKey(detail.name)}`,
+        label: detail.name,
+        sourceNodes: [detail],
+      })),
     };
   });
 }
