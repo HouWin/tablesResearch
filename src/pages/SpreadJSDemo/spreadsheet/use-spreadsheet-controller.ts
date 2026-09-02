@@ -30,6 +30,7 @@ import {
   UPDATED_AT_COLUMN,
   VERIFIED_COLUMN,
   canDrillNode,
+  businessCellCoordinateKey,
   columnName,
   createBusinessProjectionRows,
   createStressProjectionRows,
@@ -44,20 +45,24 @@ import {
   getStressProjectionSummary,
   getStressRecordsAsync,
   getStressRegionGroupIdsForProduct,
+  isBusinessCellCoordinate,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
   releaseStressRecords,
   roundToTwoDecimals,
+  resolveBusinessCellCoordinate,
   simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
+  toBusinessCellCoordinate,
   updateBusinessNode,
   viewForNode,
   viewRowCellValue,
   viewRowValues,
   type AggregateMode,
   type BusinessField,
+  type BusinessCellCoordinate,
   type CellAttachment,
   type DataMode,
   type DrillView,
@@ -136,6 +141,21 @@ type VisibleCellChange = {
   kind: '直接修改' | '字段联动' | '汇总联动';
 };
 
+export type BusinessCellChangePayload = {
+  coordinate: BusinessCellCoordinate;
+  coordinateKey: string;
+  spreadsheet: {
+    sheetName: string;
+    address: string;
+    projectionRowId: string;
+  };
+  change: {
+    source: string;
+    oldValue: unknown;
+    newValue: unknown;
+  };
+};
+
 function logRegularSourceData() {
   if (process.env.NODE_ENV === 'production') return;
   console.log(
@@ -144,22 +164,16 @@ function logRegularSourceData() {
   );
 }
 
-// 单元格发生变化时，向后端/控制台输出一个精简对象：
-// rowId + field 标识“改的是什么”，oldValue/newValue 是变化前后的值。
-function logCellChange(
-  rowId: string,
-  field: BusinessField,
-  oldValue: unknown,
-  newValue: unknown,
-) {
+// Demo 默认把完整回调载荷打印到控制台；真实项目可通过
+// useSpreadsheetController({ onBusinessCellChange }) 发送给后端。
+function logCellChange(payload: BusinessCellChangePayload) {
   if (process.env.NODE_ENV === 'production') return;
-  console.log('[SpreadJS Demo][单元格修改]', {
-    rowId,
-    field,
-    oldValue,
-    newValue,
-  });
+  console.log('[SpreadJS Demo][单元格修改]', payload);
 }
+
+export type SpreadsheetControllerOptions = {
+  onBusinessCellChange?: (payload: BusinessCellChangePayload) => void;
+};
 
 export type SpreadsheetActions = {
   undo: () => void;
@@ -183,6 +197,7 @@ export type SpreadsheetActions = {
   deleteComment: () => void;
   addAttachments: (files: File[]) => void;
   removeAttachment: (attachmentId: string) => void;
+  locateBusinessCell: (coordinate: BusinessCellCoordinate) => boolean;
 };
 
 export const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
@@ -227,9 +242,13 @@ function isAcceptedAttachment(file: File) {
   );
 }
 
-export function useSpreadsheetController() {
+export function useSpreadsheetController(
+  options: SpreadsheetControllerOptions = {},
+) {
   const hostRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<SpreadsheetActions | null>(null);
+  const onBusinessCellChangeRef = useRef(options.onBusinessCellChange);
+  onBusinessCellChangeRef.current = options.onBusinessCellChange;
   const regularSourceLoggedRef = useRef(false);
   const panelRef = useRef<PanelName>(null);
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
@@ -726,7 +745,6 @@ export function useSpreadsheetController() {
           numericDisplay: numericDisplay ?? 'number',
         });
       };
-      console.log('spread', sheet);
       const clearOutlinesAndComments = () => {
         const oldRows = Math.max(sheet.getRowCount(), 1);
         const oldCols = Math.max(sheet.getColumnCount(), 1);
@@ -857,8 +875,9 @@ export function useSpreadsheetController() {
         const beforeRows = activeRows;
         const accepted: Array<{
           request: CellEditRequest;
-          rowId: string;
+          projectionRowId: string;
           field: BusinessField;
+          coordinate: BusinessCellCoordinate;
         }> = [];
         const rejected: Array<{
           request: CellEditRequest;
@@ -879,6 +898,18 @@ export function useSpreadsheetController() {
             rejected.push({ request, reason: editability.reason });
             return;
           }
+          const coordinate = toBusinessCellCoordinate(
+            row,
+            request.col,
+            activeDataMode,
+          );
+          if (!coordinate) {
+            rejected.push({
+              request,
+              reason: '无法将当前投影转换为唯一业务单元格坐标',
+            });
+            return;
+          }
           let nextValue = request.requestedValue;
           if (
             column.field === 'adjustmentFactor' &&
@@ -888,8 +919,9 @@ export function useSpreadsheetController() {
           updateBusinessNode(editability.sourceNode, column.field, nextValue);
           accepted.push({
             request: { ...request, requestedValue: nextValue },
-            rowId: row.id,
+            projectionRowId: row.id,
             field: column.field,
+            coordinate,
           });
         });
 
@@ -926,9 +958,13 @@ export function useSpreadsheetController() {
           nextRows.map((row, index) => [row.id, index]),
         );
         const directKeys = new Set(
-          accepted.map(({ rowId, field }) => stableCellKey(rowId, field)),
+          accepted.map(({ projectionRowId, field }) =>
+            stableCellKey(projectionRowId, field),
+          ),
         );
-        const directRowIds = new Set(accepted.map(({ rowId }) => rowId));
+        const directRowIds = new Set(
+          accepted.map(({ projectionRowId }) => projectionRowId),
+        );
         const changes: VisibleCellChange[] = [];
         nextRows.forEach((nextRow, row) => {
           const beforeRow = beforeById.get(nextRow.id);
@@ -972,8 +1008,8 @@ export function useSpreadsheetController() {
           sheet.suspendDirty();
           spread.suspendEvent();
           try {
-            accepted.forEach(({ request, rowId }) => {
-              const row = nextRowIndexById.get(rowId);
+            accepted.forEach(({ request, projectionRowId }) => {
+              const row = nextRowIndexById.get(projectionRowId);
               if (row === undefined || sheet.getFormula(row, request.col))
                 return;
               sheet.setValue(
@@ -1033,10 +1069,25 @@ export function useSpreadsheetController() {
         });
         syncProjectionSnapshot();
 
-        accepted.forEach(({ request, rowId, field }) => {
+        accepted.forEach(({ request, projectionRowId, coordinate }) => {
           if (historyValuesEqual(request.oldValue, request.requestedValue))
             return;
-          logCellChange(rowId, field, request.oldValue, request.requestedValue);
+          const payload: BusinessCellChangePayload = {
+            coordinate,
+            coordinateKey: businessCellCoordinateKey(coordinate),
+            spreadsheet: {
+              sheetName: sheet.name(),
+              address: `${columnName(request.col)}${request.row + 1}`,
+              projectionRowId,
+            },
+            change: {
+              source: request.source,
+              oldValue: request.oldValue,
+              newValue: request.requestedValue,
+            },
+          };
+          onBusinessCellChangeRef.current?.(payload);
+          logCellChange(payload);
         });
         return Math.max(historyCount, changes.length);
       };
@@ -2095,6 +2146,111 @@ export function useSpreadsheetController() {
         return { row, expandedHierarchy };
       };
 
+      /**
+       * 使用后端回传的业务坐标定位单元格。定位前只展开目标所需的
+       * 产品和区域祖先；常规模式若处于下钻页，会回到全量投影重试。
+       */
+      const locateBusinessCell = (coordinate: BusinessCellCoordinate) => {
+        if (!isBusinessCellCoordinate(coordinate)) {
+          notify('后端返回的业务单元格坐标不完整', 'error');
+          return false;
+        }
+        if (coordinate.dataset !== activeDataMode) {
+          notify(
+            `坐标属于${
+              coordinate.dataset === 'stress' ? '10 万行' : '常规'
+            }模式，请先切换到对应数据集`,
+            'error',
+          );
+          return false;
+        }
+
+        if (activeDataMode === 'stress') {
+          const col = COLUMNS.findIndex(
+            (column) => column.field === coordinate.metric.field,
+          );
+          const sourceRow = stressSourceRows.findIndex(
+            (row) =>
+              row.id === coordinate.record.id &&
+              row.productId === coordinate.dimensions.product.id &&
+              row.regionBusinessId === coordinate.dimensions.region.id,
+          );
+          if (col < 0 || sourceRow < 0) {
+            notify('当前 10 万行数据中未找到该业务单元格', 'error');
+            return false;
+          }
+          const located = revealStressSearchMatch(sourceRow, col);
+          if (!located) {
+            notify('业务坐标存在，但无法投影到当前表格', 'error');
+            return false;
+          }
+          notify(
+            `已定位 ${coordinate.dimensions.product.label} / ${
+              coordinate.dimensions.region.member?.label ??
+              coordinate.dimensions.region.label
+            } · ${columnName(col)}${located.row + 1}`,
+          );
+          return true;
+        }
+
+        let viewReset = false;
+        let target = resolveBusinessCellCoordinate(
+          buildFullyExpandedRegularRows(),
+          coordinate,
+        );
+        if (!target && activeView.length) {
+          activeView = [];
+          setView([]);
+          viewReset = true;
+          target = resolveBusinessCellCoordinate(
+            buildFullyExpandedRegularRows(),
+            coordinate,
+          );
+        }
+        if (!target) {
+          notify('当前常规数据中未找到该业务单元格', 'error');
+          return false;
+        }
+
+        let hierarchyExpanded = viewReset;
+        if (
+          target.productParentId &&
+          !productExpanded.has(target.productParentId)
+        ) {
+          productExpanded.add(target.productParentId);
+          hierarchyExpanded = true;
+        }
+        if (target.regionDepth > 0) {
+          const state = extensionStateFor(target.productId);
+          if (!state.has(target.regionRootId)) {
+            state.add(target.regionRootId);
+            hierarchyExpanded = true;
+          }
+        }
+        if (hierarchyExpanded) {
+          renderRows(buildRegularRows(), false, {
+            nodeId: target.projectionRowId,
+            productId: target.productId,
+            col: target.col,
+          });
+          syncProjectionSnapshot();
+        }
+
+        const visible = resolveBusinessCellCoordinate(activeRows, coordinate);
+        if (!visible) {
+          notify('业务坐标存在，但目标行未能正确展开', 'error');
+          return false;
+        }
+        revealSearchMatch(visible.row, visible.col);
+        notify(
+          `已定位 ${coordinate.dimensions.product.label} / ${
+            coordinate.dimensions.region.member?.label ??
+            coordinate.dimensions.region.label
+          } · ${columnName(visible.col)}${visible.row + 1}`,
+        );
+        return true;
+      };
+
       const searchStatus = (
         total: number,
         index: number,
@@ -2473,6 +2629,7 @@ export function useSpreadsheetController() {
         },
         setOutlineDimension,
         resetOutline,
+        locateBusinessCell,
         loadDataMode: (mode) => {
           invalidateSearchSession('输入关键词，按 Enter 开始搜索');
           setSearchQuery('');
@@ -3173,9 +3330,6 @@ export function useSpreadsheetController() {
             scheduleStressViewportLoad(args.newTopRow);
         },
       );
-
-      console.log('Sheet', sheet);
-
       renderRows(buildRegularRows(), false);
       syncProjectionSnapshot();
       spread.focus();
@@ -3213,7 +3367,6 @@ export function useSpreadsheetController() {
   const commentDirty = commentDraft.trim() !== persistedComment;
   const retryInitialization = () =>
     setInitializationAttempt((attempt) => attempt + 1);
-  console.log(attachmentsRef, '...attachmentsRef');
   return {
     hostRef,
     actionsRef,

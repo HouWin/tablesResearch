@@ -82,10 +82,61 @@ export type ViewRow = BusinessNode & {
   productRowSpan: number;
   regionId: string;
   regionRootId: string;
+  /** 后端返回的区域维度 ID；与仅用于表格投影的 regionRootId 分离。 */
+  regionBusinessId: string;
+  regionRootLabel: string;
   regionLabel: string;
   regionDepth: 0 | 1;
   regionIsGroup: boolean;
   regionExpanded: boolean;
+};
+
+export const BUSINESS_CELL_COORDINATE_SCHEMA = 'business-cell/v1' as const;
+
+/**
+ * 前后端共同使用的业务单元格坐标。
+ *
+ * 行号和 ViewRow.id 都属于当前可见投影，展开、折叠或下钻后可能变化；
+ * 这里仅使用后端业务 ID 描述产品、区域、底层记录和指标字段。
+ */
+export type BusinessCellCoordinate = {
+  schema: typeof BUSINESS_CELL_COORDINATE_SCHEMA;
+  dataset: Exclude<DataMode, 'loading'>;
+  dimensions: {
+    product: {
+      id: string;
+      parentId: string | null;
+      label: string;
+      level: 'category' | 'subcategory';
+    };
+    region: {
+      id: string;
+      label: string;
+      level: 'region' | 'detail';
+      member: {
+        id: string;
+        label: string;
+      } | null;
+    };
+  };
+  record: {
+    id: string;
+    role: HierarchyRole;
+  };
+  metric: {
+    field: BusinessField;
+    label: string;
+  };
+};
+
+export type BusinessCellLocation = {
+  row: number;
+  col: number;
+  projectionRowId: string;
+  productId: string;
+  productParentId: string | null;
+  regionRootId: string;
+  regionDepth: 0 | 1;
 };
 
 export type OutlineDimension = 'product' | 'region';
@@ -1274,6 +1325,8 @@ type VisibleProductNode = {
 type RegionProjectionNode = {
   id: string;
   rootId: string;
+  businessId: string;
+  rootLabel: string;
   label: string;
   depth: 0 | 1;
   isGroup: boolean;
@@ -1404,6 +1457,7 @@ function getRegionRoots(product: BusinessNode) {
       : region.children ?? [];
     return {
       id: rootId,
+      businessId: region.id,
       label: region.name,
       sourceNodes: [region],
       children: details.map((detail) => ({
@@ -1424,6 +1478,8 @@ function getVisibleRegions(
     const rootNode: RegionProjectionNode = {
       id: root.id,
       rootId: root.id,
+      businessId: root.businessId,
+      rootLabel: root.label,
       label: root.label,
       depth: 0,
       isGroup: root.children.length > 0,
@@ -1437,6 +1493,8 @@ function getVisibleRegions(
         (child): RegionProjectionNode => ({
           id: child.id,
           rootId: root.id,
+          businessId: root.businessId,
+          rootLabel: root.label,
           label: child.label,
           depth: 1,
           isGroup: false,
@@ -1541,6 +1599,8 @@ export function createBusinessProjectionRows(
         productRowSpan: regions.length,
         regionId: region.id,
         regionRootId: region.rootId,
+        regionBusinessId: region.businessId,
+        regionRootLabel: region.rootLabel,
         regionLabel: region.label,
         regionDepth: region.depth,
         regionIsGroup: region.isGroup,
@@ -1631,6 +1691,142 @@ export function viewForNode(
 
 export function stableCellKey(nodeId: string, field: string) {
   return `${nodeId}::${field}`;
+}
+
+/** 将当前投影行转换成可传给后端的稳定业务坐标。 */
+export function toBusinessCellCoordinate(
+  row: ViewRow | undefined,
+  col: number,
+  dataset: Exclude<DataMode, 'loading'>,
+): BusinessCellCoordinate | null {
+  const column = COLUMNS[col];
+  const sourceNode = row?.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  if (!row || !column || isHierarchyField(column.field) || !sourceNode)
+    return null;
+  return {
+    schema: BUSINESS_CELL_COORDINATE_SCHEMA,
+    dataset,
+    dimensions: {
+      product: {
+        id: row.productId,
+        parentId: row.productParentId,
+        label: row.productLabel,
+        level: row.productIsGroup ? 'category' : 'subcategory',
+      },
+      region: {
+        id: row.regionBusinessId,
+        label: row.regionRootLabel,
+        level: row.regionDepth === 0 ? 'region' : 'detail',
+        member:
+          row.regionDepth === 0
+            ? null
+            : { id: sourceNode.id, label: row.regionLabel },
+      },
+    },
+    record: {
+      id: sourceNode.id,
+      role: sourceNode.hierarchyRole,
+    },
+    metric: {
+      field: column.field,
+      label: column.label,
+    },
+  };
+}
+
+/**
+ * 业务坐标的稳定序列化形式，可作为 API 幂等键或日志关联键。
+ * 显示标签不参与身份判断，改名不会产生新的业务单元格。
+ */
+export function businessCellCoordinateKey(coordinate: BusinessCellCoordinate) {
+  return [
+    coordinate.schema,
+    coordinate.dataset,
+    coordinate.dimensions.product.id,
+    coordinate.dimensions.region.id,
+    coordinate.record.id,
+    coordinate.metric.field,
+  ]
+    .map((part) => encodeURIComponent(part))
+    .join('|');
+}
+
+/** 运行时校验后端返回值，避免不完整坐标进入定位流程。 */
+export function isBusinessCellCoordinate(
+  value: unknown,
+): value is BusinessCellCoordinate {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<BusinessCellCoordinate>;
+  const product = candidate.dimensions?.product;
+  const region = candidate.dimensions?.region;
+  const regionMember = region?.member;
+  const record = candidate.record;
+  const metric = candidate.metric;
+  return (
+    candidate.schema === BUSINESS_CELL_COORDINATE_SCHEMA &&
+    (candidate.dataset === 'regular' || candidate.dataset === 'stress') &&
+    typeof product?.id === 'string' &&
+    (product.parentId === null || typeof product.parentId === 'string') &&
+    typeof product.label === 'string' &&
+    (product.level === 'category' || product.level === 'subcategory') &&
+    typeof region?.id === 'string' &&
+    typeof region.label === 'string' &&
+    (region.level === 'region' || region.level === 'detail') &&
+    (regionMember === null ||
+      (typeof regionMember?.id === 'string' &&
+        typeof regionMember.label === 'string')) &&
+    ((region.level === 'region' && regionMember === null) ||
+      (region.level === 'detail' && regionMember !== null)) &&
+    typeof record?.id === 'string' &&
+    (regionMember === null || regionMember.id === record.id) &&
+    (record.role === 'category' ||
+      record.role === 'subcategory' ||
+      record.role === 'region' ||
+      record.role === 'detail') &&
+    typeof metric?.field === 'string' &&
+    typeof metric.label === 'string' &&
+    COLUMNS.some(
+      (column) =>
+        !isHierarchyField(column.field) && column.field === metric.field,
+    )
+  );
+}
+
+/**
+ * 将后端返回的业务坐标反解为当前 rows 中的实际行列位置。
+ * 调用方可以先传入全展开投影获取祖先信息，再展开必要层级并对可见行重试。
+ */
+export function resolveBusinessCellCoordinate(
+  rows: readonly ViewRow[],
+  coordinate: BusinessCellCoordinate,
+): BusinessCellLocation | null {
+  if (!isBusinessCellCoordinate(coordinate)) return null;
+  const col = COLUMNS.findIndex(
+    (column) => column.field === coordinate.metric.field,
+  );
+  if (col < 0 || isHierarchyField(COLUMNS[col].field)) return null;
+  const row = rows.findIndex(
+    (candidate) =>
+      candidate.productId === coordinate.dimensions.product.id &&
+      candidate.regionBusinessId === coordinate.dimensions.region.id &&
+      (candidate.regionDepth === 0
+        ? coordinate.dimensions.region.member === null
+        : coordinate.dimensions.region.member?.id ===
+          candidate.sourceNodes[0]?.id) &&
+      candidate.sourceNodes.length === 1 &&
+      candidate.sourceNodes[0].id === coordinate.record.id,
+  );
+  if (row < 0) return null;
+  const match = rows[row];
+  return {
+    row,
+    col,
+    projectionRowId: match.id,
+    productId: match.productId,
+    productParentId: match.productParentId,
+    regionRootId: match.regionRootId,
+    regionDepth: match.regionDepth,
+  };
 }
 
 export function columnName(col: number) {
@@ -1778,6 +1974,8 @@ function createStressRecord(index: number): ViewRow {
       : 1,
     regionId,
     regionRootId: regionId,
+    regionBusinessId: regionId,
+    regionRootLabel: isBusinessGroup ? '全国 · 事业群汇总' : regionLabel,
     regionLabel: isBusinessGroup
       ? '全国 · 事业群汇总'
       : isRegion
@@ -2084,6 +2282,8 @@ function projectStressProduct(
       productRowSpan: 1,
       regionId: region.id,
       regionRootId: region.id,
+      regionBusinessId: region.id,
+      regionRootLabel: region.label,
       regionLabel: region.label,
       regionDepth: 0,
       regionIsGroup: region.details.length > 0,
@@ -2117,6 +2317,8 @@ function projectStressProduct(
           productRowSpan: 1,
           regionId: `${region.id}:detail:${detail.id}`,
           regionRootId: region.id,
+          regionBusinessId: region.id,
+          regionRootLabel: region.label,
           regionLabel: detail.regionLabel,
           regionDepth: 1,
           regionIsGroup: false,

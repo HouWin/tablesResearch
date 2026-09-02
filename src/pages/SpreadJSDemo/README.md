@@ -115,6 +115,8 @@ DrillView 路径
 单格编辑 / 粘贴 / 清空 / 撤销 / 重做
   ↓ getCellEditability()
 定位唯一底层 BusinessNode 叶子
+  ↓ toBusinessCellCoordinate()
+生成产品 + 区域 + 底层记录 + 指标字段的后端业务坐标
   ↓ updateBusinessNode()
 更新直接字段及收入、订单、状态等同级联动字段
   ↓ createBusinessProjectionRows() / createStressProjectionRows()
@@ -132,6 +134,68 @@ DrillView 路径
 - 修改状态或“已核验”：双向同步另一字段；
 - 常规模式的产品、子类和区域汇总指标由后端直接返回，Demo 将这些静态值明确保存在 `BUSINESS_DATA`。`regionSummaries` 保存产品大类下的区域汇总，`detailIds` 只声明展开后对应哪些明细；前端不再根据明细执行求和、平均值或状态归并。因此编辑明细只改变该明细及其同级派生字段，不会擅自修改后端汇总值。
 
+#### 前后端业务单元格坐标
+
+不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们都属于当前可见投影，折叠、展开、下钻或切换数据集后可能改变。编辑回调改用 `BusinessCellCoordinate`：
+
+```ts
+{
+  schema: 'business-cell/v1',
+  dataset: 'regular',
+  dimensions: {
+    product: {
+      id: 'furniture-bookcases',
+      parentId: 'furniture',
+      label: '书柜',
+      level: 'subcategory'
+    },
+    region: {
+      id: 'bookcases-east',
+      label: '华东',
+      level: 'detail',
+      member: { id: 'bookcases-shanghai', label: '上海' }
+    }
+  },
+  record: { id: 'bookcases-shanghai', role: 'detail' },
+  metric: { field: 'revenue', label: '净收入' }
+}
+```
+
+其中只有 ID、层级和字段参与定位，中文标签只用于日志和排查。区域维度同时区分区域根 `华东` 和当前成员 `上海`；汇总行的 `member` 为 `null`。`regionBusinessId` 专门保存后端区域维度 ID，`regionRootId` 仍只负责前端区域树的展开状态，两者不能混用。
+
+转换方向如下：
+
+```text
+表格行列位置
+  ↓ toBusinessCellCoordinate(row, col, dataMode)
+BusinessCellCoordinate（请求后端）
+  ↓ 后端原样返回 coordinate
+isBusinessCellCoordinate() 运行时校验
+  ↓ resolveBusinessCellCoordinate()
+全展开投影中的目标及祖先
+  ↓ actionsRef.current.locateBusinessCell(coordinate)
+只展开必要产品/区域，选中并滚动到实际单元格
+```
+
+真实接口可通过控制器回调接入：
+
+```ts
+useSpreadsheetController({
+  onBusinessCellChange(payload) {
+    // payload.coordinate 是业务主坐标；payload.change 是新旧值和操作来源。
+    void saveCellChange(payload);
+  },
+});
+```
+
+后端响应中的坐标可反向定位：
+
+```ts
+actionsRef.current?.locateBusinessCell(response.coordinate);
+```
+
+`businessCellCoordinateKey()` 生成不依赖中文名称的稳定序列化键，可用作接口幂等键或日志关联键。
+
 ### 1.5 撤销、重做和单元格历史
 
 页面在 SpreadJS 原生 UndoManager 外增加了一层业务历史。以下修改都会记录旧值、新值、来源和时间：
@@ -148,7 +212,7 @@ DrillView 路径
 
 粘贴场景在 `ClipboardPasting` 中保存操作前快照，在 `ClipboardPasted` 中比较新旧值。批量范围操作由 `RangeChanged` 兜底。
 
-开发环境中，用户每次直接编辑单元格都会输出一条精简日志 `[SpreadJS Demo][单元格修改]`，附带一个对象 `{ rowId, field, oldValue, newValue }`：`rowId` + `field` 标识改的是哪条业务记录的哪个字段，`oldValue`/`newValue` 是修改前后的值，供后端/上游消费方了解具体变更内容。生产构建不会输出这些调试日志。
+开发环境中，每个直接修改都会输出 `[SpreadJS Demo][单元格修改]`。日志包含 `coordinate`、稳定的 `coordinateKey`、操作来源、新旧值，以及仅用于前端排查的 Sheet 名称、A1 地址和 `projectionRowId`。后端身份只认 `coordinate`，不能使用 A1 地址或 `projectionRowId`。生产构建不会输出这些调试日志；正式接入使用 `onBusinessCellChange` 回调。
 
 ### 1.6 快速搜索
 
@@ -440,6 +504,7 @@ index.tsx 增加按钮或面板
 建议将下面几类内存 Map 抽象成单独的数据仓库或 API 层：
 
 - `BUSINESS_DATA` / 压力数据叶子节点：业务明细；
+- `BusinessCellCoordinate`：编辑接口的产品、区域、记录和指标坐标；
 - `commentsRef`：批注；
 - `historyRef`：审计历史；
 - `attachmentsRef`：附件元数据。
