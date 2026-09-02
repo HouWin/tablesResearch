@@ -8,7 +8,12 @@
 
 - 路由配置：[`../../../.umirc.ts`](../../../.umirc.ts)
 - 页面入口：[`index.tsx`](./index.tsx)
-- React 通用界面：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)
+- 工具栏：[`components/spreadsheet-toolbar.tsx`](./components/spreadsheet-toolbar.tsx)
+- 表格工作区：[`components/spreadsheet-workspace.tsx`](./components/spreadsheet-workspace.tsx)
+- 产品/区域层级控制：[`components/outline-controls.tsx`](./components/outline-controls.tsx)
+- 批注、历史、附件等侧栏：[`components/inspector-panels.tsx`](./components/inspector-panels.tsx)
+- 弹层、抽屉和状态栏基础组件：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)
+- 展示格式与血缘信息：[`spreadsheet/presentation.ts`](./spreadsheet/presentation.ts)
 - 数据模型与二维投影：[`spreadsheet/model.ts`](./spreadsheet/model.ts)
 - 后台树形列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts)
 - 前后端业务维度：[`spreadsheet/business-cell-coordinate.ts`](./spreadsheet/business-cell-coordinate.ts)
@@ -36,6 +41,20 @@ SpreadJS Worksheet
     ↓ EnterCell / CellClick / CellChanged / RangeChanged 等事件
 业务数据、历史记录和 React 面板状态同步更新
 ```
+
+## 页面使用方式
+
+页面采用独立全屏工作区，核心操作集中在首屏：
+
+- 单击“产品层级”或“区域层级”单元格即可展开、收起当前节点；上方两个层级卡片用于批量操作并显示展开进度；
+- 选中具有下级数据的汇总行后使用“下钻所选行”，通过左侧面包屑或“上钻”返回；
+- “快速搜索”会覆盖当前业务层级的已折叠内容，并自动展开命中项所需的祖先和列组；
+- “列管理”按业务维度、核心经营指标和业务治理分组展示字段；前三列固定不可隐藏；
+- 选中单元格后，可从工具栏打开统计、批注、历史、数据追踪和附件面板；
+- 表格底部持续显示当前选区统计与数据集规模；
+- “10 万行模式”用于压力验收，切换期间会显示明确的忙碌状态，完成后可恢复常规业务样例。
+
+页面支持键盘焦点、Escape 关闭浮层/抽屉、抽屉焦点约束、减少动态效果偏好和窄屏降级。许可证未配置时，页头会显示评估状态；配置后自动切换为已配置状态。
 
 ---
 
@@ -442,17 +461,7 @@ stableCellKey(node.id, column.field)
 
 ### 2.1 `index.tsx`：React 页面编排
 
-该文件负责“界面是什么样”，不直接操作 SpreadJS Workbook。
-
-主要内容：
-
-- 页面标题和工具栏；
-- 搜索、列管理和折叠控制；
-- 下钻路径；
-- 公式栏外观；
-- SpreadJS 挂载容器；
-- 批注、历史、附件、数据追踪、统计等抽屉；
-- 加载、错误、Toast 和状态栏。
+该文件是轻量 composition root，只创建控制器并组装页头、工具栏、工作区、侧栏和 Toast，不直接操作 SpreadJS Workbook，也不包含具体业务面板 JSX。
 
 页面通过下面两个引用连接 SpreadJS：
 
@@ -466,18 +475,19 @@ const { hostRef, actionsRef, ...uiState } = useSpreadsheetController();
 
 例如工具栏“撤销”只调用 `actionsRef.current?.undo()`，具体命令和历史处理都在控制器中完成。
 
-### 2.2 `components/spreadsheet-ui.tsx`：通用 React 组件
+### 2.2 `components/`：分层 React 组件
 
-这里包含不依赖 Workbook 实例的展示组件：
+组件按职责拆分：
 
-- `DemoHeader`；
-- `SearchPopover`；
-- `ColumnVisibilityPopover`；
-- `SheetStatusBar`；
-- `ToastMessage`；
-- `Drawer`。
+- `spreadsheet-toolbar.tsx`：工具命令和三个互斥弹层；
+- `spreadsheet-workspace.tsx`：钻取、层级控制、公式栏、挂载容器和状态栏；
+- `outline-controls.tsx`：产品与区域的独立批量展开控制；
+- `inspector-panels.tsx`：批注、历史、追踪、附件、统计和能力清单；
+- `spreadsheet-ui.tsx`：页头、弹层定位、抽屉、Toast 等可复用基础组件。
 
-这些组件通过 props 接收状态和回调。新增纯界面功能时优先放在这里，不要把 Workbook 操作传入组件内部。
+这些组件只通过 `SpreadsheetController` 或窄化 props 读取状态并发出命令。Workbook 实例仍封装在控制器 effect 内；不要让展示组件查找或持有 Workbook。
+
+`spreadsheet/presentation.ts` 保存文件大小、附件预览能力和血缘结果等纯展示转换，避免将格式化规则塞回页面入口。
 
 ### 2.3 `spreadsheet/model.ts`：业务数据和纯计算
 
@@ -556,7 +566,7 @@ ViewRow[]
 | `EnterCell` | 更新当前单元格和抽屉内容 |
 | `SelectionChanged` | 重算选区统计 |
 | `CellClick` | 处理产品列和区域列折叠 |
-| `EditStarting` | 按统一策略阻止汇总、派生和层级字段编辑 |
+| `EditStarting` | 按统一策略阻止层级、属性、自动派生或无法唯一映射的单元格编辑 |
 | `ClipboardPasting` | 校验整个目标区域并保存粘贴前快照 |
 | `ClipboardPasted` | 提交粘贴结果并记录历史 |
 | `ValidationError` | 拦截非法调整系数 |
@@ -579,7 +589,7 @@ effect cleanup 负责：
 
 ### 2.5 `spreadsheet/clipboard.ts`：剪贴板边界
 
-该文件将制表符文本转换为矩阵，并统一输出复制、粘贴前回调信息。目前回调只用于 Demo 控制台观察；如果以后接入权限校验、脱敏或操作审计，应从这里或控制器中的粘贴事件扩展。
+该文件将制表符文本转换为矩阵，并统一输出复制、粘贴前回调信息。目前回调只在开发环境用于控制台观察，生产构建不会输出复制内容；如果以后接入权限校验、脱敏或操作审计，应从这里或控制器中的粘贴事件扩展。
 
 ### 2.6 `index.less`：页面视觉和响应式布局
 
@@ -614,7 +624,7 @@ effect cleanup 负责：
 至少检查以下位置：
 
 1. `BusinessNode` / `BusinessField`；
-2. `COLUMNS`；
+2. `BUSINESS_COLUMN_DATA`；
 3. 列号常量；
 4. `viewRowCellValue()`；
 5. 表头 Section / Group；
@@ -624,7 +634,7 @@ effect cleanup 负责：
 9. 选区统计显示类型；
 10. 数据追踪或历史是否需要支持。
 
-不要只在 `COLUMNS` 末尾加一项，因为当前部分逻辑仍依赖明确列号。
+`COLUMNS`、多级表头与列 Outline 都由 `BUSINESS_COLUMN_DATA` 派生，不要直接改派生数组。新增列后仍要检查依赖明确列号的格式化、联动和验证逻辑。
 
 ### 新增一个工具栏功能
 
@@ -637,10 +647,10 @@ actionsRef.current 实现 SpreadJS 操作
   ↓
 控制器同步必要 React State
   ↓
-index.tsx 增加按钮或面板
+spreadsheet-toolbar.tsx 增加按钮，或 inspector-panels.tsx 增加面板
 ```
 
-纯展示组件放入 `components/spreadsheet-ui.tsx`；不要在按钮组件中自行查找 Workbook。
+可复用的基础展示组件放入 `components/spreadsheet-ui.tsx`；完整业务区块放入独立文件。不要在按钮组件中自行查找 Workbook。
 
 ### 修改产品或区域折叠逻辑
 
@@ -672,10 +682,11 @@ index.tsx 增加按钮或面板
 
 ## 开发与调试
 
-启动项目：
+安装依赖并启动项目：
 
 ```bash
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 访问：
@@ -698,10 +709,12 @@ http://localhost:8000/spreadjs-demo/business
 正式部署前需要配置：
 
 ```text
-NEXT_PUBLIC_SPREADJS_LICENSE_KEY
+UMI_APP_SPREADJS_LICENSE_KEY
 ```
 
-未配置许可证时只适合本地评估，并会显示 SpreadJS 评估水印。
+Umi 只会自动向浏览器注入 `UMI_APP_` 前缀的环境变量。建议复制仓库根目录的 `.env.example` 为 `.env.local` 后填写；不要提交真实许可证。未配置许可证时只适合本地评估，并会显示 SpreadJS 评估水印。
+
+生产构建使用 `pnpm build`。如果只修改本页面，验收时仍应至少完成一次目标路由的浏览器回归；仓库中其他表格调研页互相独立，不应为了本页改动顺手修改其业务实现。
 
 ## 修改后的回归清单
 
@@ -710,12 +723,13 @@ NEXT_PUBLIC_SPREADJS_LICENSE_KEY
 - 下钻、上钻后选区和稳定单元格功能仍正确；
 - 搜索能命中折叠内容并只展开必要祖先；
 - 编辑、粘贴、清空、撤销、重做都有历史；
-- 汇总、派生和层级单元格不能编辑或粘贴覆盖；
+- 能唯一映射到后台记录的汇总与明细指标可以编辑；层级、属性、客单价和歧义投影保持只读；
 - 收入、订单、客单价以及状态字段的同级联动正确；
 - 修改城市明细后，后端汇总静态值保持不变；
-- 开发者控制台能输出直接修改的业务行 ID、字段和新旧值；
+- 开发环境控制台能输出直接修改的稳定行维、列维和新旧值，生产构建不泄露复制内容；
 - 批注和附件不会改写单元格值；
 - 列显隐、列 Outline 和自动列宽仍可用；
 - 10 万行模式的产品和区域节点与常规模式行为一致且互不干扰；
 - 10 万行模式切换、滚动、搜索和折叠保持响应；
 - 页面卸载或切换数据模式后没有残留定时器和 Object URL。
+- 桌面和窄屏下工具栏、层级控制、表格与抽屉均可访问，页面不存在横向溢出或不可关闭浮层。
