@@ -561,6 +561,10 @@ export function useSpreadsheetController(
       };
       sheet.options.isProtected = true;
       sheet.options.rowHeaderAutoText = GC.Spread.Sheets.HeaderAutoText.numbers;
+      sheet.options.gridline.color = '#e9edf3';
+      sheet.options.gridline.showVerticalGridline = true;
+      sheet.options.gridline.showHorizontalGridline = false;
+      sheet.defaults.rowHeight = 24;
       spread.options.scrollByPixel = true;
       spread.options.scrollPixel = 22;
 
@@ -1249,10 +1253,14 @@ export function useSpreadsheetController(
             : undefined;
           if (formatter)
             sheet.getRange(startRow, col, rowCount, 1).formatter(formatter);
+          if (column.dataType === 'boolean' || column.dataType === 'date')
+            sheet
+              .getRange(startRow, col, rowCount, 1)
+              .hAlign(GC.Spread.Sheets.HorizontalAlign.center);
         });
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
-          .font('12px Arial, PingFang SC');
+          .font('400 12px Arial, PingFang SC');
         sheet
           .getRange(startRow, PRODUCT_HIERARCHY_COLUMN, rowCount, 1)
           .backColor('#edf8f2')
@@ -1277,7 +1285,12 @@ export function useSpreadsheetController(
           sheet
             .getCell(row, REGION_HIERARCHY_COLUMN)
             .textIndent(node.regionDepth);
-          if (node.productIsGroup || node.regionIsGroup) {
+          const isSummaryRow =
+            node.sourceNodes.length !== 1 ||
+            node.sourceNodes.some(
+              (sourceNode) => sourceNode.hierarchyRole !== 'detail',
+            );
+          if (isSummaryRow) {
             sheet
               .getRange(row, 0, 1, columnCount)
               .font('600 12px Arial, PingFang SC');
