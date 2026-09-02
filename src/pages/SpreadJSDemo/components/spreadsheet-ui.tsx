@@ -22,6 +22,7 @@ import {
   TableProperties,
   X,
 } from 'lucide-react';
+import { Link } from '@umijs/max';
 import {
   isBusinessCellDimension,
   type BusinessCellDimension,
@@ -109,6 +110,15 @@ export function DemoHeader({
   return (
     <header className="demo-header">
       <div className="title-lockup">
+        <Link
+          className="back-to-demos"
+          to="/home"
+          aria-label="返回 Demo 导航"
+          title="返回 Demo 导航"
+        >
+          <ChevronLeft size={16} />
+          <span>Demo 导航</span>
+        </Link>
         <div className="logo-mark" aria-hidden="true">
           经
         </div>

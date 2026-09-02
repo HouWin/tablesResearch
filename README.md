@@ -4,7 +4,7 @@
 
 ## 重点页面：SpreadJS 经营数据表
 
-访问 `/spreadjs-demo/business`。该路由使用独立的全屏工作区，是当前完成度最高的产品化 Demo。
+从左侧导航点击「SpreadJS Demo」，或直接访问 `/spreadjs-demo/business`。业务页使用独立的全屏工作区，并在页头提供「Demo 导航」返回入口，是当前完成度最高的产品化 Demo。
 
 核心能力包括：
 
