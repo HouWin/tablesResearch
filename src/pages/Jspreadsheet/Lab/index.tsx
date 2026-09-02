@@ -598,6 +598,7 @@ function outlineAttrValue(row: number, seed: number, level: 'category' | 'sub' |
 
 const OUTLINE_REGION_COL = 2;
 const OUTLINE_PROFIT_COL = 6;
+const OUTLINE_ORDER_DATE_COL = 4;
 const OUTLINE_EXTRA_COL_COUNT = 20;
 const OUTLINE_EXTRA_COL_TITLES = [
   'Remark',
@@ -622,12 +623,64 @@ const OUTLINE_EXTRA_COL_TITLES = [
   'Extension',
 ] as const;
 
-function outlineExtraValues(row: number, seed: number): any[] {
+/** OrderDate(E) 尾数单数→J 列 1，尾数双数→J 列 2 */
+function deriveChannelFromOrderDate(orderDate: unknown): string {
+  const text = String(unwrapCellValue(orderDate) ?? '').trim();
+  if (!text) return '';
+
+  const digits = text.replace(/\D/g, '');
+  if (!digits) return '';
+
+  const lastDigit = Number(digits.slice(-1));
+  if (!Number.isFinite(lastDigit)) return '';
+  return lastDigit % 2 === 1 ? '1' : '2';
+}
+
+function resolveColumnIndexByTitle(
+  columns: Array<{ title?: unknown }>,
+  title: string,
+  fallback: number,
+) {
+  const idx = columns.findIndex((col) => String(col.title) === title);
+  return idx >= 0 ? idx : fallback;
+}
+
+function resolveWorksheetColumnIndex(
+  ws: any,
+  columns: Array<{ title?: unknown }>,
+  title: string,
+  fallback: number,
+) {
+  const col = resolveColumnIndexByTitle(columns, title, fallback);
+  const runtimeTitle = String(
+    ws?.getColumn?.(col)?.title ??
+      ws?.getColumnOptions?.(col, 0)?.title ??
+      columns[col]?.title ??
+      '',
+  );
+  if (runtimeTitle === title) return col;
+  const total = columns.length;
+  for (let i = 0; i < total; i += 1) {
+    const t = String(
+      ws?.getColumn?.(i)?.title ??
+        ws?.getColumnOptions?.(i, 0)?.title ??
+        columns[i]?.title ??
+        '',
+    );
+    if (t === title) return i;
+  }
+  return fallback;
+}
+
+/** 程序写入 Channel 时跳过二次联动，避免 calendar 编辑器串列 */
+let outlineProgrammaticCellSync = false;
+
+function outlineExtraValues(row: number, seed: number, orderDate?: unknown): any[] {
   const n = (i: number) => (row * (i + 3) + seed + i * 11) % 997;
   return [
     row % 17 === 0 ? '需要跟进' : '',
     `销售${(row % 8) + 1}`,
-    row % 2 === 0 ? '线上' : '线下',
+    deriveChannelFromOrderDate(orderDate),
     `仓-${(row % 5) + 1}`,
     `客户-${1000 + n(0)}`,
     `SKU-${String(n(1)).padStart(4, '0')}`,
@@ -649,6 +702,8 @@ function outlineExtraValues(row: number, seed: number): any[] {
 }
 
 const OUTLINE_CORE_COL_COUNT = 7;
+const OUTLINE_CHANNEL_COL =
+  OUTLINE_CORE_COL_COUNT + OUTLINE_EXTRA_COL_TITLES.indexOf('Channel');
 
 type OutlineExpandMode = 'collapsed' | 'first' | 'all';
 
@@ -993,7 +1048,7 @@ function buildOutlineFromCats(
         orderDate,
         catSales,
         catProfit,
-        ...outlineExtraValues(r, seed),
+        ...outlineExtraValues(r, seed, orderDate),
       ];
     })();
     groupCells.push({ row: catStart, col: 0, label: cat.name, kind: 'category', indent: 0 });
@@ -1023,7 +1078,7 @@ function buildOutlineFromCats(
           orderDate,
           st.sales,
           st.profit,
-          ...outlineExtraValues(r, seed),
+          ...outlineExtraValues(r, seed, orderDate),
         ];
       })();
       stateDetailRows.add(r);
@@ -1045,7 +1100,7 @@ function buildOutlineFromCats(
           orderDate,
           sub.sales,
           sub.profit,
-          ...outlineExtraValues(r, seed),
+          ...outlineExtraValues(r, seed, orderDate),
         ];
       })();
       groupCells.push({ row: subStart, col: 0, label: sub.name, kind: 'leaf', indent: 1 });
@@ -1075,7 +1130,7 @@ function buildOutlineFromCats(
             orderDate,
             st.sales,
             st.profit,
-            ...outlineExtraValues(r, seed),
+            ...outlineExtraValues(r, seed, orderDate),
           ];
         })();
         stateDetailRows.add(r);
@@ -3499,6 +3554,50 @@ function JspreadsheetLabPageInner() {
     [markDirtyRow, outlineColumns, stringifyValue],
   );
 
+  const syncChannelFromOrderDate = useCallback(
+    (worksheet: any, col: number, row: number) => {
+      const columns =
+        (worksheet?.options?.columns as Array<{ title?: unknown }>) ||
+        outlineColumns;
+      const orderDateCol = resolveWorksheetColumnIndex(
+        worksheet,
+        columns,
+        'OrderDate',
+        OUTLINE_ORDER_DATE_COL,
+      );
+      if (col !== orderDateCol) return;
+
+      const channelCol = resolveWorksheetColumnIndex(
+        worksheet,
+        columns,
+        'Channel',
+        OUTLINE_CHANNEL_COL,
+      );
+      if (channelCol < 0 || channelCol >= columns.length) return;
+      if (String((columns[channelCol] as { type?: unknown })?.type ?? 'text') === 'calendar') return;
+
+      window.setTimeout(() => {
+        if (!worksheet?.setValueFromCoords) return;
+        const orderDate = worksheet.getValueFromCoords?.(orderDateCol, row);
+        const channelValue = deriveChannelFromOrderDate(orderDate);
+        if (!channelValue) return;
+
+        const oldChannel = worksheet.getValueFromCoords?.(channelCol, row);
+        if (stringifyValue(oldChannel) === stringifyValue(channelValue)) return;
+
+        outlineProgrammaticCellSync = true;
+        try {
+          runWithoutHistory(() => {
+            worksheet.setValueFromCoords(channelCol, row, channelValue, true);
+          });
+        } finally {
+          outlineProgrammaticCellSync = false;
+        }
+      }, 0);
+    },
+    [outlineColumns, stringifyValue],
+  );
+
   const syncBaselineSnapshot = useCallback(() => {
     const ws =
       getWorksheetByName(spreadsheet, '透视源数据') ||
@@ -3612,6 +3711,10 @@ function JspreadsheetLabPageInner() {
       captureCellFormat(worksheet, col, row, newValue),
       ...prev,
     ].slice(0, 30));
+
+    if (!outlineProgrammaticCellSync) {
+      syncChannelFromOrderDate(worksheet, col, row);
+    }
   };
 
   historyBridge.onSelect = (worksheet, px, py, ux, uy) => {
