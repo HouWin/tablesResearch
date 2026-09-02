@@ -88,17 +88,21 @@ export default defineConfig({
     {
       name: 'SpreadJS Demo',
       path: '/spreadjs-demo',
-      redirect: '/spreadjs-demo/business',
-    },
-    {
-      path: '/spreadjs-demo/business',
-      component: './SpreadJSDemo',
-      layout: false,
-    },
-    {
-      path: '/spreadjs-demo/independent-outline',
-      redirect: '/spreadjs-demo/business',
-      layout: false,
+      routes: [
+        {
+          path: '/spreadjs-demo',
+          redirect: '/spreadjs-demo/business',
+        },
+        {
+          name: '经营数据表',
+          path: '/spreadjs-demo/business',
+          component: './SpreadJSDemo',
+        },
+        {
+          path: '/spreadjs-demo/independent-outline',
+          redirect: '/spreadjs-demo/business',
+        },
+      ],
     },
   ],
   npmClient: 'pnpm',

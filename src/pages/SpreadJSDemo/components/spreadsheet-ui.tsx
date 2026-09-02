@@ -18,11 +18,12 @@ import {
   EyeOff,
   Info,
   LocateFixed,
+  Maximize2,
+  Minimize2,
   Search,
   TableProperties,
   X,
 } from 'lucide-react';
-import { Link } from '@umijs/max';
 import {
   isBusinessCellDimension,
   type BusinessCellDimension,
@@ -94,11 +95,17 @@ function useAnchoredPopover(anchorRef: RefObject<HTMLElement>) {
 export function DemoHeader({
   status,
   licenseConfigured,
+  fullscreenAvailable,
+  isFullscreen,
   onOpenFeatures,
+  onToggleFullscreen,
 }: {
   status: DemoStatus;
   licenseConfigured: boolean;
+  fullscreenAvailable: boolean;
+  isFullscreen: boolean;
   onOpenFeatures: () => void;
+  onToggleFullscreen: () => void;
 }) {
   const statusLabel =
     status === 'ready'
@@ -110,15 +117,6 @@ export function DemoHeader({
   return (
     <header className="demo-header">
       <div className="title-lockup">
-        <Link
-          className="back-to-demos"
-          to="/home"
-          aria-label="返回 Demo 导航"
-          title="返回 Demo 导航"
-        >
-          <ChevronLeft size={16} />
-          <span>Demo 导航</span>
-        </Link>
         <div className="logo-mark" aria-hidden="true">
           经
         </div>
@@ -152,6 +150,18 @@ export function DemoHeader({
         >
           <CheckCircle2 size={14} />
           <span>{FEATURES.length} 项能力</span>
+        </button>
+        <button
+          className="fullscreen-toggle"
+          type="button"
+          aria-label={isFullscreen ? '退出全屏' : '全屏显示经营数据表'}
+          aria-pressed={isFullscreen}
+          disabled={!fullscreenAvailable}
+          title={fullscreenAvailable ? undefined : '当前浏览器不支持全屏'}
+          onClick={onToggleFullscreen}
+        >
+          {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          <span>{isFullscreen ? '退出全屏' : '全屏'}</span>
         </button>
         <span
           className={`ready-state is-${status}`}

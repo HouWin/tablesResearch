@@ -1,5 +1,5 @@
 import '@grapecity-software/spread-sheets/styles/gc.spread.sheets.excel2013white.css';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { InspectorPanels } from './components/inspector-panels';
 import { DemoHeader, ToastMessage } from './components/spreadsheet-ui';
 import { SpreadsheetToolbar } from './components/spreadsheet-toolbar';
@@ -9,11 +9,30 @@ import { useSpreadsheetController } from './spreadsheet/use-spreadsheet-controll
 import './index.less';
 
 export default function SpreadJSDemoPage() {
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
   useEffect(() => {
     const previousTitle = document.title;
     document.title = '经营数据表 · 经营分析工作台';
     return () => {
       document.title = previousTitle;
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === pageRef.current);
+    };
+
+    setFullscreenAvailable(
+      Boolean(document.fullscreenEnabled && pageRef.current?.requestFullscreen),
+    );
+    syncFullscreenState();
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreenState);
     };
   }, []);
 
@@ -29,9 +48,20 @@ export default function SpreadJSDemoPage() {
   } = controller;
   const canDrillSelected =
     dataMode === 'regular' && canDrillNode(selected?.node);
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement === pageRef.current) {
+        await document.exitFullscreen();
+      } else {
+        await pageRef.current?.requestFullscreen();
+      }
+    } catch (error) {
+      console.error('[SpreadJS Demo] 切换全屏失败', error);
+    }
+  };
 
   return (
-    <div className="spreadjs-demo-page">
+    <div ref={pageRef} className="spreadjs-demo-page">
       <a className="skip-link" href="#spreadsheet-workspace">
         跳到经营数据表
       </a>
@@ -39,7 +69,10 @@ export default function SpreadJSDemoPage() {
         <DemoHeader
           status={initializationError ? 'error' : ready ? 'ready' : 'loading'}
           licenseConfigured={licenseConfigured}
+          fullscreenAvailable={fullscreenAvailable}
+          isFullscreen={isFullscreen}
           onOpenFeatures={() => openPanel('features')}
+          onToggleFullscreen={toggleFullscreen}
         />
         <SpreadsheetToolbar controller={controller} />
         <SpreadsheetWorkspace controller={controller} />
