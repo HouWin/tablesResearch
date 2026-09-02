@@ -15,6 +15,8 @@ import {
   GitBranch,
   History,
   Info,
+  LockKeyhole,
+  LocateFixed,
   MessageSquareText,
   Paperclip,
   Redo2,
@@ -32,6 +34,7 @@ import './index.less';
 import {
   ColumnVisibilityPopover,
   DemoHeader,
+  DimensionLocatorPopover,
   Drawer,
   SearchPopover,
   SheetStatusBar,
@@ -44,6 +47,7 @@ import {
   displayValue,
   formatMoney,
   formatStatistic,
+  getCellEditability,
   pathForView,
   type DataMode,
   type OutlineDimension,
@@ -343,16 +347,20 @@ export default function SpreadJSDemoPage() {
   } = useSpreadsheetController();
   const canDrillSelected =
     dataMode === 'regular' && canDrillNode(selected?.node);
+  const selectedEditability = selected
+    ? getCellEditability(selected.node, selected.col)
+    : null;
   const lineageDetails = getLineageDetails(selected);
+  const [dimensionLocatorOpen, setDimensionLocatorOpen] = useState(false);
   const searchAnchorRef = useRef<HTMLDivElement>(null);
   const columnAnchorRef = useRef<HTMLDivElement>(null);
+  const dimensionAnchorRef = useRef<HTMLDivElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const {
     toolbarRef,
     overflow: toolbarOverflow,
     scroll: scrollToolbar,
   } = useToolbarOverflow();
-
   return (
     <div className="spreadjs-demo-page">
       <main className="demo-shell">
@@ -413,6 +421,7 @@ export default function SpreadJSDemoPage() {
                     return !open;
                   });
                   setColumnMenuOpen(false);
+                  setDimensionLocatorOpen(false);
                 }}
               >
                 <Search size={16} />
@@ -440,6 +449,35 @@ export default function SpreadJSDemoPage() {
               )}
             </div>
 
+            <div ref={dimensionAnchorRef} className="toolbar-popover-anchor">
+              <button
+                type="button"
+                disabled={tableBusy}
+                aria-label="按业务维度定位"
+                aria-expanded={dimensionLocatorOpen}
+                aria-controls="dimension-locator-popover"
+                className={dimensionLocatorOpen ? 'is-active' : ''}
+                onClick={() => {
+                  setDimensionLocatorOpen((open) => !open);
+                  if (searchOpen) actionsRef.current?.cancelSearch();
+                  setSearchOpen(false);
+                  setColumnMenuOpen(false);
+                }}
+              >
+                <LocateFixed size={16} />
+                <span>维度定位</span>
+              </button>
+              {dimensionLocatorOpen ? (
+                <DimensionLocatorPopover
+                  anchorRef={dimensionAnchorRef}
+                  onLocate={(dimension) =>
+                    actionsRef.current?.locateBusinessCell(dimension) ?? false
+                  }
+                  onClose={() => setDimensionLocatorOpen(false)}
+                />
+              ) : null}
+            </div>
+
             <div ref={columnAnchorRef} className="toolbar-popover-anchor">
               <button
                 type="button"
@@ -452,6 +490,7 @@ export default function SpreadJSDemoPage() {
                   setColumnMenuOpen((open) => !open);
                   if (searchOpen) actionsRef.current?.cancelSearch();
                   setSearchOpen(false);
+                  setDimensionLocatorOpen(false);
                 }}
               >
                 <Columns3 size={16} />
@@ -681,6 +720,15 @@ export default function SpreadJSDemoPage() {
               <span className="formula-value">
                 {selected?.text || '选择单元格查看内容'}
               </span>
+              {selectedEditability && !selectedEditability.editable && (
+                <span
+                  className="cell-readonly-badge"
+                  title={selectedEditability.reason}
+                >
+                  <LockKeyhole size={10} />
+                  只读
+                </span>
+              )}
               <span className="selected-field">
                 {selected?.node.name ?? '—'} · {selected?.fieldLabel ?? '—'}
               </span>

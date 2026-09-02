@@ -7,27 +7,30 @@ import {
   describeClipboardRange,
 } from './clipboard';
 import {
+  describeBusinessCellDimension,
+  isBusinessCellDimension,
+  resolveBusinessCellDimension,
+  toBusinessCellDimension,
+  type BusinessCellDimension,
+} from './business-cell-coordinate';
+import {
+  BUSINESS_DATA,
+  BUSINESS_COLUMN_DATA,
   COLUMNS,
   COLUMN_GROUPS,
-  COLUMN_HEADER_GROUPS,
-  COLUMN_HEADER_SECTIONS,
-  AVG_ORDER_COLUMN,
-  COMPLETION_COLUMN,
-  DECIMAL_COLUMN,
+  COLUMN_HEADER_CELLS,
+  COLUMN_HEADER_ROW_COUNT,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
   INITIAL_DATASET_LABEL,
-  ORDERS_COLUMN,
+  PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
-  REVENUE_COLUMN,
   STATUS_COLUMN,
   STRESS_FULL_PAGE_VISIBLE_ROWS,
   STRESS_PAGE_SIZE,
   STRESS_TEXT_SEARCH_COLUMNS,
-  UPDATED_AT_COLUMN,
-  VERIFIED_COLUMN,
   canDrillNode,
   columnName,
   createBusinessProjectionRows,
@@ -35,6 +38,7 @@ import {
   getAllProductIdsForView,
   getAggregateValue,
   getBusinessProjectionSummary,
+  getCellEditability,
   getProductGroupIdsForView,
   getRegionGroupIdsForProduct,
   getStressAllProductIds,
@@ -47,6 +51,7 @@ import {
   pathForView,
   releaseStressRecords,
   roundToTwoDecimals,
+  simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
   updateBusinessNode,
@@ -56,6 +61,7 @@ import {
   type AggregateMode,
   type BusinessField,
   type CellAttachment,
+  type ColumnFormat,
   type DataMode,
   type DrillView,
   type HistoryItem,
@@ -95,6 +101,8 @@ type ClipboardPastedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IClipboardPastedEventArgs;
 type RangeChangedArgs =
   import('@grapecity-software/spread-sheets').Spread.Sheets.IRangeChangedEventArgs;
+type EditStartingArgs =
+  import('@grapecity-software/spread-sheets').Spread.Sheets.IEditStartingEventArgs;
 
 type ClipboardHistoryCell = {
   row: number;
@@ -108,6 +116,58 @@ type TrackedHistoryCell = {
   field: BusinessField;
   row: number;
   col: number;
+};
+
+type CellEditRequest = {
+  row: number;
+  col: number;
+  oldValue: unknown;
+  requestedValue: unknown;
+  source: string;
+};
+
+type VisibleCellChange = {
+  row: number;
+  col: number;
+  rowId: string;
+  product: string;
+  region: string;
+  field: BusinessField;
+  fieldLabel: string;
+  oldValue: unknown;
+  newValue: unknown;
+  kind: '直接修改' | '字段联动' | '汇总联动';
+};
+
+export type BusinessCellChangePayload = {
+  oldValue: unknown;
+  newValue: unknown;
+  dimension: BusinessCellDimension;
+};
+
+function logRegularBackendData() {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log(
+    '[SpreadJS Demo][渲染完成] 后台列结构 BUSINESS_COLUMN_DATA：',
+    BUSINESS_COLUMN_DATA,
+  );
+  console.log(
+    '[SpreadJS Demo][渲染完成] 后台业务数据 BUSINESS_DATA：',
+    BUSINESS_DATA,
+  );
+}
+
+// Demo 默认把完整回调载荷打印到控制台；真实项目可通过
+// useSpreadsheetController({ onBusinessCellChange }) 发送给后端。
+function logCellChange(payload: BusinessCellChangePayload) {
+  if (process.env.NODE_ENV === 'production') return;
+  console.log(
+    `[SpreadJS Demo][单元格修改]\n${JSON.stringify(payload, null, 2)}`,
+  );
+}
+
+export type SpreadsheetControllerOptions = {
+  onBusinessCellChange?: (payload: BusinessCellChangePayload) => void;
 };
 
 export type SpreadsheetActions = {
@@ -132,6 +192,7 @@ export type SpreadsheetActions = {
   deleteComment: () => void;
   addAttachments: (files: File[]) => void;
   removeAttachment: (attachmentId: string) => void;
+  locateBusinessCell: (dimension: BusinessCellDimension) => boolean;
 };
 
 export const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
@@ -176,9 +237,14 @@ function isAcceptedAttachment(file: File) {
   );
 }
 
-export function useSpreadsheetController() {
+export function useSpreadsheetController(
+  options: SpreadsheetControllerOptions = {},
+) {
   const hostRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<SpreadsheetActions | null>(null);
+  const onBusinessCellChangeRef = useRef(options.onBusinessCellChange);
+  onBusinessCellChangeRef.current = options.onBusinessCellChange;
+  const regularSourceLoggedRef = useRef(false);
   const panelRef = useRef<PanelName>(null);
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
   const rowGroupsCollapsedRef = useRef(false);
@@ -222,10 +288,6 @@ export function useSpreadsheetController() {
     ]),
   );
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
-  const dataOverridesRef = useRef<Map<string, Map<BusinessField, unknown>>>(
-    new Map(),
-  );
-
   const [ready, setReady] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
     null,
@@ -352,6 +414,9 @@ export function useSpreadsheetController() {
     let groupChangeBatching = false;
     const loadedStressPages = new Set<number>();
     const loadedStressRows = new Set<number>();
+    const pendingStressPages = new Set<number>();
+    const pendingStressRows = new Set<number>();
+    let stressSessionEpoch = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
     let clipboardHistorySource: string | null = null;
@@ -376,31 +441,18 @@ export function useSpreadsheetController() {
       return state;
     };
 
-    const applyProjectionOverrides = (rows: ViewRow[]) => {
-      rows.forEach((row) => {
-        dataOverridesRef.current.get(row.id)?.forEach((value, field) => {
-          updateBusinessNode(row, field, value);
-        });
-      });
-      return rows;
-    };
-
     const buildRegularRows = () =>
-      applyProjectionOverrides(
-        createBusinessProjectionRows(
-          activeView,
-          productExpanded,
-          regionExpandedByProduct,
-        ),
+      createBusinessProjectionRows(
+        activeView,
+        productExpanded,
+        regionExpandedByProduct,
       );
 
     const buildStressRows = () =>
-      applyProjectionOverrides(
-        createStressProjectionRows(
-          stressSourceRows,
-          productExpanded,
-          regionExpandedByProduct,
-        ),
+      createStressProjectionRows(
+        stressSourceRows,
+        productExpanded,
+        regionExpandedByProduct,
       );
 
     const currentProductGroupIds = () =>
@@ -427,12 +479,10 @@ export function useSpreadsheetController() {
           new Set(getRegionGroupIdsForProduct(productId)),
         );
       });
-      return applyProjectionOverrides(
-        createBusinessProjectionRows(
-          activeView,
-          allProductGroups,
-          allRegionGroups,
-        ),
+      return createBusinessProjectionRows(
+        activeView,
+        allProductGroups,
+        allRegionGroups,
       );
     };
 
@@ -489,17 +539,31 @@ export function useSpreadsheetController() {
       const sheet = spread.getActiveSheet();
       sheet.name('经营明细');
       sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
-      sheet.options.isProtected = false;
+      sheet.options.protectionOptions = {
+        allowSelectLockedCells: true,
+        allowSelectUnlockedCells: true,
+        allowResizeRows: true,
+        allowResizeColumns: true,
+        allowOutlineRows: true,
+        allowOutlineColumns: true,
+      };
+      sheet.options.isProtected = true;
       sheet.options.rowHeaderAutoText = GC.Spread.Sheets.HeaderAutoText.numbers;
       spread.options.scrollByPixel = true;
       spread.options.scrollPixel = 22;
 
-      // Cell types are immutable after setup. Reusing them avoids allocating
-      // new controls and validators for every lazily loaded stress-data page.
-      const statusCellType = new GC.Spread.Sheets.CellTypes.ComboBox();
-      statusCellType.items(['已核验', '待复核', '异常']);
-      statusCellType.editable(false);
-      const verifiedCellType = new GC.Spread.Sheets.CellTypes.CheckBox();
+      // 编辑器完全由后台列配置生成，并在所有数据行复用。
+      const columnCellTypes = COLUMNS.map((column) => {
+        if (column.editor?.type === 'select') {
+          const cellType = new GC.Spread.Sheets.CellTypes.ComboBox();
+          cellType.items([...column.editor.options]);
+          cellType.editable(false);
+          return cellType;
+        }
+        if (column.editor?.type === 'checkbox')
+          return new GC.Spread.Sheets.CellTypes.CheckBox();
+        return undefined;
+      });
       const datePickerCellButton: import('@grapecity-software/spread-sheets').Spread.Sheets.ICellButton =
         {
           imageType: GC.Spread.Sheets.ButtonImageType.dropdown,
@@ -682,7 +746,6 @@ export function useSpreadsheetController() {
           numericDisplay: numericDisplay ?? 'number',
         });
       };
-
       const clearOutlinesAndComments = () => {
         const oldRows = Math.max(sheet.getRowCount(), 1);
         const oldCols = Math.max(sheet.getColumnCount(), 1);
@@ -700,7 +763,7 @@ export function useSpreadsheetController() {
           if (row >= oldRows || col >= oldCols) return;
           const cell = sheet.getCell(row, col);
           cell.cellButtons(
-            col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [],
+            COLUMNS[col]?.editor?.type === 'date' ? [datePickerCellButton] : [],
           );
           cell.tag(null);
         });
@@ -726,7 +789,11 @@ export function useSpreadsheetController() {
         const key = stableCellKey(node.id, column.field);
         const count = attachmentsRef.current.get(key)?.length ?? 0;
         const cell = sheet.getCell(row, col);
-        const buttons = col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [];
+        const buttons =
+          column.editor?.type === 'date' &&
+          getCellEditability(node, col).editable
+            ? [datePickerCellButton]
+            : [];
         if (count) {
           buttons.push({
             imageType: GC.Spread.Sheets.ButtonImageType.custom,
@@ -783,87 +850,255 @@ export function useSpreadsheetController() {
         }
       };
 
+      const applyCellEditability = (startRow: number, rowCount: number) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let row = startRow; row < endRow; row += 1) {
+          for (let col = 0; col < COLUMNS.length; col += 1) {
+            const editability = getCellEditability(activeRows[row], col);
+            const cell = sheet.getCell(row, col);
+            cell.locked(!editability.editable);
+            if (
+              isHierarchyField(COLUMNS[col].field) ||
+              COLUMNS[col].editor?.type === 'select' ||
+              COLUMNS[col].editor?.type === 'checkbox'
+            )
+              continue;
+            if (editability.editable) {
+              cell.backColor('#fff').foreColor('#1f2937');
+            } else {
+              cell.backColor('#f5f6f8').foreColor('#667085');
+            }
+          }
+        }
+      };
+
+      const commitBusinessCellValues = (requests: CellEditRequest[]) => {
+        if (!requests.length) return 0;
+        const beforeRows = activeRows;
+        const accepted: Array<{
+          request: CellEditRequest;
+          projectionRowId: string;
+          field: BusinessField;
+          dimension: BusinessCellDimension;
+        }> = [];
+        const rejected: Array<{
+          request: CellEditRequest;
+          reason: string;
+        }> = [];
+
+        requests.forEach((request) => {
+          const row = beforeRows[request.row];
+          const column = COLUMNS[request.col];
+          const editability = getCellEditability(row, request.col);
+          if (
+            !row ||
+            !column ||
+            isHierarchyField(column.field) ||
+            !editability.editable ||
+            !editability.sourceNode
+          ) {
+            rejected.push({ request, reason: editability.reason });
+            return;
+          }
+          const dimension = toBusinessCellDimension(row, request.col);
+          if (!dimension) {
+            rejected.push({
+              request,
+              reason: '无法将当前投影转换为唯一业务维度',
+            });
+            return;
+          }
+          let nextValue = request.requestedValue;
+          if (
+            column.field === 'adjustmentFactor' &&
+            typeof nextValue === 'number'
+          )
+            nextValue = roundToTwoDecimals(nextValue);
+          updateBusinessNode(editability.sourceNode, column.field, nextValue);
+          accepted.push({
+            request: { ...request, requestedValue: nextValue },
+            projectionRowId: row.id,
+            field: column.field,
+            dimension,
+          });
+        });
+
+        if (rejected.length) {
+          spread.suspendEvent();
+          try {
+            rejected.forEach(({ request }) => {
+              const row = beforeRows[request.row];
+              if (!row) return;
+              sheet.setFormula(request.row, request.col, '');
+              sheet.setValue(
+                request.row,
+                request.col,
+                viewRowCellValue(row, request.col),
+              );
+            });
+          } finally {
+            spread.resumeEvent();
+          }
+          const first = rejected[0];
+          notify(
+            `无法编辑 ${columnName(first.request.col)}${
+              first.request.row + 1
+            }：${first.reason}`,
+            'error',
+          );
+        }
+        if (!accepted.length) return 0;
+
+        const nextRows =
+          activeDataMode === 'stress' ? buildStressRows() : buildRegularRows();
+        const beforeById = new Map(beforeRows.map((row) => [row.id, row]));
+        const nextRowIndexById = new Map(
+          nextRows.map((row, index) => [row.id, index]),
+        );
+        const directKeys = new Set(
+          accepted.map(({ projectionRowId, field }) =>
+            stableCellKey(projectionRowId, field),
+          ),
+        );
+        const directRowIds = new Set(
+          accepted.map(({ projectionRowId }) => projectionRowId),
+        );
+        const changes: VisibleCellChange[] = [];
+        nextRows.forEach((nextRow, row) => {
+          const beforeRow = beforeById.get(nextRow.id);
+          if (!beforeRow) return;
+          COLUMNS.forEach((column, col) => {
+            if (isHierarchyField(column.field)) return;
+            const oldValue = viewRowCellValue(beforeRow, col);
+            const newValue = viewRowCellValue(nextRow, col);
+            if (historyValuesEqual(oldValue, newValue)) return;
+            const key = stableCellKey(nextRow.id, column.field);
+            changes.push({
+              row,
+              col,
+              rowId: nextRow.id,
+              product: nextRow.productLabel,
+              region: nextRow.regionLabel,
+              field: column.field,
+              fieldLabel: column.label,
+              oldValue,
+              newValue,
+              kind: directKeys.has(key)
+                ? '直接修改'
+                : directRowIds.has(nextRow.id)
+                ? '字段联动'
+                : '汇总联动',
+            });
+          });
+        });
+
+        const sameStructure =
+          beforeRows.length === nextRows.length &&
+          beforeRows.every((row, index) => row.id === nextRows[index]?.id);
+        const preferredCell = currentCellIdentity();
+        if (!sameStructure) {
+          renderRows(nextRows, activeDataMode === 'stress', preferredCell);
+        } else {
+          activeRows = nextRows;
+          const changedRows = new Set<number>();
+          sheet.suspendPaint();
+          sheet.suspendCalcService(false);
+          sheet.suspendDirty();
+          spread.suspendEvent();
+          try {
+            accepted.forEach(({ request, projectionRowId }) => {
+              const row = nextRowIndexById.get(projectionRowId);
+              if (row === undefined || sheet.getFormula(row, request.col))
+                return;
+              sheet.setValue(
+                row,
+                request.col,
+                viewRowCellValue(nextRows[row], request.col),
+              );
+            });
+            changes.forEach((change) => {
+              const stressRowLoaded =
+                activeDataMode !== 'stress' ||
+                loadedStressPages.has(
+                  Math.floor(change.row / STRESS_PAGE_SIZE),
+                ) ||
+                loadedStressRows.has(change.row);
+              if (!stressRowLoaded) return;
+              if (
+                change.kind === '直接修改' &&
+                sheet.getFormula(change.row, change.col)
+              )
+                return;
+              sheet.setValue(change.row, change.col, change.newValue);
+              changedRows.add(change.row);
+            });
+            changedRows.forEach((row) => {
+              styleStatusCells(row, 1);
+              applyCellEditability(row, 1);
+            });
+          } finally {
+            spread.resumeEvent();
+            sheet.resumeDirty();
+            sheet.resumeCalcService(false);
+            sheet.resumePaint();
+          }
+          spread.repaint();
+        }
+
+        const operationSource = [
+          ...new Set(accepted.map(({ request }) => request.source)),
+        ].join(' / ');
+        let historyCount = 0;
+        changes.forEach((change) => {
+          const historySource =
+            change.kind === '直接修改'
+              ? operationSource
+              : `${operationSource} · ${change.kind}`;
+          if (
+            appendCellHistory(
+              change.row,
+              change.col,
+              change.oldValue,
+              change.newValue,
+              historySource,
+            )
+          )
+            historyCount += 1;
+        });
+        syncProjectionSnapshot();
+
+        accepted.forEach(({ request, projectionRowId, dimension }) => {
+          const nextRowIndex = nextRowIndexById.get(projectionRowId);
+          const nextValue =
+            nextRowIndex === undefined
+              ? request.requestedValue
+              : viewRowCellValue(nextRows[nextRowIndex], request.col);
+          const oldValue = viewRowCellValue(
+            beforeById.get(projectionRowId) ?? beforeRows[request.row],
+            request.col,
+          );
+          if (historyValuesEqual(oldValue, nextValue)) return;
+          const payload: BusinessCellChangePayload = {
+            oldValue,
+            newValue: nextValue,
+            dimension,
+          };
+          onBusinessCellChangeRef.current?.(payload);
+          logCellChange(payload);
+        });
+        return Math.max(historyCount, changes.length);
+      };
+
       const commitBusinessCellValue = (
         row: number,
         col: number,
         oldValue: unknown,
         requestedValue: unknown,
         source: string,
-      ) => {
-        const node = activeRows[row];
-        const column = COLUMNS[col];
-        if (!node || !column || isHierarchyField(column.field)) return false;
-
-        const previousStatus = node.status;
-        const previousVerified = node.verified;
-        let nextValue = requestedValue;
-        if (
-          column.field === 'adjustmentFactor' &&
-          typeof nextValue === 'number'
-        )
-          nextValue = roundToTwoDecimals(nextValue);
-
-        updateBusinessNode(node, column.field, nextValue);
-        const committedValue = viewRowCellValue(node, col);
-        if (!historyValuesEqual(sheet.getValue(row, col), committedValue)) {
-          spread.suspendEvent();
-          try {
-            sheet.setValue(row, col, committedValue);
-          } finally {
-            spread.resumeEvent();
-          }
-        }
-
-        if (activeDataMode === 'regular') {
-          const overrides =
-            dataOverridesRef.current.get(node.id) ??
-            new Map<BusinessField, unknown>();
-          overrides.set(column.field, committedValue);
-          if (column.field === 'status' || column.field === 'verified') {
-            overrides.set('status', node.status);
-            overrides.set('verified', node.verified);
-          }
-          dataOverridesRef.current.set(node.id, overrides);
-        }
-
-        if (column.field === 'status' || column.field === 'verified') {
-          spread.suspendEvent();
-          try {
-            sheet.setValue(row, STATUS_COLUMN, node.status);
-            sheet.setValue(row, VERIFIED_COLUMN, node.verified);
-          } finally {
-            spread.resumeEvent();
-          }
-          styleStatusCells(row, 1);
-        }
-
-        const recorded = appendCellHistory(
-          row,
-          col,
-          oldValue,
-          committedValue,
-          source,
-        );
-        if (col !== STATUS_COLUMN && previousStatus !== node.status) {
-          appendCellHistory(
-            row,
-            STATUS_COLUMN,
-            previousStatus,
-            node.status,
-            `${source} · 联动更新`,
-          );
-        }
-        if (col !== VERIFIED_COLUMN && previousVerified !== node.verified) {
-          appendCellHistory(
-            row,
-            VERIFIED_COLUMN,
-            previousVerified,
-            node.verified,
-            `${source} · 联动更新`,
-          );
-        }
-        return recorded;
-      };
+      ) =>
+        commitBusinessCellValues([
+          { row, col, oldValue, requestedValue, source },
+        ]) > 0;
 
       const captureClipboardHistory = (
         range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
@@ -902,6 +1137,31 @@ export function useSpreadsheetController() {
         return snapshot;
       };
 
+      const firstReadonlyCellInRange = (
+        range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
+        requestedRowCount = range.rowCount,
+        requestedColCount = range.colCount,
+      ) => {
+        const startRow = Math.max(range.row, 0);
+        const startCol = Math.max(range.col, 0);
+        const endRow = Math.min(
+          activeRows.length,
+          startRow + Math.max(requestedRowCount, 0),
+        );
+        const endCol = Math.min(
+          COLUMNS.length,
+          startCol + Math.max(requestedColCount, 0),
+        );
+        for (let row = startRow; row < endRow; row += 1) {
+          for (let col = startCol; col < endCol; col += 1) {
+            const editability = getCellEditability(activeRows[row], col);
+            if (!editability.editable)
+              return { row, col, reason: editability.reason };
+          }
+        }
+        return null;
+      };
+
       const rangeHistorySource = (args: RangeChangedArgs) => {
         if (args.isUndo) return '撤销';
         const action = GC.Spread.Sheets.RangeChangedAction;
@@ -929,38 +1189,41 @@ export function useSpreadsheetController() {
       };
 
       const configureCellTypes = (startRow: number, rowCount: number) => {
-        sheet
-          .getRange(startRow, STATUS_COLUMN, rowCount, 1)
-          .cellType(statusCellType);
-        sheet
-          .getRange(startRow, VERIFIED_COLUMN, rowCount, 1)
-          .cellType(verifiedCellType);
-
-        const updatedAtRange = sheet.getRange(
-          startRow,
-          UPDATED_AT_COLUMN,
-          rowCount,
-          1,
-        );
-        updatedAtRange.cellButtons([datePickerCellButton]);
-        updatedAtRange.dropDowns([
-          {
-            type: GC.Spread.Sheets.DropDownType.dateTimePicker,
-            option: {
-              showTime: false,
-              calendarPage: GC.Spread.Sheets.CalendarPage.day,
-              startDay: GC.Spread.Sheets.CalendarStartDay.monday,
-            },
-          },
-        ]);
-        sheet.setDataValidator(
-          startRow,
-          DECIMAL_COLUMN,
-          rowCount,
-          1,
-          decimalValidator,
-          GC.Spread.Sheets.SheetArea.viewport,
-        );
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let row = startRow; row < endRow; row += 1) {
+          COLUMNS.forEach((column, col) => {
+            const editable = getCellEditability(activeRows[row], col).editable;
+            const cell = sheet.getCell(row, col);
+            cell.cellType(editable ? columnCellTypes[col] : undefined);
+            const dateEditable = editable && column.editor?.type === 'date';
+            cell.cellButtons(dateEditable ? [datePickerCellButton] : []);
+            cell.dropDowns(
+              dateEditable
+                ? [
+                    {
+                      type: GC.Spread.Sheets.DropDownType.dateTimePicker,
+                      option: {
+                        showTime: false,
+                        calendarPage: GC.Spread.Sheets.CalendarPage.day,
+                        startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+                      },
+                    },
+                  ]
+                : [],
+            );
+          });
+        }
+        COLUMNS.forEach((column, col) => {
+          if (column.format !== 'decimal') return;
+          sheet.setDataValidator(
+            startRow,
+            col,
+            rowCount,
+            1,
+            decimalValidator,
+            GC.Spread.Sheets.SheetArea.viewport,
+          );
+        });
       };
 
       const styleDataRows = (
@@ -968,20 +1231,20 @@ export function useSpreadsheetController() {
         rowCount: number,
         columnCount: number,
       ) => {
-        sheet
-          .getRange(startRow, REVENUE_COLUMN, rowCount, 3)
-          .formatter('¥#,##0');
-        sheet.getRange(startRow, ORDERS_COLUMN, rowCount, 3).formatter('#,##0');
-        sheet
-          .getRange(startRow, AVG_ORDER_COLUMN, rowCount, 1)
-          .formatter('¥#,##0');
-        sheet
-          .getRange(startRow, COMPLETION_COLUMN, rowCount, 1)
-          .formatter('0.0%');
-        sheet
-          .getRange(startRow, UPDATED_AT_COLUMN, rowCount, 1)
-          .formatter('yyyy-mm-dd');
-        sheet.getRange(startRow, DECIMAL_COLUMN, rowCount, 1).formatter('0.00');
+        const formatters: Record<ColumnFormat, string> = {
+          currency: '¥#,##0',
+          integer: '#,##0',
+          percent: '0.0%',
+          date: 'yyyy-mm-dd',
+          decimal: '0.00',
+        };
+        COLUMNS.forEach((column, col) => {
+          const formatter = column.format
+            ? formatters[column.format]
+            : undefined;
+          if (formatter)
+            sheet.getRange(startRow, col, rowCount, 1).formatter(formatter);
+        });
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
           .font('12px Arial, PingFang SC');
@@ -990,7 +1253,7 @@ export function useSpreadsheetController() {
           .backColor('#edf8f2')
           .foreColor('#19704f');
         sheet
-          .getRange(startRow, 1, rowCount, 1)
+          .getRange(startRow, PRODUCT_ATTRIBUTE_COLUMN, rowCount, 1)
           .backColor('#fff8e9')
           .foreColor('#875c18');
         sheet
@@ -1053,6 +1316,7 @@ export function useSpreadsheetController() {
         styleDataRows(startRow, rowCount, sheet.getColumnCount());
         configureCellTypes(startRow, rowCount);
         styleStatusCells(startRow, rowCount);
+        applyCellEditability(startRow, rowCount);
         loadedStressPages.add(pageIndex);
         for (let row = startRow; row < startRow + rowCount; row += 1)
           loadedStressRows.delete(row);
@@ -1073,7 +1337,39 @@ export function useSpreadsheetController() {
         styleDataRows(row, 1, sheet.getColumnCount());
         configureCellTypes(row, 1);
         styleStatusCells(row, 1);
+        applyCellEditability(row, 1);
         loadedStressRows.add(row);
+      };
+
+      // 滚动到已加载数据边界时，先在这批行里打一个“正在加载…”占位提示，
+      // 让用户能感知到这是一次异步的分批请求，而不是瞬间完成。
+      const writeStressLoadingPlaceholder = (
+        pageIndices: number[],
+        rowIndices: number[],
+      ) => {
+        const rows = new Set<number>();
+        pageIndices.forEach((page) => {
+          const startRow = page * STRESS_PAGE_SIZE;
+          const rowCount = Math.min(
+            STRESS_PAGE_SIZE,
+            activeRows.length - startRow,
+          );
+          for (let row = startRow; row < startRow + rowCount; row += 1)
+            rows.add(row);
+        });
+        rowIndices.forEach((row) => rows.add(row));
+        if (!rows.size) return;
+        sheet.suspendPaint();
+        spread.suspendEvent();
+        try {
+          rows.forEach((row) => {
+            sheet.setValue(row, PRODUCT_HIERARCHY_COLUMN, '正在加载…');
+          });
+        } finally {
+          spread.resumeEvent();
+          sheet.resumePaint();
+        }
+        spread.repaint();
       };
 
       const loadStressData = (
@@ -1084,32 +1380,58 @@ export function useSpreadsheetController() {
         const maxPage = Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1;
         const unloadedPages = [...new Set(pageIndices)].filter(
           (page) =>
-            page >= 0 && page <= maxPage && !loadedStressPages.has(page),
+            page >= 0 &&
+            page <= maxPage &&
+            !loadedStressPages.has(page) &&
+            !pendingStressPages.has(page),
         );
-        const pagesBeingLoaded = new Set(unloadedPages);
+        const pagesBeingLoaded = new Set([
+          ...unloadedPages,
+          ...pendingStressPages,
+        ]);
         const unloadedRows = [...new Set(rowIndices)].filter(
           (row) =>
             row >= 0 &&
             row < activeRows.length &&
             !pagesBeingLoaded.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
             !loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressRows.has(row),
+            !loadedStressRows.has(row) &&
+            !pendingStressRows.has(row),
         );
         if (!unloadedPages.length && !unloadedRows.length) return;
-        sheet.suspendPaint();
-        sheet.suspendCalcService(false);
-        sheet.suspendDirty();
-        spread.suspendEvent();
-        try {
-          unloadedPages.forEach(writeStressPage);
-          unloadedRows.forEach(writeStressRow);
-        } finally {
-          spread.resumeEvent();
-          sheet.resumeDirty();
-          sheet.resumeCalcService(false);
-          sheet.resumePaint();
-        }
-        spread.repaint();
+
+        unloadedPages.forEach((page) => pendingStressPages.add(page));
+        unloadedRows.forEach((row) => pendingStressRows.add(row));
+        writeStressLoadingPlaceholder(unloadedPages, unloadedRows);
+
+        // 模拟一次真实的分批后端请求：数据早已在内存中就绪，
+        // 但要等这段延迟结束才把结果写进表格，制造滚动到底部
+        // 触发下一批加载的真实观感。
+        const epoch = stressSessionEpoch;
+        void simulateStressBackendDelay().then(() => {
+          unloadedPages.forEach((page) => pendingStressPages.delete(page));
+          unloadedRows.forEach((row) => pendingStressRows.delete(row));
+          if (
+            cancelled ||
+            activeDataMode !== 'stress' ||
+            epoch !== stressSessionEpoch
+          )
+            return;
+          sheet.suspendPaint();
+          sheet.suspendCalcService(false);
+          sheet.suspendDirty();
+          spread.suspendEvent();
+          try {
+            unloadedPages.forEach(writeStressPage);
+            unloadedRows.forEach(writeStressRow);
+          } finally {
+            spread.resumeEvent();
+            sheet.resumeDirty();
+            sheet.resumeCalcService(false);
+            sheet.resumePaint();
+          }
+          spread.repaint();
+        });
       };
 
       const loadVisibleStressRows = (fallbackTopRow = 0) => {
@@ -1274,6 +1596,9 @@ export function useSpreadsheetController() {
             );
           loadedStressPages.clear();
           loadedStressRows.clear();
+          pendingStressPages.clear();
+          pendingStressRows.clear();
+          stressSessionEpoch += 1;
           if (!stress) {
             sheet.setArray(
               0,
@@ -1289,50 +1614,28 @@ export function useSpreadsheetController() {
               row.productRowSpan,
               1,
             );
-            sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
+            sheet.addSpan(
+              rowIndex,
+              PRODUCT_ATTRIBUTE_COLUMN,
+              row.productRowSpan,
+              1,
+            );
           });
 
           const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
           sheet.getSpans(undefined, headerArea).forEach((span) => {
             sheet.removeSpan(span.row, span.col, headerArea);
           });
-          sheet.setRowCount(3, headerArea);
-
-          const allHeaders = COLUMNS.map((column) => column.label);
-          allHeaders.forEach((header, col) => {
-            sheet.setValue(0, col, null, headerArea);
-            sheet.setValue(1, col, null, headerArea);
-            sheet.setValue(2, col, header, headerArea);
-          });
-
-          COLUMN_HEADER_GROUPS.forEach(
-            ({ label, startCol, colCount: groupColumnCount }) => {
-              sheet.setValue(1, startCol, label, headerArea);
-              if (groupColumnCount > 1)
-                sheet.addSpan(1, startCol, 1, groupColumnCount, headerArea);
-            },
-          );
-
-          COLUMN_HEADER_SECTIONS.forEach(
-            ({ label, startCol, colCount: sectionColumnCount }) => {
-              // Sections without a real second-level breakdown (e.g. the
-              // hierarchy columns) span both group rows so the header reads
-              // as a single label instead of leaving row 1 blank.
-              const hasSubGroups = COLUMN_HEADER_GROUPS.some(
-                (group) =>
-                  group.startCol >= startCol &&
-                  group.startCol < startCol + sectionColumnCount,
-              );
-              const rowSpan = hasSubGroups ? 1 : 2;
-              sheet.setValue(0, startCol, label, headerArea);
-              if (sectionColumnCount > 1 || rowSpan > 1)
-                sheet.addSpan(
-                  0,
-                  startCol,
-                  rowSpan,
-                  sectionColumnCount,
-                  headerArea,
-                );
+          sheet.setRowCount(COLUMN_HEADER_ROW_COUNT, headerArea);
+          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1) {
+            for (let col = 0; col < colCount; col += 1)
+              sheet.setValue(row, col, null, headerArea);
+          }
+          COLUMN_HEADER_CELLS.forEach(
+            ({ row, startCol, rowCount, colCount, label }) => {
+              sheet.setValue(row, startCol, label, headerArea);
+              if (rowCount > 1 || colCount > 1)
+                sheet.addSpan(row, startCol, rowCount, colCount, headerArea);
             },
           );
           COLUMNS.forEach((column, col) =>
@@ -1341,37 +1644,59 @@ export function useSpreadsheetController() {
 
           if (!stress) styleDataRows(0, rowCount, colCount);
           sheet
-            .getRange(0, 0, 3, colCount, headerArea)
+            .getRange(0, 0, COLUMN_HEADER_ROW_COUNT, colCount, headerArea)
             .backColor('#f4f6fa')
             .foreColor('#344054')
             .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
             .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .font('600 12px Arial, PingFang SC');
-          sheet
-            .getRange(1, 0, 1, colCount, headerArea)
-            .backColor('#f7f5ff')
-            .foreColor('#67569e')
-            .font('650 12px Arial, PingFang SC');
+          if (COLUMN_HEADER_ROW_COUNT > 2)
+            sheet
+              .getRange(1, 0, COLUMN_HEADER_ROW_COUNT - 2, colCount, headerArea)
+              .backColor('#f7f5ff')
+              .foreColor('#67569e')
+              .font('650 12px Arial, PingFang SC');
           sheet
             .getRange(0, 0, 1, colCount, headerArea)
             .backColor('#e9e3fb')
             .foreColor('#513b9d')
             .font('700 12px Arial, PingFang SC');
           sheet
-            .getRange(2, PRODUCT_HIERARCHY_COLUMN, 1, 1, headerArea)
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              PRODUCT_HIERARCHY_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
             .backColor('#e8f6ee')
             .foreColor('#19704f');
           sheet
-            .getRange(2, 1, 1, 1, headerArea)
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              PRODUCT_ATTRIBUTE_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
             .backColor('#fff4dc')
             .foreColor('#875c18');
           sheet
-            .getRange(2, REGION_HIERARCHY_COLUMN, 1, 1, headerArea)
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              REGION_HIERARCHY_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
             .backColor('#eeeafd')
             .foreColor('#6045b8');
-          sheet.setRowHeight(0, 27, headerArea);
-          sheet.setRowHeight(1, 27, headerArea);
-          sheet.setRowHeight(2, 34, headerArea);
+          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1)
+            sheet.setRowHeight(
+              row,
+              row === COLUMN_HEADER_ROW_COUNT - 1 ? 34 : 27,
+              headerArea,
+            );
           if (!stress) configureCellTypes(0, rowCount);
 
           // 常规与大数据模式都由产品列、区域列分别维护独立状态并
@@ -1399,6 +1724,7 @@ export function useSpreadsheetController() {
             applyStableComments();
             applyStableAttachmentIndicators();
             styleStatusCells(0, rowCount);
+            applyCellEditability(0, rowCount);
           }
 
           COLUMNS.forEach((_, col) =>
@@ -1450,6 +1776,10 @@ export function useSpreadsheetController() {
           scheduleStressViewportLoad(nextRow);
         }
         setReady(true);
+        if (!stress && !regularSourceLoggedRef.current) {
+          regularSourceLoggedRef.current = true;
+          logRegularBackendData();
+        }
       };
 
       const currentCellIdentity = () => {
@@ -1803,6 +2133,95 @@ export function useSpreadsheetController() {
         return { row, expandedHierarchy };
       };
 
+      /**
+       * 使用后端回传的行维和列维定位单元格。定位前只展开目标所需的
+       * 产品和区域祖先；常规模式若处于下钻页，会回到全量投影重试。
+       */
+      const locateBusinessCell = (dimension: BusinessCellDimension) => {
+        if (!isBusinessCellDimension(dimension)) {
+          notify('后端返回的行维或列维不完整', 'error');
+          return false;
+        }
+
+        if (activeDataMode === 'stress') {
+          const source = resolveBusinessCellDimension(
+            stressSourceRows,
+            dimension,
+          );
+          if (!source) {
+            notify('当前 10 万行数据中未找到该业务单元格', 'error');
+            return false;
+          }
+          const located = revealStressSearchMatch(source.row, source.col);
+          if (!located) {
+            notify('业务维度存在，但无法投影到当前表格', 'error');
+            return false;
+          }
+          notify(
+            `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+              source.col,
+            )}${located.row + 1}`,
+          );
+          return true;
+        }
+
+        let viewReset = false;
+        let target = resolveBusinessCellDimension(
+          buildFullyExpandedRegularRows(),
+          dimension,
+        );
+        if (!target && activeView.length) {
+          activeView = [];
+          setView([]);
+          viewReset = true;
+          target = resolveBusinessCellDimension(
+            buildFullyExpandedRegularRows(),
+            dimension,
+          );
+        }
+        if (!target) {
+          notify('当前常规数据中未找到该业务单元格', 'error');
+          return false;
+        }
+
+        let hierarchyExpanded = viewReset;
+        if (
+          target.productParentId &&
+          !productExpanded.has(target.productParentId)
+        ) {
+          productExpanded.add(target.productParentId);
+          hierarchyExpanded = true;
+        }
+        if (target.regionDepth > 0) {
+          const state = extensionStateFor(target.productId);
+          if (!state.has(target.regionRootId)) {
+            state.add(target.regionRootId);
+            hierarchyExpanded = true;
+          }
+        }
+        if (hierarchyExpanded) {
+          renderRows(buildRegularRows(), false, {
+            nodeId: target.projectionRowId,
+            productId: target.productId,
+            col: target.col,
+          });
+          syncProjectionSnapshot();
+        }
+
+        const visible = resolveBusinessCellDimension(activeRows, dimension);
+        if (!visible) {
+          notify('业务维度存在，但目标行未能正确展开', 'error');
+          return false;
+        }
+        revealSearchMatch(visible.row, visible.col);
+        notify(
+          `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+            visible.col,
+          )}${visible.row + 1}`,
+        );
+        return true;
+      };
+
       const searchStatus = (
         total: number,
         index: number,
@@ -1957,6 +2376,7 @@ export function useSpreadsheetController() {
           commandHistorySource = previousSource;
         }
         let changedCount = 0;
+        const pendingEdits: CellEditRequest[] = [];
         before.forEach(({ row, col, oldValue, oldFormula }) => {
           const newValue = sheet.getValue(row, col);
           const newFormula = sheet.getFormula(row, col) ?? '';
@@ -1979,12 +2399,16 @@ export function useSpreadsheetController() {
               else cellFormulaState.delete(key);
             }
           }
-          if (
-            !historyValuesEqual(oldValue, newValue) &&
-            commitBusinessCellValue(row, col, oldValue, newValue, source)
-          )
-            changedCount += 1;
+          if (!historyValuesEqual(oldValue, newValue))
+            pendingEdits.push({
+              row,
+              col,
+              oldValue,
+              requestedValue: newValue,
+              source,
+            });
         });
+        changedCount += commitBusinessCellValues(pendingEdits);
         if (changedCount) {
           invalidateSearchSession(
             activeSearch.query
@@ -2176,6 +2600,7 @@ export function useSpreadsheetController() {
         },
         setOutlineDimension,
         resetOutline,
+        locateBusinessCell,
         loadDataMode: (mode) => {
           invalidateSearchSession('输入关键词，按 Enter 开始搜索');
           setSearchQuery('');
@@ -2452,6 +2877,29 @@ export function useSpreadsheetController() {
         },
       );
       sheet.bind(
+        GC.Spread.Sheets.Events.EditStarting,
+        (_sender: unknown, args: EditStartingArgs) => {
+          const editability = getCellEditability(
+            activeRows[args.row],
+            args.col,
+          );
+          if (editability.editable) return;
+          args.cancel = true;
+          notify(
+            `无法编辑 ${columnName(args.col)}${args.row + 1}：${
+              editability.reason
+            }`,
+            'error',
+          );
+          console.info('[SpreadJS Demo][编辑已阻止]', {
+            cell: `${columnName(args.col)}${args.row + 1}`,
+            rowId: activeRows[args.row]?.id,
+            field: COLUMNS[args.col]?.field,
+            reason: editability.reason,
+          });
+        },
+      );
+      sheet.bind(
         GC.Spread.Sheets.Events.CellClick,
         (_sender: unknown, args: CellClickArgs) => {
           if (args.sheetArea !== GC.Spread.Sheets.SheetArea.viewport) return;
@@ -2485,13 +2933,45 @@ export function useSpreadsheetController() {
           window.clearTimeout(clipboardHistoryTimer);
           const text = args.pasteData.text ?? '';
           const matrix = clipboardTextToMatrix(text);
+          const pasteRowCount = Math.max(
+            args.fromRange?.rowCount ?? 0,
+            matrix.length,
+            args.cellRange.rowCount,
+          );
+          const pasteColCount = Math.max(
+            args.fromRange?.colCount ?? 0,
+            ...matrix.map((row) => row.length),
+            args.cellRange.colCount,
+          );
+          const readonlyTarget = firstReadonlyCellInRange(
+            args.cellRange,
+            pasteRowCount,
+            pasteColCount,
+          );
+          if (readonlyTarget) {
+            args.cancel = true;
+            clipboardHistorySource = null;
+            clipboardHistorySnapshot = null;
+            notify(
+              `无法粘贴到 ${columnName(readonlyTarget.col)}${
+                readonlyTarget.row + 1
+              }：${readonlyTarget.reason}`,
+              'error',
+            );
+            console.warn('[SpreadJS Demo][粘贴已阻止]', {
+              cell: `${columnName(readonlyTarget.col)}${
+                readonlyTarget.row + 1
+              }`,
+              reason: readonlyTarget.reason,
+              pasteRowCount,
+              pasteColCount,
+            });
+            return;
+          }
           clipboardHistorySnapshot = captureClipboardHistory(
             args.cellRange,
-            Math.max(args.fromRange?.rowCount ?? 0, matrix.length),
-            Math.max(
-              args.fromRange?.colCount ?? 0,
-              ...matrix.map((row) => row.length),
-            ),
+            pasteRowCount,
+            pasteColCount,
           );
           clipboardHistorySource = args.isCutting
             ? '剪切粘贴'
@@ -2524,7 +3004,8 @@ export function useSpreadsheetController() {
           const source = clipboardHistorySource ?? '粘贴';
           clipboardHistorySnapshot = null;
           let changedCount = 0;
-          let blockedHierarchyChange = false;
+          let blockedReadonlyChange = false;
+          const pendingEdits: CellEditRequest[] = [];
           spread.suspendPaint();
           try {
             snapshot?.forEach(({ row, col, oldValue, oldFormula }) => {
@@ -2532,7 +3013,8 @@ export function useSpreadsheetController() {
               const newValue = sheet.getValue(row, col);
               const newFormula = sheet.getFormula(row, col) ?? '';
               if (!column) return;
-              if (isHierarchyField(column.field)) {
+              const editability = getCellEditability(activeRows[row], col);
+              if (!editability.editable) {
                 if (
                   !historyValuesEqual(oldValue, newValue) ||
                   oldFormula !== newFormula
@@ -2544,7 +3026,7 @@ export function useSpreadsheetController() {
                   } finally {
                     spread.resumeEvent();
                   }
-                  blockedHierarchyChange = true;
+                  blockedReadonlyChange = true;
                 }
                 return;
               }
@@ -2563,15 +3045,19 @@ export function useSpreadsheetController() {
                 if (newFormula) cellFormulaState.set(key, newFormula);
                 else cellFormulaState.delete(key);
               }
-              if (
-                !historyValuesEqual(oldValue, newValue) &&
-                commitBusinessCellValue(row, col, oldValue, newValue, source)
-              )
-                changedCount += 1;
+              if (!historyValuesEqual(oldValue, newValue))
+                pendingEdits.push({
+                  row,
+                  col,
+                  oldValue,
+                  requestedValue: newValue,
+                  source,
+                });
             });
           } finally {
             spread.resumePaint();
           }
+          changedCount += commitBusinessCellValues(pendingEdits);
           if (changedCount) {
             invalidateSearchSession(
               activeSearch.query
@@ -2579,8 +3065,8 @@ export function useSpreadsheetController() {
                 : undefined,
             );
           }
-          if (blockedHierarchyChange)
-            notify('已跳过层级列；层级名称请从业务数据源维护');
+          if (blockedReadonlyChange)
+            notify('已跳过不可编辑的派生或层级单元格', 'error');
           updateSelected(
             sheet.getActiveRowIndex(),
             sheet.getActiveColumnIndex(),
@@ -2593,7 +3079,7 @@ export function useSpreadsheetController() {
       sheet.bind(
         GC.Spread.Sheets.Events.ValidationError,
         (_sender: unknown, args: ValidationErrorArgs) => {
-          if (args.col !== DECIMAL_COLUMN) return;
+          if (COLUMNS[args.col]?.format !== 'decimal') return;
 
           args.validationResult =
             GC.Spread.Sheets.DataValidation.DataValidationResult.discard;
@@ -2633,21 +3119,29 @@ export function useSpreadsheetController() {
           )
             return;
           if (clipboardHistorySnapshot) return;
+          if (commandHistoryDiffInProgress) return;
           const node = activeRows[args.row];
           const column = COLUMNS[args.col];
           if (!node || !column) return;
-          if (isHierarchyField(column.field)) {
+          const editability = getCellEditability(node, args.col);
+          if (!editability.editable) {
             spread.suspendEvent();
             try {
-              sheet.setValue(
-                args.row,
-                args.col,
-                viewRowCellValue(node, args.col),
-              );
+              const oldFormula =
+                args.propertyName === 'formula'
+                  ? String(args.oldValue ?? '')
+                  : '';
+              sheet.setFormula(args.row, args.col, oldFormula);
+              if (!oldFormula)
+                sheet.setValue(
+                  args.row,
+                  args.col,
+                  viewRowCellValue(node, args.col),
+                );
             } finally {
               spread.resumeEvent();
             }
-            notify('层级字段用于展开和折叠，名称请从业务数据源维护');
+            notify(`无法编辑：${editability.reason}`, 'error');
             updateSelected(args.row, args.col);
             return;
           }
@@ -2664,6 +3158,14 @@ export function useSpreadsheetController() {
             const nextFormula = String(args.newValue ?? '');
             if (nextFormula) cellFormulaState.set(key, nextFormula);
             else cellFormulaState.delete(key);
+            const formulaResult = sheet.getValue(args.row, args.col);
+            commitBusinessCellValue(
+              args.row,
+              args.col,
+              viewRowCellValue(node, args.col),
+              formulaResult,
+              `${historySource} · 计算结果`,
+            );
             invalidateSearchSession(
               activeSearch.query
                 ? '公式已更新，按 Enter 刷新搜索结果'
@@ -2709,7 +3211,8 @@ export function useSpreadsheetController() {
               ).flat();
           const seen = new Set<string>();
           let changedCount = 0;
-          let blockedHierarchyChange = false;
+          let blockedReadonlyChange = false;
+          const pendingEdits: CellEditRequest[] = [];
           spread.suspendPaint();
           try {
             changedCells.forEach(({ row, col }) => {
@@ -2721,7 +3224,8 @@ export function useSpreadsheetController() {
               if (!node || !column) return;
               const newValue = sheet.getValue(row, col);
               const newFormula = sheet.getFormula(row, col) ?? '';
-              if (isHierarchyField(column.field)) {
+              const editability = getCellEditability(node, col);
+              if (!editability.editable) {
                 const expectedValue = viewRowCellValue(node, col);
                 if (!historyValuesEqual(expectedValue, newValue)) {
                   spread.suspendEvent();
@@ -2731,7 +3235,7 @@ export function useSpreadsheetController() {
                   } finally {
                     spread.resumeEvent();
                   }
-                  blockedHierarchyChange = true;
+                  blockedReadonlyChange = true;
                 }
                 return;
               }
@@ -2754,15 +3258,19 @@ export function useSpreadsheetController() {
               }
 
               const oldValue = viewRowCellValue(node, col);
-              if (
-                !historyValuesEqual(oldValue, newValue) &&
-                commitBusinessCellValue(row, col, oldValue, newValue, source)
-              )
-                changedCount += 1;
+              if (!historyValuesEqual(oldValue, newValue))
+                pendingEdits.push({
+                  row,
+                  col,
+                  oldValue,
+                  requestedValue: newValue,
+                  source,
+                });
             });
           } finally {
             spread.resumePaint();
           }
+          changedCount += commitBusinessCellValues(pendingEdits);
           if (changedCount) {
             invalidateSearchSession(
               activeSearch.query
@@ -2776,8 +3284,8 @@ export function useSpreadsheetController() {
             const range = sheet.getSelections().at(-1);
             if (range) calculateSelection(sheet, range);
           }
-          if (blockedHierarchyChange)
-            notify('已跳过层级列；层级名称请从业务数据源维护');
+          if (blockedReadonlyChange)
+            notify('已跳过不可编辑的派生或层级单元格', 'error');
         },
       );
       sheet.bind(
@@ -2793,7 +3301,6 @@ export function useSpreadsheetController() {
             scheduleStressViewportLoad(args.newTopRow);
         },
       );
-
       renderRows(buildRegularRows(), false);
       syncProjectionSnapshot();
       spread.focus();
@@ -2831,7 +3338,6 @@ export function useSpreadsheetController() {
   const commentDirty = commentDraft.trim() !== persistedComment;
   const retryInitialization = () =>
     setInitializationAttempt((attempt) => attempt + 1);
-
   return {
     hostRef,
     actionsRef,

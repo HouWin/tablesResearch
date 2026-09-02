@@ -1,3 +1,11 @@
+/**
+ * 树形数据展平（tree.ts）
+ *
+ * 将 ETableTreeNode[] + ETableTreeConfig 转为二维 ETableFlattenResult：
+ * - buildTreeColumns：表头列树（headerColumns > measureGroups > 自动生成）
+ * - flattenTreeData：递归展平节点、属性、城市明细 → rows / merges / treeToggles
+ * - 支持 groupStatistics 小计/总计、treeUI 折叠绑定、liteMode 轻量展平
+ */
 import type {
   ETableCell,
   ETableColumnGroup,
@@ -370,6 +378,46 @@ export const flattenTreeData = (
     return data;
   };
 
+  const normalizeDimensionValue = (
+    value: ETablePrimitive | ETableCell | undefined,
+  ): string => {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    if (typeof value === 'object' && 'value' in value) {
+      return String(value.value ?? '')
+        .replace(/^[▼▶]\s*/, '')
+        .trim();
+    }
+    return String(value).replace(/^[▼▶]\s*/, '').trim();
+  };
+
+  /** 展平时记录完整行维度，供 onCellChange 使用（不受明细行清空品类列影响） */
+  const buildDimensionContext = (
+    path: Record<string, ETablePrimitive>,
+    options?: {
+      attributeGroupLabel?: string;
+      attributeDetailLabel?: string;
+    },
+  ): Record<string, ETablePrimitive> => {
+    const context: Record<string, ETablePrimitive> = {};
+    dimensionFields.forEach((field) => {
+      const value = normalizeDimensionValue(path[field] as ETablePrimitive | ETableCell);
+      if (value) {
+        context[field] = value;
+      }
+    });
+    if (attributeField && options?.attributeGroupLabel) {
+      context[attributeField] = normalizeDimensionValue(options.attributeGroupLabel);
+    }
+    if (attributeField && options?.attributeDetailLabel) {
+      context[`${attributeField}Detail`] = normalizeDimensionValue(
+        options.attributeDetailLabel,
+      );
+    }
+    return context;
+  };
+
   const emitAttribute = (
     attr: ETableTreeAttribute,
     path: Record<string, ETablePrimitive>,
@@ -409,6 +457,10 @@ export const flattenTreeData = (
           treeUI ? formatTreeLabel(detail.label, 1) : detail.label,
           detail.values,
         ),
+        dimensionContext: buildDimensionContext(path, {
+          attributeGroupLabel: attr.label,
+          attributeDetailLabel: detail.label,
+        }),
         style: resolveRowStyle(depth, { regionDetail: true }),
       });
       currentRow += 1;
@@ -695,13 +747,6 @@ export const flattenTreeData = (
           if (dimensionFields[0]) {
             regionPath[dimensionFields[0]] = '';
           }
-          if (node.data) {
-            Object.keys(node.data).forEach((key) => {
-              if (key !== labelField && fieldColumnIndex.has(key)) {
-                regionPath[key] = '';
-              }
-            });
-          }
           rows.push({
             id: detail.id,
             data: buildData(
@@ -709,6 +754,10 @@ export const flattenTreeData = (
               formatTreeLabel(detail.label, 1),
               detail.values,
             ),
+            dimensionContext: buildDimensionContext(path, {
+              attributeGroupLabel: primaryRegion.label,
+              attributeDetailLabel: detail.label,
+            }),
             style: resolveRowStyle(depth, { regionDetail: true }),
           });
           currentRow += 1;

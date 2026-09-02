@@ -1,3 +1,12 @@
+/**
+ * 表格渲染核心（renderer.ts）
+ *
+ * 负责将展平后的二维数据写入 Univer Worksheet：
+ * - renderHeader：多级表头布局 + 合并
+ * - renderData / renderDataAsync：数据区 setValues（支持分片、跳过写入供懒虚拟用）
+ * - renderMerges：单元格合并（含视口模式下的逻辑锚点合并）
+ * - ensureSheetCapacity：写入前扩容行列，避免 Range out of bounds
+ */
 import { VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
 import { ASYNC_RENDER_ROW_THRESHOLD } from './treeDataGenerator';
@@ -55,26 +64,30 @@ export const ensureSheetCapacity = (
   rowCount: number,
   columnCount: number,
 ) => {
+  // 如果工作表不存在，则直接返回
   if (!worksheet) {
     return;
   }
+  // 计算需要扩容的行数
   const needRows = Math.max(1, Math.ceil(rowCount));
+  // 计算需要扩容的列数
   const needCols = Math.max(1, Math.ceil(columnCount));
   try {
-    const maxRows = typeof worksheet.getMaxRows === 'function'
-      ? worksheet.getMaxRows()
-      : 1000;
+    // 获取最大行数
+    const maxRows = typeof worksheet.getMaxRows === 'function' ? worksheet.getMaxRows() : 1000;
     if (needRows > maxRows) {
+      // 设置行数
       worksheet.setRowCount(needRows);
     }
   } catch (error) {
     console.warn('[ETable] setRowCount failed', error);
   }
   try {
-    const maxCols = typeof worksheet.getMaxColumns === 'function'
-      ? worksheet.getMaxColumns()
-      : 20;
+    // 获取最大列数
+    const maxCols = typeof worksheet.getMaxColumns === 'function' ? worksheet.getMaxColumns() : 20;
+    // 如果需要扩容的列数大于最大列数，则设置列数
     if (needCols > maxCols) {
+      // 设置列数
       worksheet.setColumnCount(needCols);
     }
   } catch (error) {
@@ -251,10 +264,12 @@ export const renderData = (
   startRow: number,
   options?: { virtualScroll?: boolean; chunkSize?: number; skipWrite?: boolean },
 ): number => {
+  // 如果工作表不存在，或者没有数据，或者没有叶子列，则直接返回
   if (!worksheet || !rows.length || !leafColumns.length) {
     return 0;
   }
 
+  // 如果数据开始行小于0，则直接返回
   if (startRow < 0) {
     return 0;
   }
@@ -264,30 +279,40 @@ export const renderData = (
     return 0;
   }
 
+  // 计算分片大小
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
+
+  // 是否使用单次写入
   const useSingleWrite = rows.length <= 400;
 
+  // 如果使用单次写入，则直接写入
   if (useSingleWrite) {
+    // 构建行值
     const values = buildRowValues(rows, leafColumns);
-    worksheet
-      .getRange(startRow, 0, values.length, leafColumns.length)
-      .setValues(values);
+    // 写入行值
+    worksheet.getRange(startRow, 0, values.length, leafColumns.length).setValues(values);
   } else {
+    // 分片写入
     for (let offset = 0; offset < rows.length; offset += chunkSize) {
+      // 计算分片大小
       const limit = Math.min(chunkSize, rows.length - offset);
+      // 构建行值
       const values = buildRowValues(rows, leafColumns, { offset, limit });
-      worksheet
-        .getRange(startRow + offset, 0, values.length, leafColumns.length)
-        .setValues(values);
+      // 分片写入
+      worksheet.getRange(startRow + offset, 0, values.length, leafColumns.length).setValues(values);
     }
   }
 
+  // 遍历行
   rows.forEach((row, index) => {
+    // 如果行高大于0，则设置行高
     if (typeof row.height === 'number') {
+      // 设置行高
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
 
+  // 返回实际写入的行数
   return rows.length;
 };
 
@@ -296,91 +321,131 @@ const buildRowValues = (
   leafColumns: ETableColumn[],
   options?: { skipRowBackgrounds?: boolean; offset?: number; limit?: number },
 ) => {
+  // 是否跳过行背景
   const skipRowBackgrounds = options?.skipRowBackgrounds ?? false;
+  // 偏移量
   const offset = options?.offset ?? 0;
+  // 结束位置
   const end = options?.limit !== undefined ? offset + options.limit : rows.length;
+  // 行数
   const rowCount = end - offset;
+  // 列数
   const colCount = leafColumns.length;
+  // 如果行数小于等于0，或者列数为0，则直接返回
 
-  if (rowCount <= 0 || !colCount) {
-    return [];
-  }
-
+  // 创建列ID数组
   const colIds = new Array<string>(colCount);
+  // 遍历列
   for (let c = 0; c < colCount; c += 1) {
+    // 设置列ID
     colIds[c] = leafColumns[c].id;
   }
 
+  // 如果跳过行背景，则创建矩阵
   if (skipRowBackgrounds) {
+    // 创建矩阵
     const matrix = new Array(rowCount);
+    // 遍历行
     for (let r = 0; r < rowCount; r += 1) {
+      // 获取行
       const row = rows[offset + r];
+      // 获取数据
       const data = row.data;
+      // 创建输出数组
       const out = new Array(colCount);
       for (let c = 0; c < colCount; c += 1) {
+        // 获取单元格
         const cell = data?.[colIds[c]];
+        // 如果单元格存在，并且是对象，则设置输出
         if (cell !== null && typeof cell === 'object') {
+          // 获取样式
           const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
+          // 如果样式存在，则设置输出
           if (styledCell.style) {
             out[c] = {
               v: styledCell.value ?? null,
               s: styledCell.style,
             };
           } else {
+            // 设置输出
             out[c] = styledCell.value ?? null;
           }
         } else {
+          // 设置输出
           out[c] = cell ?? null;
         }
       }
+      // 设置矩阵
       matrix[r] = out;
     }
     return matrix;
   }
 
+  // 创建行值
   const toRowValues = (row: ETableRow) => {
+    // 获取背景样式
     const bgStyle =
       row.style?.bg
-        ? {
-            bg: {
-              rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
-            },
-          }
+        ? // 如果背景样式存在，则设置输出
+        {
+          // 设置背景样式
+          bg: {
+            // 如果背景样式以#开头，则直接设置，否则以#开头
+            rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
+          },
+        }
         : null;
 
+    // 创建输出数组
     const out = new Array(colCount);
+    // 遍历列
     for (let c = 0; c < colCount; c += 1) {
+      // 获取单元格
       const cell = row.data?.[colIds[c]];
+      // 如果单元格存在，并且是对象，则设置输出
       if (cell !== null && typeof cell === 'object') {
+        // 获取样式
         const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
+        // 如果样式存在，或者背景样式存在，则设置输出
         if (styledCell.style || bgStyle) {
           out[c] = {
+            // 设置值
             v: styledCell.value ?? null,
+            // 设置样式
             s: {
               ...(bgStyle || {}),
               ...(styledCell.style || {}),
+              // 设置背景样式
               bg: (styledCell.style as any)?.bg || bgStyle?.bg,
             },
           };
         } else {
+          // 设置输出
           out[c] = styledCell.value ?? null;
         }
       } else if (bgStyle) {
+        // 设置输出
         out[c] = {
+          // 设置值
           v: cell ?? null,
           s: bgStyle,
         };
       } else {
+        // 设置输出
         out[c] = cell ?? null;
       }
     }
     return out;
   };
 
+  // 创建矩阵
   const matrix = new Array(rowCount);
+  // 遍历行
   for (let r = 0; r < rowCount; r += 1) {
+    // 设置矩阵
     matrix[r] = toRowValues(rows[offset + r]);
   }
+  // 返回矩阵
   return matrix;
 };
 
@@ -398,35 +463,45 @@ export const renderDataAsync = async (
     skipRowBackgrounds?: boolean;
   },
 ): Promise<void> => {
+  // 如果工作表不存在，或者没有数据，或者没有叶子列，或者数据开始行小于0，则直接返回
   if (!worksheet || !rows.length || !leafColumns.length || startRow < 0) {
     return;
   }
 
+  // 是否使用虚拟滚动
   const virtualScroll = options?.virtualScroll !== false;
+  // 计算分片大小
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
+  // 创建值选项
   const valueOptions = {
+    // 是否跳过行背景
     skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000,
   };
+  // 是否在分片之间让出主线程
   const yieldBetweenChunks = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
 
+  // 遍历行
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    // 计算分片大小
     const limit = Math.min(chunkSize, rows.length - offset);
+    // 构建行值
     const values = buildRowValues(rows, leafColumns, {
       ...valueOptions,
       offset,
       limit,
     });
-    worksheet
-      .getRange(startRow + offset, 0, values.length, leafColumns.length)
-      .setValues(values);
-
+    // 分片写入
+    worksheet.getRange(startRow + offset, 0, values.length, leafColumns.length).setValues(values);
+    // 如果需要让出主线程，并且分片结束位置小于总行数，则让出主线程
     if (yieldBetweenChunks && offset + limit < rows.length) {
       await yieldToMain();
     }
   }
-
+  // 是否有自定义行高
   const hasCustomHeights = rows.some((row) => typeof row.height === 'number');
+  // 如果没有自定义行高，并且行数大于0，则设置行高
   if (!hasCustomHeights && rows.length > 0) {
+    // 设置行高
     try {
       worksheet.setRowHeights(startRow, rows.length, 30);
     } catch {
@@ -434,9 +509,11 @@ export const renderDataAsync = async (
     }
     return;
   }
-
+  // 遍历行
   rows.forEach((row, index) => {
+    // 如果行高大于0，则设置行高
     if (typeof row.height === 'number') {
+      // 设置行高
       worksheet.setRowHeight(startRow + index, row.height);
     }
   });
@@ -469,13 +546,15 @@ export const renderColumnWidths = (worksheet: UniverWorksheet, leafColumns: ETab
   if (!worksheet || !leafColumns.length) {
     return;
   }
-
+  // 遍历叶子列
   leafColumns.forEach((column, index) => {
+    // 获取列宽
     const width = typeof column.width === 'number' ? column.width : defaultWidth;
-    // 防止非法列宽。
+    // 如果列宽小于等于0，则直接返回
     if (width <= 0) {
       return;
     }
+    // 设置列宽
     worksheet.setColumnWidth(index, width);
   },
   );
@@ -496,9 +575,11 @@ export const renderColumnWidths = (worksheet: UniverWorksheet, leafColumns: ETab
  * @param height 行高
  */
 export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, count: number, height: number) => {
+  // 如果工作表不存在，或者行数小于等于0，或者行高小于等于0，则直接返回
   if (!worksheet || count <= 0 || height <= 0) {
     return;
   }
+  // 设置行高
   worksheet.setRowHeights(startRow, count, height);
 };
 
@@ -512,8 +593,11 @@ export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, c
  * 纵向合并单元格写入值，并强制垂直居中（Univer 默认 vt=0 会顶对齐）。
  */
 const toMergedCellPayload = (value: unknown) => {
+  // 如果值不为空，并且是对象，并且有value属性，则设置输出
   if (value !== null && typeof value === 'object' && 'value' in value) {
+    // 获取单元格
     const cell = value as ETableCell;
+    // 设置输出
     return {
       v: cell.value ?? null,
       s: {
@@ -522,8 +606,11 @@ const toMergedCellPayload = (value: unknown) => {
       },
     };
   }
+  // 设置输出
   return {
+    // 设置值
     v: value ?? null,
+    // 设置样式
     s: { vt: VerticalAlign.MIDDLE },
   };
 };
@@ -545,11 +632,13 @@ export const renderMerges = (
   merges: ETableMerge[] = [],
   dataStartRow = 0,
 ) => {
+  // 如果工作表不存在，或者没有合并，则直接返回
   if (!worksheet || !merges.length) {
     return;
   }
-
+  // 遍历合并
   merges.forEach((merge) => {
+    // 应用合并
     applyMerge(worksheet, merge, dataStartRow);
   });
 };
@@ -563,17 +652,24 @@ export const renderMergesAsync = async (
   dataStartRow = 0,
   options?: { batchSize?: number },
 ) => {
+  // 如果工作表不存在，或者没有合并，则直接返回
   if (!worksheet || !merges.length) {
     return;
   }
 
+  // 计算分片大小
   const batchSize = Math.max(50, options?.batchSize ?? (merges.length > 5000 ? 400 : 200));
+  // 遍历合并
   for (let offset = 0; offset < merges.length; offset += batchSize) {
+    // 计算分片
     const batch = merges.slice(offset, offset + batchSize);
+    // 遍历分片
     batch.forEach((merge) => {
+      // 应用合并
       applyMerge(worksheet, merge, dataStartRow);
     });
     if (offset + batchSize < merges.length) {
+      // 让出主线程
       await yieldToMain();
     }
   }
@@ -585,13 +681,19 @@ export const renderMergesAsync = async (
 export const buildMergeIndexByAnchorRow = (
   merges: ETableMerge[],
 ): Map<number, ETableMerge[]> => {
+  // 创建索引
   const index = new Map<number, ETableMerge[]>();
+  // 遍历合并
   merges.forEach((merge) => {
+    // 如果合并行跨度小于等于1，则直接返回
     if (merge.rowSpan <= 1) {
       return;
     }
+    // 获取列表
     const list = index.get(merge.row) ?? [];
+    // 添加合并
     list.push(merge);
+    // 设置索引
     index.set(merge.row, list);
   });
   return index;
@@ -607,51 +709,72 @@ export const reapplyMergesForRowSpan = (
   anchorRow: number,
   rowSpan: number,
 ) => {
+  // 如果工作表不存在，或者没有合并，或者行跨度小于等于1，则直接返回
   if (!worksheet || !merges.length || rowSpan <= 1) {
     return;
   }
-
+  // 获取触摸开始位置
   const touchStart = anchorRow;
+  // 获取触摸结束位置
   const touchEnd = anchorRow + rowSpan;
+  // 获取受影响的合并
   const affected = merges.filter((merge) => {
+    // 如果合并行跨度小于等于1，则直接返回
     if (merge.rowSpan <= 1) {
       return false;
     }
+    // 获取合并开始位置
     const mergeStart = merge.row;
+    // 获取合并结束位置
     const mergeEnd = merge.row + merge.rowSpan;
     return mergeStart < touchEnd && mergeEnd > touchStart;
   });
 
+  // 如果受影响的合并为空，则直接返回
   if (!affected.length) {
     return;
   }
 
+  // 遍历受影响的合并
   affected.forEach((merge) => {
+    // 尝试应用合并
     try {
+      // 获取单元格范围
       worksheet
         .getRange(
           dataStartRow + merge.row,
+          // 获取列
           merge.column,
+          // 获取行跨度
           merge.rowSpan,
           merge.columnSpan,
         )
+        // 拆分合并
         .breakApart?.();
     } catch {
       // ignore broken merge cleanup
     }
   });
-
+  // 遍历受影响的合并
   affected.forEach((merge) => {
+    // 应用合并
     applyMerge(worksheet, merge, dataStartRow, { preserveValue: true });
   });
 };
 
+/**
+ * 视口投影：将逻辑行 merge 映射到当前窗口内的物理行，并垂直居中。
+ */
 type ProjectedMergeRange = {
+  // 行
   row: number;
+  // 列
   column: number;
+  // 行跨度
   rowSpan: number;
   columnSpan: number;
 };
+
 
 export type PlannedProjectedMerge = ProjectedMergeRange & {
   logicalRow: number;
@@ -691,25 +814,31 @@ export const breakStaleProjectedMerges = (
   previous: PlannedProjectedMerge[],
   next: PlannedProjectedMerge[],
 ) => {
+  // 如果工作表不存在，或者没有前一个合并，则直接返回
   if (!worksheet || !previous.length) {
     return;
   }
+  // 创建下一个合并的逻辑映射
   const nextByLogical = new Map(
     next.map((merge) => [logicalMergeSignature(merge), merge]),
   );
-
+  // 遍历前一个合并
   previous.forEach((prev) => {
+    // 获取下一个合并
     const nextMerge = nextByLogical.get(logicalMergeSignature(prev));
+    // 如果下一个合并不存在，则拆分合并
     if (!nextMerge) {
       breakApartProjectedMergeAt(worksheet, dataStartRow, prev);
       return;
     }
+    // 如果前一个合并的行、行跨度、列、列跨度与下一个合并不一致，则拆分合并
     if (
       prev.row !== nextMerge.row ||
       prev.rowSpan !== nextMerge.rowSpan ||
       prev.column !== nextMerge.column ||
       prev.columnSpan !== nextMerge.columnSpan
     ) {
+      // 拆分合并
       breakApartProjectedMergeAt(worksheet, dataStartRow, prev);
     }
   });
@@ -724,14 +853,19 @@ export const breakRemovedProjectedMerges = (
   previous: PlannedProjectedMerge[],
   next: PlannedProjectedMerge[],
 ) => {
+  // 如果工作表不存在，或者没有前一个合并，则直接返回
   if (!worksheet || !previous.length) {
     return;
   }
+  // 创建下一个合并的逻辑映射
   const nextLogical = new Set(next.map(logicalMergeSignature));
+  // 遍历前一个合并
   previous.forEach((range) => {
+    // 如果下一个合并的逻辑映射包含当前合并，则直接返回
     if (nextLogical.has(logicalMergeSignature(range))) {
       return;
     }
+    // 拆分合并
     breakApartProjectedMergeAt(worksheet, dataStartRow, range);
   });
 };
@@ -744,9 +878,11 @@ export const breakApartProjectedMerges = (
   dataStartRow: number,
   ranges: ProjectedMergeRange[],
 ) => {
+  // 如果工作表不存在，或者没有范围，则直接返回
   if (!worksheet || !ranges.length) {
     return;
   }
+  // 遍历范围
   ranges.forEach((range) => {
     breakApartProjectedMergeAt(worksheet, dataStartRow, range);
   });
@@ -760,42 +896,60 @@ export const planProjectedMerges = (
   merges: ETableMerge[],
   projectedLogicalRows: number[],
 ): PlannedProjectedMerge[] => {
+  // 如果没有合并，或者没有逻辑行，则直接返回
   if (!merges.length || !projectedLogicalRows.length) {
     return [];
   }
 
+  // 创建逻辑到投影的映射
   const logicalToProjected = new Map<number, number>();
+  // 遍历逻辑行
   projectedLogicalRows.forEach((logicalRow, projectedIndex) => {
+    // 设置映射
     logicalToProjected.set(logicalRow, projectedIndex);
   });
 
+  // 创建计划
   const planned: PlannedProjectedMerge[] = [];
+  // 创建已见集合
   const seen = new Set<string>();
 
+  // 遍历合并
   merges.forEach((merge) => {
+    // 如果行跨度小于等于1，则直接返回
     if (merge.rowSpan <= 1) {
       return;
     }
 
+    // 创建键
     const key = `${merge.row}:${merge.column}`;
+    // 如果已见集合包含键，则直接返回
     if (seen.has(key)) {
       return;
     }
 
+    // 获取投影开始位置
     const projectedStart = logicalToProjected.get(merge.row);
+    // 如果投影开始位置为空，则直接返回
     if (projectedStart === undefined) {
       return;
     }
 
+    // 获取逻辑结束位置
     const logicalEnd = merge.row + merge.rowSpan;
+    // 遍历逻辑行
     for (let logicalRow = merge.row + 1; logicalRow < logicalEnd; logicalRow += 1) {
+      // 获取投影
       const projected = logicalToProjected.get(logicalRow);
+      // 如果投影不等于投影开始位置加上逻辑行减去合并行，则直接返回
       if (projected !== projectedStart + (logicalRow - merge.row)) {
         return;
       }
     }
 
+    // 添加已见集合
     seen.add(key);
+    // 添加计划
     planned.push({
       row: projectedStart,
       column: merge.column,
@@ -815,20 +969,28 @@ export const applyProjectedMerges = (
   projectedLogicalRows: number[],
   previousMerges: PlannedProjectedMerge[] = [],
 ): PlannedProjectedMerge[] => {
+  // 如果工作表不存在，或者没有合并，或者没有逻辑行，则直接返回
   if (!worksheet || !merges.length || !projectedLogicalRows.length) {
     return [];
   }
 
+  // 创建应用的合并
   const applied: PlannedProjectedMerge[] = [];
+  // 创建计划
   const planned = planProjectedMerges(merges, projectedLogicalRows);
+  // 创建逻辑到合并的映射
   const prevByLogical = new Map(
     previousMerges.map((merge) => [logicalMergeSignature(merge), merge]),
   );
 
+  // 遍历计划
   planned.forEach((projectedRange) => {
+    // 获取逻辑键
     const logicalKey = logicalMergeSignature(projectedRange);
+    // 获取前一个合并
     const prevMerge = prevByLogical.get(logicalKey);
 
+    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
     if (
       prevMerge &&
       prevMerge.row === projectedRange.row &&
@@ -836,10 +998,12 @@ export const applyProjectedMerges = (
       prevMerge.rowSpan === projectedRange.rowSpan &&
       prevMerge.columnSpan === projectedRange.columnSpan
     ) {
+      // 添加应用
       applied.push(projectedRange);
       return;
     }
 
+    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
     if (prevMerge) {
       const alreadyAtTarget =
         prevMerge.row === projectedRange.row &&
@@ -847,27 +1011,34 @@ export const applyProjectedMerges = (
         prevMerge.rowSpan === projectedRange.rowSpan &&
         prevMerge.columnSpan === projectedRange.columnSpan;
       if (!alreadyAtTarget) {
+        // 拆分合并
         breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
       }
     }
 
+    // 获取源合并
     const sourceMerge = merges.find(
       (merge) =>
         merge.row === projectedRange.logicalRow &&
         merge.column === projectedRange.column,
     );
+    // 如果源合并不存在，则直接返回
     if (!sourceMerge) {
       return;
     }
 
+    // 创建投影合并
     const projectedMerge: ETableMerge = {
       ...sourceMerge,
       row: projectedRange.row,
     };
 
     try {
+      // 应用合并
       applyMerge(worksheet, projectedMerge, dataStartRow, { preserveValue: true });
+      // 添加应用
       applied.push(projectedRange);
+      // 警告投影合并失败
     } catch (error) {
       console.warn('[ETable] projected merge failed', { merge: projectedMerge, error });
     }
@@ -886,6 +1057,7 @@ const applyMerge = (
   if (merge.row < 0 || merge.column < 0 || merge.rowSpan <= 0 || merge.columnSpan <= 0) {
     return;
   }
+  // 获取开始行
   const startRow = dataStartRow + merge.row;
   // 获取区域。
   const range = worksheet.getRange(startRow, merge.column, merge.rowSpan, merge.columnSpan);
@@ -893,6 +1065,7 @@ const applyMerge = (
   // 单个单元格无需 merge。
   if (merge.rowSpan === 1 && merge.columnSpan === 1) {
     if (merge.value !== undefined) {
+      // 设置值
       range.setValue(merge.value);
     }
     return;
@@ -900,24 +1073,30 @@ const applyMerge = (
 
   // 执行合并后再写入左上角，避免 merge 覆盖样式。
   try {
+    // 应用合并
     range.merge();
+    // 警告合并失败
   } catch (error) {
     console.warn('[ETable] custom merge failed', { merge, error });
     return;
   }
 
+  // 获取左上角单元格
   const topLeft = worksheet.getRange(startRow, merge.column, 1, 1);
 
+  // 如果行跨度大于1，则设置值
   if (merge.rowSpan > 1) {
+    // 如果值不为空，并且不保留值，则设置值
     if (merge.value !== undefined && !options?.preserveValue) {
+      // 设置值
       topLeft.setValue(toMergedCellPayload(merge.value));
     } else if (options?.preserveValue) {
       try {
+        // 获取原始值
         const raw = topLeft.getValue?.() ?? topLeft.getCellData?.()?.v;
-        const cellValue =
-          raw !== null && typeof raw === 'object' && 'v' in raw
-            ? (raw as { v?: unknown }).v
-            : raw;
+        // 获取单元格值
+        const cellValue = raw !== null && typeof raw === 'object' && 'v' in raw ? (raw as { v?: unknown }).v : raw;
+        // 设置值
         topLeft.setValue({
           v: cellValue ?? merge.value ?? null,
           s: {
@@ -934,6 +1113,7 @@ const applyMerge = (
     return;
   }
 
+  // 如果值不为空，并且不保留值，则设置值
   if (merge.value !== undefined && !options?.preserveValue) {
     range.setValue(merge.value);
   }
@@ -963,13 +1143,18 @@ export const columnIndexToLetter = (index: number): string => {
   if (!Number.isInteger(index) || index < 0) {
     return '';
   }
+  // 创建结果
   let result = '';
+  // 创建当前索引
   let current = index;
+  // 遍历当前索引
   while (current >= 0) {
+    // 添加结果
     result = String.fromCharCode((current % 26) + 65,) + result;
+    // 更新当前索引
     current = Math.floor(current / 26,) - 1;
   }
-
+  // 返回结果
   return result;
 };
 

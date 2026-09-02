@@ -7,7 +7,7 @@ import formula from '@jspreadsheet/formula-pro';
 import pivot from '@jspreadsheet/pivot';
 import barFormulas from '@jspreadsheet/bar/dist/formulas.json';
 import lemonade from 'lemonadejs';
-import { App, Select, Spin } from 'antd';
+import { App, Button, Select, Spin } from 'antd';
 import 'jsuites/dist/jsuites.css';
 import 'jspreadsheet/dist/jspreadsheet.css';
 import '@jsuites/css/dist/style.css';
@@ -15,8 +15,8 @@ import '@jspreadsheet/comments/dist/style.css';
 import '@jspreadsheet/bar/dist/style.css';
 import '@jspreadsheet/pivot/dist/style.css';
 import 'material-icons/iconfont/material-icons.css';
-import { zhCN } from './dictionary';
-import './index.less';
+import { localizeToolbarItems, moveFullscreenToEnd, removeDefaultToolbarSave, zhCN } from '../dictionary';
+import '../index.less';
 
 // 批注扩展依赖全局 lemonade
 (window as any).lemonade = lemonade;
@@ -44,10 +44,212 @@ type TrackItem = {
   time: string;
 };
 
-/** 插件 onevent 会先于 Worksheet 事件触发，用桥接把变更交给页面 state */
+type EditFormatInfo = {
+  cell: string;
+  col: number;
+  row: number;
+  type?: string;
+  mask?: string;
+  format?: string;
+  title?: string;
+  raw: unknown;
+  display: unknown;
+  time: string;
+};
+
+type DirtyRowChange = {
+  cell: string;
+  field: string;
+  col: number;
+  row: number;
+  rowNumber: number;
+  oldValue: unknown;
+  value: unknown;
+  from: string;
+  to: string;
+  raw: unknown;
+  display: unknown;
+  time: string;
+};
+
+type ModifiedField = {
+  field: string;
+  cell: string;
+  col: number;
+  row: number;
+  rowNumber: number;
+  oldValue: unknown;
+  value: unknown;
+  display: unknown;
+};
+
+function cellCoordKey(col: number, row: number) {
+  return `${col}:${row}`;
+}
+
+function unwrapCellValue(value: unknown): unknown {
+  if (value != null && typeof value === 'object' && 'value' in (value as object)) {
+    return (value as { value: unknown }).value;
+  }
+  return value;
+}
+
+function cellValuesEqual(a: unknown, b: unknown): boolean {
+  const av = unwrapCellValue(a);
+  const bv = unwrapCellValue(b);
+  if (av === bv) return true;
+  if (av == null && bv == null) return true;
+  return String(av) === String(bv);
+}
+
+function cloneTableData(data: unknown): unknown[][] {
+  if (!Array.isArray(data)) return [];
+  return data.map((row) => (Array.isArray(row) ? [...row] : []));
+}
+
+/** 超过此行数时保存仅校验 dirtyCells，避免全表 diff 卡顿 */
+const SAVE_FULL_DIFF_ROW_LIMIT = 10000;
+
+function buildUpdatedRowsFromDirtyCells(
+  ws: any,
+  baseline: unknown[][],
+  dirtyCells: Iterable<string>,
+  columns: Array<{ title?: unknown }>,
+) {
+  const byRow = new Map<number, ModifiedField[]>();
+
+  for (const key of dirtyCells) {
+    const [col, row] = key.split(':').map(Number);
+    if (!Number.isFinite(col) || !Number.isFinite(row)) continue;
+
+    const oldValue = baseline[row]?.[col];
+    const value = ws.getValueFromCoords?.(col, row, false);
+    const display = ws.getValueFromCoords?.(col, row, true);
+    if (cellValuesEqual(oldValue, value)) continue;
+
+    const field = resolveColumnField(ws, col, columns);
+    const cell = cellName(col, row) || `c${col}r${row}`;
+    const item: ModifiedField = {
+      field,
+      cell,
+      col,
+      row,
+      rowNumber: row + 1,
+      oldValue,
+      value,
+      display,
+    };
+
+    const rowFields = byRow.get(row);
+    if (rowFields) rowFields.push(item);
+    else byRow.set(row, [item]);
+  }
+
+  return Array.from(byRow.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([rowIndex, modifiedFields]) => ({
+      rowIndex,
+      rowNumber: rowIndex + 1,
+      modifiedFields: modifiedFields.sort((a, b) => a.col - b.col),
+      row: buildRowRecord(ws, rowIndex, columns),
+    }));
+}
+
+function collectUpdatedRows(
+  ws: any,
+  baseline: unknown[][],
+  columns: Array<{ title?: unknown }>,
+  dirtyCells: Set<string>,
+  fullScan: boolean,
+) {
+  const cellsToCheck = new Set(dirtyCells);
+  const current = ws.getData?.(false);
+
+  if (fullScan && Array.isArray(current)) {
+    const colCount = columns.length;
+    for (let row = 0; row < current.length; row++) {
+      for (let col = 0; col < colCount; col++) {
+        const oldValue = baseline[row]?.[col];
+        const value = current[row]?.[col];
+        if (!cellValuesEqual(oldValue, value)) {
+          cellsToCheck.add(cellCoordKey(col, row));
+        }
+      }
+    }
+  }
+
+  return buildUpdatedRowsFromDirtyCells(ws, baseline, cellsToCheck, columns);
+}
+
+function resolveColumnField(ws: any, col: number, columns: Array<{ title?: unknown }>) {
+  const runtime = ws?.getColumn?.(col) || ws?.getColumnOptions?.(col, 0) || {};
+  return String(runtime?.title ?? columns[col]?.title ?? `col${col}`);
+}
+
+/** 单元格变更时组装字段名 + 坐标 + raw/display 数据 */
+function buildCellChangePayload(
+  ws: any,
+  col: number,
+  row: number,
+  oldValue: unknown,
+  newValue: unknown,
+  columns: Array<{ title?: unknown }>,
+) {
+  const field = resolveColumnField(ws, col, columns);
+  const cell = cellName(col, row) || `c${col}r${row}`;
+  const format = captureCellFormat(ws, col, row, newValue);
+  return {
+    field,
+    col,
+    row,
+    rowNumber: row + 1,
+    cell,
+    oldValue,
+    newValue,
+    raw: format.raw,
+    display: format.display,
+    type: format.type,
+    mask: format.mask,
+    format: format.format,
+  };
+}
+
+/** 将工作表行转为 { 列标题: 值 }，供保存接口使用 */
+function buildRowRecord(
+  ws: any,
+  rowIndex: number,
+  columns: Array<{ title?: unknown }>,
+): Record<string, unknown> {
+  const raw = ws?.getRowData?.(rowIndex, false);
+  if (raw && !Array.isArray(raw) && typeof raw === 'object') {
+    return raw as Record<string, unknown>;
+  }
+  const rowArr = Array.isArray(raw)
+    ? raw
+    : ((ws?.getData?.(false)?.[rowIndex] as unknown[] | undefined) ?? []);
+  const record: Record<string, unknown> = {};
+  columns.forEach((col, i) => {
+    record[String(col.title ?? `col${i}`)] = rowArr[i];
+  });
+  return record;
+}
+
+/** 单元格变更 / 选区：Spreadsheet props onchange / onselection 写入 config */
 const historyBridge = {
   onChange: (_ws: any, _x: any, _y: any, _oldValue: any, _newValue: any) => {},
   onSelect: (_ws: any, _px: any, _py: any, _ux: any, _uy: any) => {},
+};
+
+/** 透视源数据：折叠/展开不进入撤销栈，避免与单元格编辑 undo 互相干扰 */
+const runWithoutHistory = (fn: () => void) => {
+  const historyCtrl = (jspreadsheet as any).history;
+  const prev = historyCtrl?.ignore;
+  if (historyCtrl) historyCtrl.ignore = true;
+  try {
+    fn();
+  } finally {
+    if (historyCtrl) historyCtrl.ignore = prev ?? false;
+  }
 };
 
 /** 透视源数据：工具栏「全部展开 / 全部折叠」桥接（由 outline effect 注入） */
@@ -62,12 +264,9 @@ const outlineLoadBridge = {
   restoreTab: () => {},
 };
 
-/** 与 Spreadsheet 内 Worksheet 声明顺序一致 */
+/** 扩展页仅一张透视源数据工作表 */
 const WORKSHEET_TAB_INDEX: Record<string, number> = {
-  订单明细: 0,
-  透视分析: 1,
-  透视源数据: 2,
-  透视底表: 3,
+  透视源数据: 0,
 };
 
 function resolvePinnedTabIndex(
@@ -86,58 +285,6 @@ function resolvePinnedTabIndex(
       ws?.getWorksheetName?.() === target.name,
   );
 }
-
-/** expand_all / collapse_all 不在 Material Icons 字体中，用 SVG 还原官方造型 */
-const OUTLINE_TOOLBAR_SVG = {
-  expand_all:
-    '<svg viewBox="0 -960 960 960" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M480-880 680-680H560v200H400v-200H280L480-880Zm0 720L280-360h120v-200h160v200h120L480-160Z"/></svg>',
-  collapse_all:
-    '<svg viewBox="0 -960 960 960" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M280-680 480-880l200 200H560v200H400v-200H280Zm400 240L480-160 280-360h120v-200h160v200h120Z"/></svg>',
-};
-
-function renderOutlineToolbarIcon(kind: 'expand_all' | 'collapse_all') {
-  return (toolbarItem: HTMLElement) => {
-    const icon = toolbarItem.querySelector('i');
-    if (!icon) return;
-    icon.classList.remove('material-icons');
-    icon.classList.add('jss-outline-toolbar-icon');
-    icon.style.display = 'flex';
-    icon.style.alignItems = 'center';
-    icon.style.justifyContent = 'center';
-    icon.style.width = '24px';
-    icon.style.height = '24px';
-    icon.style.fontFamily = 'inherit';
-    icon.innerHTML = OUTLINE_TOOLBAR_SVG[kind];
-  };
-}
-
-const cellHistoryPlugin = {
-  onevent(event: string, worksheet?: any, a?: any, b?: any, c?: any, d?: any, e?: any) {
-    if (event === 'onchange') {
-      historyBridge.onChange(worksheet, b, c, e, d);
-      return;
-    }
-    if (event === 'onafterchanges' && Array.isArray(a)) {
-      a.forEach((rec: any) => {
-        historyBridge.onChange(
-          worksheet,
-          rec.x ?? rec.col,
-          rec.y ?? rec.row,
-          rec.oldValue ?? rec.oldvalue,
-          rec.value ?? rec.newValue ?? rec.v,
-        );
-      });
-      return;
-    }
-    if (event === 'oneditionend' && e) {
-      historyBridge.onChange(worksheet, b, c, undefined, d);
-      return;
-    }
-    if (event === 'onselection') {
-      historyBridge.onSelect(worksheet, a, b, c, d);
-    }
-  },
-};
 
 const REGIONS = ['华东', '华南', '华北', '西南', '西北'];
 const CATEGORIES = ['整机', '配件', '耗材', '服务'];
@@ -232,6 +379,154 @@ type OutlineSheet = {
   liteMeta?: boolean;
 };
 
+type OutlineRowDimensions = {
+  /** 品类（Category） */
+  category: string;
+  /** 子类（SubCategory / leaf） */
+  subCategory: string;
+  /** 地区 / 州（Region） */
+  region: string;
+  /** 属性（Attribute） */
+  attribute: string;
+  /** 行在层次中的位置 */
+  rowLevel: 'category' | 'subCategory' | 'stateDetail';
+  /** 维度拼接：Category / SubCategory / Region / Attribute */
+  dimension: string;
+};
+
+type OutlineDimensionIndex = {
+  categoryByRow: Map<number, string>;
+  subCategoryByRow: Map<number, string>;
+  regionHeaderByRow: Map<number, number>;
+  regionLabelByRow: Map<number, string>;
+  stateDetailRows: Set<number>;
+  leafRows: Set<number>;
+  categoryRows: Set<number>;
+};
+
+/** 根据透视源数据结构，为每一行预解析 Category / SubCategory / Region 维度 */
+function buildOutlineDimensionIndex(sheet: OutlineSheet): OutlineDimensionIndex {
+  const categoryByRow = new Map<number, string>();
+  const subCategoryByRow = new Map<number, string>();
+  const regionHeaderByRow = new Map<number, number>();
+  const regionLabelByRow = new Map<number, string>();
+  const leafRows = new Set<number>();
+  const categoryRows = new Set<number>();
+
+  sheet.groupCells.forEach((cell) => {
+    if (cell.kind === 'category') {
+      categoryRows.add(cell.row);
+      categoryByRow.set(cell.row, cell.label);
+    }
+    if (cell.kind === 'leaf') {
+      leafRows.add(cell.row);
+      subCategoryByRow.set(cell.row, cell.label);
+    }
+    if (cell.kind === 'region') {
+      regionLabelByRow.set(cell.row, cell.label);
+      cell.detailRows?.forEach((detailRow) => {
+        regionHeaderByRow.set(detailRow, cell.row);
+      });
+    }
+  });
+
+  const categoryStarts = Object.keys(sheet.rows)
+    .map(Number)
+    .filter((r) => sheet.rows[r]?.group != null)
+    .sort((a, b) => a - b);
+  const sortedLeafRows = [...leafRows].sort((a, b) => a - b);
+  const sortedRegionCells = sheet.groupCells
+    .filter((cell) => cell.kind === 'region')
+    .sort((a, b) => a.row - b.row);
+
+  for (let row = 0; row < sheet.data.length; row += 1) {
+    let catStart = -1;
+    for (const cs of categoryStarts) {
+      if (cs <= row) catStart = cs;
+      else break;
+    }
+    if (catStart >= 0) {
+      const cat =
+        categoryByRow.get(catStart) || String(sheet.data[catStart]?.[0] ?? '');
+      categoryByRow.set(row, cat);
+    }
+
+    let sub = '';
+    for (const lr of sortedLeafRows) {
+      if (lr > catStart && lr <= row) {
+        sub = subCategoryByRow.get(lr) || String(sheet.data[lr]?.[0] ?? '');
+      }
+    }
+    if (sub) subCategoryByRow.set(row, sub);
+
+    if (!regionHeaderByRow.has(row)) {
+      let regionHeader = -1;
+      for (const rc of sortedRegionCells) {
+        if (rc.row <= row) regionHeader = rc.row;
+        else break;
+      }
+      if (sheet.stateDetailRows.has(row) && regionHeader >= 0 && row !== regionHeader) {
+        regionHeaderByRow.set(row, regionHeader);
+      }
+    }
+  }
+
+  return {
+    categoryByRow,
+    subCategoryByRow,
+    regionHeaderByRow,
+    regionLabelByRow,
+    stateDetailRows: sheet.stateDetailRows,
+    leafRows,
+    categoryRows,
+  };
+}
+
+function readWorksheetCell(ws: any, col: number, row: number): string {
+  const v = ws.getValueFromCoords?.(col, row, false);
+  return String(unwrapCellValue(v) ?? '').trim();
+}
+
+function joinOutlineDimensions(
+  parts: Pick<OutlineRowDimensions, 'category' | 'subCategory' | 'region' | 'attribute'>,
+): string {
+  return [parts.category, parts.subCategory, parts.region, parts.attribute]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function resolveOutlineRowDimensions(
+  ws: any,
+  rowIndex: number,
+  index: OutlineDimensionIndex,
+): OutlineRowDimensions {
+  const category = index.categoryByRow.get(rowIndex) || readWorksheetCell(ws, 0, rowIndex);
+  const subCategory = index.subCategoryByRow.get(rowIndex) || '';
+  const attribute = readWorksheetCell(ws, 1, rowIndex);
+  const col2 = readWorksheetCell(ws, 2, rowIndex);
+
+  let rowLevel: OutlineRowDimensions['rowLevel'] = 'category';
+  let region = col2 || index.regionLabelByRow.get(rowIndex) || '';
+
+  if (index.stateDetailRows.has(rowIndex)) {
+    rowLevel = 'stateDetail';
+    const headerRow = index.regionHeaderByRow.get(rowIndex);
+    region = col2 || (headerRow != null ? index.regionLabelByRow.get(headerRow) || '' : '');
+  } else if (index.leafRows.has(rowIndex)) {
+    rowLevel = 'subCategory';
+    region = col2 || index.regionLabelByRow.get(rowIndex) || '';
+  } else if (index.categoryRows.has(rowIndex)) {
+    rowLevel = 'category';
+    region = col2 || index.regionLabelByRow.get(rowIndex) || '';
+  } else if (subCategory) {
+    rowLevel = 'subCategory';
+  }
+
+  const dimension = joinOutlineDimensions({ category, subCategory, region, attribute });
+  return { category, subCategory, region, attribute, rowLevel, dimension };
+}
+
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
@@ -303,6 +598,421 @@ function outlineAttrValue(row: number, seed: number, level: 'category' | 'sub' |
 
 const OUTLINE_REGION_COL = 2;
 const OUTLINE_PROFIT_COL = 6;
+const OUTLINE_ORDER_DATE_COL = 4;
+const OUTLINE_EXTRA_COL_COUNT = 20;
+const OUTLINE_EXTRA_COL_TITLES = [
+  'Remark',
+  'SalesRep',
+  'Channel',
+  'Warehouse',
+  'Customer',
+  'ProductCode',
+  'Batch',
+  'Unit',
+  'TaxRate',
+  'Discount',
+  'Freight',
+  'Cost',
+  'GrossProfit',
+  'GrossMargin',
+  'Stock',
+  'Supplier',
+  'PurchasePrice',
+  'ExpiryDate',
+  'Tag',
+  'Extension',
+] as const;
+
+/** OrderDate(E) 尾数单数→J 列 1，尾数双数→J 列 2 */
+function deriveChannelFromOrderDate(orderDate: unknown): string {
+  const text = String(unwrapCellValue(orderDate) ?? '').trim();
+  if (!text) return '';
+
+  const digits = text.replace(/\D/g, '');
+  if (!digits) return '';
+
+  const lastDigit = Number(digits.slice(-1));
+  if (!Number.isFinite(lastDigit)) return '';
+  return lastDigit % 2 === 1 ? '1' : '2';
+}
+
+function resolveColumnIndexByTitle(
+  columns: Array<{ title?: unknown }>,
+  title: string,
+  fallback: number,
+) {
+  const idx = columns.findIndex((col) => String(col.title) === title);
+  return idx >= 0 ? idx : fallback;
+}
+
+function resolveWorksheetColumnIndex(
+  ws: any,
+  columns: Array<{ title?: unknown }>,
+  title: string,
+  fallback: number,
+) {
+  const col = resolveColumnIndexByTitle(columns, title, fallback);
+  const runtimeTitle = String(
+    ws?.getColumn?.(col)?.title ??
+      ws?.getColumnOptions?.(col, 0)?.title ??
+      columns[col]?.title ??
+      '',
+  );
+  if (runtimeTitle === title) return col;
+  const total = columns.length;
+  for (let i = 0; i < total; i += 1) {
+    const t = String(
+      ws?.getColumn?.(i)?.title ??
+        ws?.getColumnOptions?.(i, 0)?.title ??
+        columns[i]?.title ??
+        '',
+    );
+    if (t === title) return i;
+  }
+  return fallback;
+}
+
+/** 程序写入 Channel 时跳过二次联动，避免 calendar 编辑器串列 */
+let outlineProgrammaticCellSync = false;
+
+function outlineExtraValues(row: number, seed: number, orderDate?: unknown): any[] {
+  const n = (i: number) => (row * (i + 3) + seed + i * 11) % 997;
+  return [
+    row % 17 === 0 ? '需要跟进' : '',
+    `销售${(row % 8) + 1}`,
+    deriveChannelFromOrderDate(orderDate),
+    `仓-${(row % 5) + 1}`,
+    `客户-${1000 + n(0)}`,
+    `SKU-${String(n(1)).padStart(4, '0')}`,
+    `B${String(202500 + n(2)).slice(-6)}`,
+    ['件', '箱', '套', 'kg'][n(3) % 4],
+    Number((0.06 + (n(4) % 7) * 0.01).toFixed(2)),
+    Number(((n(5) % 20) * 0.5).toFixed(1)),
+    Number((50 + (n(6) % 120)).toFixed(2)),
+    Number((800 + (n(7) % 4000)).toFixed(2)),
+    Number((120 + (n(8) % 800)).toFixed(2)),
+    `${((n(9) % 35) + 5).toFixed(1)}%`,
+    (n(10) % 500) + 10,
+    `供应商-${(n(11) % 12) + 1}`,
+    Number((60 + (n(12) % 300)).toFixed(2)),
+    `2026-${String((n(13) % 12) + 1).padStart(2, '0')}-${String((n(14) % 28) + 1).padStart(2, '0')}`,
+    ['热销', '新品', '清仓', '常规'][n(15) % 4],
+    `EXT-${String(n(16)).padStart(3, '0')}`,
+  ];
+}
+
+const OUTLINE_CORE_COL_COUNT = 7;
+const OUTLINE_CHANNEL_COL =
+  OUTLINE_CORE_COL_COUNT + OUTLINE_EXTRA_COL_TITLES.indexOf('Channel');
+
+type OutlineExpandMode = 'collapsed' | 'first' | 'all';
+
+type OutlineLayoutForm = {
+  extraColumns: string[];
+  expandMode: OutlineExpandMode;
+  defaultRowHeight: number;
+  customExtraColumnsJson: string;
+  /** 可选：完整 columns 配置 JSON，优先级高于扩展列勾选 */
+  columnsJson: string;
+  /** 可选：最多渲染行数，null 表示全部 */
+  maxRows: number | null;
+};
+
+const DEFAULT_OUTLINE_LAYOUT: OutlineLayoutForm = {
+  extraColumns: [...OUTLINE_EXTRA_COL_TITLES],
+  expandMode: 'collapsed',
+  defaultRowHeight: 25,
+  customExtraColumnsJson: '',
+  columnsJson: '',
+  maxRows: null,
+};
+
+const OUTLINE_CORE_HEADERS = [
+  'Category',
+  'Attribute',
+  'Region',
+  'Status',
+  'OrderDate',
+  'Sales',
+  'Profit',
+] as const;
+
+const OUTLINE_ALL_HEADERS = [...OUTLINE_CORE_HEADERS, ...OUTLINE_EXTRA_COL_TITLES];
+
+function parseColumnsConfigArray(json: string) {
+  const parsed = JSON.parse(json);
+  if (!Array.isArray(parsed) || !parsed.length) {
+    throw new Error('列配置须为非空 JSON 数组');
+  }
+  return parsed as Array<Record<string, unknown>>;
+}
+
+function resolveLayoutExtraTitles(config: OutlineLayoutForm) {
+  if (config.customExtraColumnsJson.trim()) {
+    try {
+      return parseColumnsConfigArray(config.customExtraColumnsJson)
+        .map((col) => String(col.title ?? ''))
+        .filter(Boolean);
+    } catch {
+      // fallthrough
+    }
+  }
+  return normalizeExtraColumnTitles(config.extraColumns);
+}
+
+function sliceDataByColumnTitles(
+  matrix: any[][],
+  headers: string[],
+  columns: Array<{ title?: unknown }>,
+) {
+  const indices = columns.map((col) => headers.indexOf(String(col.title ?? '')));
+  if (indices.some((index) => index < 0)) {
+    return matrix.map((row) => row.slice(0, columns.length));
+  }
+  return matrix.map((row) => indices.map((index) => row[index]));
+}
+
+function filterRowConfig<T extends Record<number, { group: number; state: boolean }>>(
+  rows: T,
+  maxRows: number | null | undefined,
+) {
+  if (!maxRows || maxRows <= 0) return rows;
+  return Object.fromEntries(
+    Object.entries(rows).filter(([key]) => Number(key) < maxRows),
+  ) as T;
+}
+
+function buildOutlineCoreColumns(isOutlineLarge: boolean) {
+  if (isOutlineLarge) {
+    return [
+      { type: 'text', title: 'Category', width: 160, readOnly: true, align: 'left' as const },
+      { type: 'text', title: 'Attribute', width: 100, align: 'left' as const },
+      { type: 'text', title: 'Region', width: 110, readOnly: true, align: 'left' as const },
+      { type: 'text', title: 'Status', width: 90, align: 'left' as const },
+      { type: 'text', title: 'OrderDate', width: 110, align: 'left' as const },
+      { type: 'text', title: 'Sales', width: 110, align: 'right' as const },
+      { type: 'text', title: 'Profit', width: 110, align: 'right' as const },
+    ];
+  }
+  return [
+    { type: 'text', title: 'Category', width: 160, readOnly: true, align: 'left' as const },
+    { type: 'text', title: 'Attribute', width: 100, align: 'left' as const },
+    { type: 'text', title: 'Region', width: 110, readOnly: true, align: 'left' as const },
+    {
+      type: 'dropdown',
+      title: 'Status',
+      width: 100,
+      source: STATUS_OPTIONS,
+      strictMode: false,
+    },
+    {
+      type: 'calendar',
+      title: 'OrderDate',
+      width: 120,
+      format: 'YYYY-MM-DD',
+    },
+    {
+      type: 'numeric',
+      title: 'Sales',
+      width: 120,
+      mask: '$#,##0.00',
+      align: 'right' as const,
+    },
+    {
+      type: 'numeric',
+      title: 'Profit',
+      width: 120,
+      mask: '$#,##0.00',
+      align: 'right' as const,
+    },
+  ];
+}
+
+/** 根据默认行列配置生成 Worksheet 渲染所需的 columns / data / nestedHeaders / rows */
+function buildOutlineTableRender(
+  sheet: OutlineSheet,
+  config: OutlineLayoutForm,
+  isOutlineLarge: boolean,
+) {
+  if (config.columnsJson.trim()) {
+    try {
+      const columns = parseColumnsConfigArray(config.columnsJson);
+      let data = sliceDataByColumnTitles(sheet.data, [...OUTLINE_ALL_HEADERS], columns);
+      if (config.maxRows && config.maxRows > 0) {
+        data = data.slice(0, config.maxRows);
+      }
+      const extraCount = Math.max(0, columns.length - OUTLINE_CORE_COL_COUNT);
+      return {
+        columns,
+        data,
+        nestedHeaders: buildOutlineNestedHeadersForExtraCount(extraCount),
+        rows: filterRowConfig(sheet.rows, config.maxRows),
+      };
+    } catch {
+      // fallthrough to default builder
+    }
+  }
+
+  const extraTitles = resolveLayoutExtraTitles(config);
+  let extraDefs = buildOutlineExtraColumnDefsForTitles(extraTitles);
+  if (config.customExtraColumnsJson.trim()) {
+    try {
+      extraDefs = parseColumnsConfigArray(config.customExtraColumnsJson);
+    } catch {
+      // keep title-based defs
+    }
+  }
+
+  const extraLarge = extraTitles.map((title, i) => ({
+    type: 'text' as const,
+    title,
+    width: title === 'Remark' || i === 0 ? 140 : 90,
+    align: 'left' as const,
+  }));
+
+  const columns = [
+    ...buildOutlineCoreColumns(isOutlineLarge),
+    ...(isOutlineLarge ? extraLarge : extraDefs),
+  ];
+
+  let data = sliceOutlineDataExtraCols(sheet.data, extraTitles);
+  if (config.maxRows && config.maxRows > 0) {
+    data = data.slice(0, config.maxRows);
+  }
+
+  return {
+    columns,
+    data,
+    nestedHeaders: buildOutlineNestedHeadersForExtraCount(extraTitles.length),
+    rows: filterRowConfig(sheet.rows, config.maxRows),
+  };
+}
+
+function categoryExpandedForMode(mode: OutlineExpandMode, index: number, demoDefault?: boolean) {
+  if (mode === 'all') return true;
+  if (mode === 'first') return index === 0;
+  if (mode === 'collapsed') return false;
+  return !!demoDefault;
+}
+
+function normalizeExtraColumnTitles(selected: string[]) {
+  const valid = selected.filter((title) =>
+    OUTLINE_EXTRA_COL_TITLES.includes(title as (typeof OUTLINE_EXTRA_COL_TITLES)[number]),
+  );
+  return valid.length ? valid : [...OUTLINE_EXTRA_COL_TITLES];
+}
+
+function outlineExtraColumnIndices(titles: string[]) {
+  return titles
+    .map((title) => OUTLINE_EXTRA_COL_TITLES.indexOf(title as (typeof OUTLINE_EXTRA_COL_TITLES)[number]))
+    .filter((index) => index >= 0);
+}
+
+function sliceOutlineDataExtraCols(data: any[][], extraTitles: string[]) {
+  const extraIndices = outlineExtraColumnIndices(extraTitles);
+  return data.map((row) => [
+    ...row.slice(0, OUTLINE_CORE_COL_COUNT),
+    ...extraIndices.map((index) => row[OUTLINE_CORE_COL_COUNT + index]),
+  ]);
+}
+
+function buildOutlineExtraColumnDefsForTitles(titles: string[]) {
+  const defs = buildOutlineExtraColumnDefs();
+  return titles.map((title) => {
+    const index = OUTLINE_EXTRA_COL_TITLES.indexOf(
+      title as (typeof OUTLINE_EXTRA_COL_TITLES)[number],
+    );
+    if (index < 0) {
+      return { type: 'text' as const, title, width: 100, align: 'left' as const };
+    }
+    return defs[index];
+  });
+}
+
+function buildOutlineNestedHeadersForExtraCount(extraCount: number) {
+  if (extraCount <= 0) {
+    return [
+      [
+        { title: 'Dimension', colspan: 3 },
+        { title: 'Order', colspan: 2 },
+        { title: 'Metrics', colspan: 2 },
+      ],
+    ];
+  }
+  if (extraCount >= OUTLINE_EXTRA_COL_COUNT) {
+    return [
+      [
+        { title: 'Dimension', colspan: 3 },
+        { title: 'Order', colspan: 2 },
+        { title: 'Metrics', colspan: 2 },
+        { title: 'Extension', colspan: extraCount },
+      ],
+      [
+        { title: 'Hierarchy', colspan: 3 },
+        { title: 'Status & Date', colspan: 2 },
+        { title: 'Sales & Profit', colspan: 2 },
+        { title: 'Party', colspan: 4 },
+        { title: 'Product', colspan: 6 },
+        { title: 'Finance', colspan: Math.max(0, extraCount - 10) },
+      ],
+    ];
+  }
+  return [
+    [
+      { title: 'Dimension', colspan: 3 },
+      { title: 'Order', colspan: 2 },
+      { title: 'Metrics', colspan: 2 },
+      { title: 'Extension', colspan: extraCount },
+    ],
+    [
+      { title: 'Hierarchy', colspan: 3 },
+      { title: 'Status & Date', colspan: 2 },
+      { title: 'Sales & Profit', colspan: 2 },
+      { title: 'Extension', colspan: extraCount },
+    ],
+  ];
+}
+
+function parseCustomExtraColumns(json: string) {
+  return parseColumnsConfigArray(json);
+}
+
+function buildOutlineExtraColumnDefs() {
+  return OUTLINE_EXTRA_COL_TITLES.map((title, i) => {
+    if (i === 8 || i === 9 || i === 10 || i === 11 || i === 12 || i === 16) {
+      return {
+        type: 'numeric' as const,
+        title,
+        width: 90,
+        mask: '#,##0.00',
+        align: 'right' as const,
+      };
+    }
+    if (i === 14) {
+      return {
+        type: 'numeric' as const,
+        title,
+        width: 80,
+        mask: '#,##0',
+        align: 'right' as const,
+      };
+    }
+    if (i === 17) {
+      return {
+        type: 'calendar' as const,
+        title,
+        width: 110,
+        format: 'YYYY-MM-DD',
+      };
+    }
+    return {
+      type: 'text' as const,
+      title,
+      width: i === 0 ? 140 : 100,
+      align: 'left' as const,
+    };
+  });
+}
 
 function buildOutlineFromCats(
   cats: OutlineCatInput[],
@@ -338,6 +1048,7 @@ function buildOutlineFromCats(
         orderDate,
         catSales,
         catProfit,
+        ...outlineExtraValues(r, seed, orderDate),
       ];
     })();
     groupCells.push({ row: catStart, col: 0, label: cat.name, kind: 'category', indent: 0 });
@@ -359,7 +1070,16 @@ function buildOutlineFromCats(
       const st = catStates[si];
       data[r] = (() => {
         const [status, orderDate] = outlineEditableSeed(r, seed);
-        return ['', '', st.name, status, orderDate, st.sales, st.profit];
+        return [
+          '',
+          '',
+          st.name,
+          status,
+          orderDate,
+          st.sales,
+          st.profit,
+          ...outlineExtraValues(r, seed, orderDate),
+        ];
       })();
       stateDetailRows.add(r);
       markNegProfit(r, st.profit);
@@ -380,6 +1100,7 @@ function buildOutlineFromCats(
           orderDate,
           sub.sales,
           sub.profit,
+          ...outlineExtraValues(r, seed, orderDate),
         ];
       })();
       groupCells.push({ row: subStart, col: 0, label: sub.name, kind: 'leaf', indent: 1 });
@@ -401,7 +1122,16 @@ function buildOutlineFromCats(
         const st = subStates[si];
         data[r] = (() => {
           const [status, orderDate] = outlineEditableSeed(r, seed);
-          return ['', '', st.name, status, orderDate, st.sales, st.profit];
+          return [
+            '',
+            '',
+            st.name,
+            status,
+            orderDate,
+            st.sales,
+            st.profit,
+            ...outlineExtraValues(r, seed, orderDate),
+          ];
         })();
         stateDetailRows.add(r);
         markNegProfit(r, st.profit);
@@ -426,12 +1156,20 @@ function buildOutlineFromCats(
 }
 
 /** 任意数据量都生成可折叠树；>1 万行 liteMeta 仅减 detailRows 元数据，样式统一走 paint/CSS */
-function buildOutlineSourceSheet(targetRows?: number | 'demo'): OutlineSheet {
+function buildOutlineSourceSheet(
+  targetRows?: number | 'demo',
+  opts?: { expandMode?: OutlineExpandMode },
+): OutlineSheet {
+  const expandMode = opts?.expandMode ?? 'collapsed';
+
   if (targetRows === undefined || targetRows === 'demo') {
     return buildOutlineFromCats(
-      OUTLINE_TREE.map((cat) => ({
+      OUTLINE_TREE.map((cat, index) => ({
         name: cat.name,
-        expanded: cat.expanded,
+        expanded:
+          expandMode === 'collapsed'
+            ? false
+            : categoryExpandedForMode(expandMode, index, cat.expanded),
         children: cat.children.map((c) => ({ ...c })),
       })),
     );
@@ -457,7 +1195,7 @@ function buildOutlineSourceSheet(targetRows?: number | 'demo'): OutlineSheet {
     }));
     cats.push({
       name: `${tpl.name}${suffix}`,
-      expanded: false,
+      expanded: categoryExpandedForMode(expandMode, i),
       children,
     });
     approx += outlineRowsForCat(children.length);
@@ -516,6 +1254,96 @@ function cellName(x: number, y: number) {
   return `${letters}${row + 1}`;
 }
 
+/** 编辑/选中时读取列配置与单元格展示值 */
+function captureCellFormat(
+  ws: any,
+  col: number,
+  row: number,
+  rawValue?: unknown,
+): EditFormatInfo {
+  const prop =
+    ws?.getProperty?.(col, row) ||
+    ws?.getColumnOptions?.(col, row) ||
+    ws?.getColumn?.(col) ||
+    {};
+  return {
+    cell: cellName(col, row) || `c${col}r${row}`,
+    col,
+    row,
+    type: prop?.type,
+    mask: prop?.mask,
+    format: prop?.format,
+    title: prop?.title,
+    raw: rawValue ?? ws?.getValueFromCoords?.(col, row, false),
+    display: ws?.getValueFromCoords?.(col, row, true),
+    time: new Date().toLocaleTimeString(),
+  };
+}
+
+/** 表格渲染完成后打印列配置与运行时数据格式 */
+function logOutlineTableRenderFormat(
+  ws: any,
+  columns: Array<Record<string, unknown>>,
+  rowCount: number,
+) {
+  const columnFormats = columns.map((config, index) => {
+    const runtime =
+      ws?.getColumn?.(index) ||
+      ws?.getColumnOptions?.(index, 0) ||
+      {};
+    const sampleRow = rowCount > 0 ? 0 : -1;
+    return {
+      index,
+      field: config.title ?? runtime?.title,
+      config,
+      runtime: {
+        type: runtime?.type,
+        title: runtime?.title,
+        mask: runtime?.mask,
+        format: runtime?.format,
+        source: runtime?.source,
+        readOnly: runtime?.readOnly,
+        align: runtime?.align,
+      },
+      sample:
+        sampleRow >= 0
+          ? {
+              cell: captureCellFormat(ws, index, sampleRow),
+            }
+          : null,
+    };
+  });
+
+  const headers = columns.map((col) => String(col.title ?? ''));
+  const rawRows = ws?.getData?.(false) ?? [];
+  const displayRows = ws?.getData?.(true) ?? [];
+  let jsonRows: Array<Record<string, unknown>> = [];
+  try {
+    const json = ws?.getData?.(false, true, undefined, true);
+    if (Array.isArray(json)) jsonRows = json as Array<Record<string, unknown>>;
+  } catch {
+    jsonRows = rawRows.map((row: unknown[]) => {
+      const record: Record<string, unknown> = {};
+      headers.forEach((key, i) => {
+        record[key] = row?.[i];
+      });
+      return record;
+    });
+  }
+
+  console.group('[Jspreadsheet 扩展] 表格渲染数据格式');
+  console.log('列格式:', columnFormats);
+  console.log('多行表头:', ws?.getNestedHeaders?.() ?? null);
+  console.log('数据规模:', { rowCount, colCount: columns.length });
+  console.log('整个表格数据:', {
+    headers,
+    raw: rawRows,
+    display: displayRows,
+    json: jsonRows,
+  });
+  console.groupEnd();
+}
+
 function buildSeedRows(count: number) {
   const rows: any[][] = new Array(count);
   const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -545,7 +1373,7 @@ function buildSeedRows(count: number) {
   return rows;
 }
 
-/** 透视源数据：Category / SubCategory / Region / Sales / Profit */
+/** 透视底表：Category / SubCategory / Region / Sales / Profit */
 function buildPivotSourceData() {
   const header = ['Category', 'SubCategory', 'Region', 'Sales', 'Profit'];
   const rows: any[][] = [header];
@@ -594,8 +1422,8 @@ function getActiveWorksheetIndex(ref: React.MutableRefObject<any>) {
 
 function getActiveWorksheetName(ref: React.MutableRefObject<any>) {
   const ws = getActiveWorksheet(ref);
-  if (!ws) return '订单明细';
-  return ws.options?.worksheetName || ws.getWorksheetName?.() || '订单明细';
+  if (!ws) return '透视源数据';
+  return ws.options?.worksheetName || ws.getWorksheetName?.() || '透视源数据';
 }
 
 function getWorksheetByName(ref: React.MutableRefObject<any>, name: string) {
@@ -609,15 +1437,15 @@ function getWorksheetByName(ref: React.MutableRefObject<any>, name: string) {
   );
 }
 
-export default function JspreadsheetPage() {
+export default function JspreadsheetLabPage() {
   return (
     <App>
-      <JspreadsheetPageInner />
+      <JspreadsheetLabPageInner />
     </App>
   );
 }
 
-function JspreadsheetPageInner() {
+function JspreadsheetLabPageInner() {
   const { message } = App.useApp();
   const spreadsheet = useRef<any>(null);
   const [tracks, setTracks] = useState<TrackItem[]>([]);
@@ -640,6 +1468,12 @@ function JspreadsheetPageInner() {
   const restoreWorksheetRef = useRef<{ index: number; name: string } | null>(null);
   const outlineTabLockRef = useRef(false);
   const outlineTabGuardRef = useRef(false);
+  /** 自上次保存以来有编辑的行（rowIndex → 变更明细） */
+  const dirtyRowsRef = useRef<Map<number, { changes: DirtyRowChange[] }>>(new Map());
+  /** 自上次保存以来编辑过的单元格 col:row */
+  const dirtyCellsRef = useRef<Set<string>>(new Set());
+  /** 表格加载/上次保存后的基线数据，用于对比拿到所有变更 */
+  const baselineDataRef = useRef<unknown[][]>([]);
 
   const [orderScale, setOrderScale] = useState<OrderScale>('2000');
   const [orderBusy, setOrderBusy] = useState(false);
@@ -647,6 +1481,8 @@ function JspreadsheetPageInner() {
   const [outlineScale, setOutlineScale] = useState<OutlineScale>('demo');
   const [outlineBusy, setOutlineBusy] = useState(false);
   const [outlineLoadInfo, setOutlineLoadInfo] = useState('');
+  const [editFormats, setEditFormats] = useState<EditFormatInfo[]>([]);
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [sheetNonce, setSheetNonce] = useState(0);
   const [orderData, setOrderData] = useState(() => buildSeedRows(2000));
   const [outlineSheet, setOutlineSheet] = useState(() => buildOutlineSourceSheet('demo'));
@@ -658,10 +1494,16 @@ function JspreadsheetPageInner() {
   }, [outlineSheet]);
   const pivotSourceData = useMemo(() => buildPivotSourceData(), []);
   const pivotSourceRowCount = pivotSourceData.length;
-  const isOrderPerf = orderScale !== '2000';
+  const isOrderPerf = false; // 扩展页不含订单明细，保留变量避免遗留逻辑报错
   const isOutlinePerf = outlineScale === '100000' || outlineScale === '1000000';
-  const sheetBusy = orderBusy || outlineBusy;
-  const sheetLoadInfo = orderBusy ? orderLoadInfo : outlineLoadInfo;
+  /** 1 万行及以上视为大数据：开启双向虚拟滚动 */
+  const isOutlineLarge =
+    isOutlinePerf ||
+    outlineScale === '10000' ||
+    !!outlineSheet.liteMeta ||
+    outlineSheet.data.length >= 10000;
+  const sheetBusy = outlineBusy;
+  const sheetLoadInfo = outlineLoadInfo;
 
   const destroySpreadsheet = useCallback(() => {
     // 只清空 ref，让 React 通过 key 卸载旧节点。
@@ -929,8 +1771,8 @@ function JspreadsheetPageInner() {
         try {
           const next =
             value === 'demo'
-              ? buildOutlineSourceSheet('demo')
-              : buildOutlineSourceSheet(Number(value));
+              ? buildOutlineSourceSheet('demo', { expandMode: DEFAULT_OUTLINE_LAYOUT.expandMode })
+              : buildOutlineSourceSheet(Number(value), { expandMode: DEFAULT_OUTLINE_LAYOUT.expandMode });
           if (token !== outlineLoadTokenRef.current) return;
           const genCost = Math.round(performance.now() - t0);
           const rows = next.data.length;
@@ -962,7 +1804,7 @@ function JspreadsheetPageInner() {
           if (token !== outlineLoadTokenRef.current) return;
           destroySpreadsheet();
           setOutlineScale('demo');
-          setOutlineSheet(buildOutlineSourceSheet('demo'));
+          setOutlineSheet(buildOutlineSourceSheet('demo', { expandMode: DEFAULT_OUTLINE_LAYOUT.expandMode }));
           setSheetNonce((n) => n + 1);
           setOutlineLoadInfo('加载失败，已回到演示折叠树');
           setOutlineBusy(false);
@@ -1102,6 +1944,20 @@ function JspreadsheetPageInner() {
     });
   }, [columns, isOrderPerf]);
 
+  const outlineTableRender = useMemo(
+    () => buildOutlineTableRender(outlineSheet, DEFAULT_OUTLINE_LAYOUT, isOutlineLarge),
+    [outlineSheet, isOutlineLarge],
+  );
+
+  const outlineColumns = outlineTableRender.columns;
+  const outlineTableData = outlineTableRender.data;
+  const outlineNestedHeaders = outlineTableRender.nestedHeaders;
+  const outlineRenderRows = outlineTableRender.rows;
+  const outlineDimensionIndex = useMemo(
+    () => buildOutlineDimensionIndex(outlineSheet),
+    [outlineSheet],
+  );
+
   const nestedHeaders = useMemo(
     () => [
       [
@@ -1150,8 +2006,8 @@ function JspreadsheetPageInner() {
 
   /**
    * 透视分析表（参考图片）：
-   * - 行维度：Category → SubCategory（自定义折叠，行号列无原生三角；A/B 列单元格内 ▼/▶）
-   * - 列维度：Region（多列折叠）
+   * - 行维度：Category → SubCategory
+   * - 列维度：Region
    * - 值：Sales / Profit
    */
   const pivotTables = useMemo(
@@ -1220,102 +2076,24 @@ function JspreadsheetPageInner() {
     [],
   );
 
-  const outlineColumns = useMemo(
-    () => [
-      { type: 'text', title: 'Category', width: 160, readOnly: true, align: 'left' as const },
-      { type: 'text', title: '属性值', width: 100, align: 'left' as const },
-      { type: 'text', title: 'Region', width: 110, readOnly: true, align: 'left' as const },
-      {
-        type: 'dropdown',
-        title: '状态',
-        width: 100,
-        source: STATUS_OPTIONS,
-        strictMode: false,
-      },
-      {
-        type: 'calendar',
-        title: '下单日期',
-        width: 120,
-        format: 'YYYY-MM-DD',
-      },
-      {
-        type: 'numeric',
-        title: 'Sales',
-        width: 120,
-        mask: '$#,##0.00',
-        align: 'right' as const,
-      },
-      {
-        type: 'numeric',
-        title: 'Profit',
-        width: 120,
-        mask: '$#,##0.00',
-        align: 'right' as const,
-      },
-    ],
-    [],
-  );
-
-  // Spreadsheet React 只初始化一次；插件 onevent + config 回调三路绑定
-  useEffect(() => {
-    const bind = () => {
-      const list = getWorksheetList(spreadsheet);
-      const parent = list[0]?.parent;
-      if (!parent?.config) return false;
-      if ((parent.config as any).__historyBound) return true;
-
-      const prevOnevent = parent.config.onevent;
-      parent.config.onevent = function historyOnevent(event: string, ...rest: any[]) {
-        cellHistoryPlugin.onevent(event, ...rest);
-        return prevOnevent?.call(this, event, ...rest);
-      };
-
-      // 再挂原生 onchange / onselection（官方事件签名：ws, cell, x, y, newValue, oldValue）
-      const prevChange = parent.config.onchange;
-      parent.config.onchange = function (
-        worksheet: any,
-        _cell: any,
-        x: any,
-        y: any,
-        newValue: any,
-        oldValue: any,
-      ) {
-        historyBridge.onChange(worksheet, x, y, oldValue, newValue);
-        return prevChange?.call(this, worksheet, _cell, x, y, newValue, oldValue);
-      };
-
-      const prevSelect = parent.config.onselection;
-      parent.config.onselection = function (
-        worksheet: any,
-        px: any,
-        py: any,
-        ux: any,
-        uy: any,
-        ...rest: any[]
-      ) {
-        historyBridge.onSelect(worksheet, px, py, ux, uy);
-        return prevSelect?.call(this, worksheet, px, py, ux, uy, ...rest);
-      };
-
-      (parent.config as any).__historyBound = true;
-      return true;
-    };
-    if (bind()) return undefined;
-    const timer = window.setInterval(() => {
-      if (bind()) window.clearInterval(timer);
-    }, 50);
-    return () => window.clearInterval(timer);
-  }, [sheetNonce]);
-
-  // 透视源数据：Category 树形第一列；Region 列每一行都可折叠；隐藏行号 +/-
+  // 单元格变更监听：挂在 Spreadsheet props（初始化时写入 config.onchange）
+  // 透视源数据 / 透视底表：Category 树形第一列；Region 列每一行都可折叠；隐藏行号 +/-
   // sheetNonce：切换数据量会 remount 整表，需重新绑定折叠操作
   useEffect(() => {
-    if (!outlineSheet.groupCells.length) return undefined;
-
+    const attachOutlineFold = ({
+      worksheetName,
+      sheet,
+      outlinePerf,
+      withBridge,
+    }: {
+      worksheetName: string;
+      sheet: typeof outlineSheet;
+      outlinePerf: boolean;
+      withBridge: boolean;
+    }) => {
     // outlineBatch：仅控制分批 init/expand（性能）；样式与交互路径各档位保持一致
-    const outlinePerf = isOutlinePerf;
     const outlineBatch =
-      outlineSheet.data.length > 150 || !!outlineSheet.liteMeta || outlinePerf;
+      sheet.data.length > 150 || !!sheet.liteMeta || outlinePerf;
     const outlineWatchDom = true;
 
     let disposed = false;
@@ -1337,7 +2115,7 @@ function JspreadsheetPageInner() {
     const regionState = new Map<number, boolean>();
     const foldMetaByKey = new Map<string, OutlineGroupCell>();
     const regionByRow = new Map<number, OutlineGroupCell>();
-    outlineSheet.groupCells.forEach((cell) => {
+    sheet.groupCells.forEach((cell) => {
       foldMetaByKey.set(`${cell.col}:${cell.row}`, cell);
       if (cell.kind === 'region') {
         regionState.set(cell.row, !!cell.expanded);
@@ -1455,7 +2233,7 @@ function JspreadsheetPageInner() {
       if (!rowSeqDirty && rowSeqMap.size) return;
       rowSeqMap.clear();
       let seq = 0;
-      const total = outlineSheet.data.length;
+      const total = sheet.data.length;
       for (let r = 0; r < total; r += 1) {
         if (hiddenRows.has(r)) continue;
         seq += 1;
@@ -1527,15 +2305,49 @@ function JspreadsheetPageInner() {
       }
     };
 
+    const setRowsVisible = (ws: any, rows: number[], visible: boolean) => {
+      if (!rows.length) return;
+      try {
+        if (visible) {
+          let changed = false;
+          rows.forEach((r) => {
+            if (hiddenRows.delete(r)) changed = true;
+          });
+          if (changed) markRowSeqDirty();
+          ws.showRow?.(rows.length === 1 ? rows[0] : rows);
+        } else {
+          let changed = false;
+          rows.forEach((r) => {
+            if (!hiddenRows.has(r)) changed = true;
+            hiddenRows.add(r);
+          });
+          if (changed) markRowSeqDirty();
+          ws.hideRow?.(rows.length === 1 ? rows[0] : rows);
+        }
+      } catch {
+        rows.forEach((r) => setRowVisible(ws, r, visible));
+      }
+    };
+
+    const collectRegionDetailRows = (regionRow: number) => {
+      const rows: number[] = [];
+      eachRegionDetailRow(regionRow, (detailRow) => rows.push(detailRow));
+      return rows;
+    };
+
+    const flipToggleIcon = (toggle: HTMLElement, expanded: boolean) => {
+      toggle.textContent = expanded ? '▼' : '▶';
+      const td = toggle.closest('td') as HTMLElement | null;
+      if (td) delete td.dataset.outlineSnap;
+    };
+
     const applyOneRegion = (ws: any, row: number) => {
       const cell = regionByRow.get(row);
       if (cell?.kind !== 'region') return;
       const open = !!regionState.get(row);
-      if (cell.detailRows?.length) {
-        cell.detailRows.forEach((detailRow) => setRowVisible(ws, detailRow, open));
-        return;
-      }
-      eachRegionDetailRow(row, (detailRow) => setRowVisible(ws, detailRow, open));
+      const detailRows =
+        cell.detailRows?.length ? cell.detailRows : collectRegionDetailRows(row);
+      setRowsVisible(ws, detailRows, open);
     };
 
     const findCategoryStart = (ws: any, targetRow: number) => {
@@ -1563,17 +2375,102 @@ function JspreadsheetPageInner() {
       }
     };
 
+    const clearAllOutlineSnap = (tableEl: HTMLElement | null) => {
+      if (!tableEl) return;
+      tableEl.querySelectorAll('td[data-x][data-y]').forEach((el) => {
+        delete (el as HTMLElement).dataset.outlineSnap;
+      });
+    };
+
+    /** 仅从引擎 visible 重建 hideRow 追踪 */
+    const rebuildHiddenRowsFromEngine = (ws: any) => {
+      hiddenRows.clear();
+      markRowSeqDirty();
+      const total = sheet.data.length;
+      for (let r = 0; r < total; r += 1) {
+        if (ws.rows?.[r]?.visible === false) hiddenRows.add(r);
+      }
+    };
+
+    const isCategorySpanVisible = (ws: any, catRow: number, span: number) => {
+      for (let i = catRow + 1; i <= catRow + span; i += 1) {
+        if (ws.rows?.[i]?.visible !== false && !hiddenRows.has(i)) return true;
+      }
+      return false;
+    };
+
+    /** 绑定初 ws.rows 可能尚未合并 props，用 sheet.rows 作为行组配置源 */
+    const listCategoryRows = () =>
+      Object.keys(sheet.rows)
+        .map(Number)
+        .filter((r) => sheet.rows[r]?.group)
+        .sort((a, b) => a - b);
+
+    const ensureWsRowMetaFromSheet = (ws: any) => {
+      if (!ws.rows) ws.rows = {};
+      Object.entries(sheet.rows).forEach(([key, meta]) => {
+        const row = Number(key);
+        const src = meta as { group: number; state: boolean };
+        if (!ws.rows[row]) {
+          ws.rows[row] = { group: src.group, state: src.state };
+          return;
+        }
+        if (ws.rows[row].group == null) ws.rows[row].group = src.group;
+        if (typeof ws.rows[row].state !== 'boolean') ws.rows[row].state = src.state;
+      });
+    };
+
+    const showCategorySpanRows = (
+      ws: any,
+      row: number,
+      span: number,
+      opts?: { ignoreHistory?: boolean },
+    ) => {
+      const ignoreHistory = opts?.ignoreHistory !== false;
+      for (let i = row + 1; i <= row + span; i += 1) {
+        hiddenRows.delete(i);
+        try {
+          ws.showRow?.(i);
+        } catch {
+          // ignore
+        }
+      }
+      if (outlinePerf) {
+        try {
+          ws.setRowGroup?.(row, span, true, ignoreHistory);
+        } catch {
+          try {
+            ws.openRowGroup?.(row);
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        try {
+          ws.openRowGroup?.(row);
+        } catch {
+          // ignore
+        }
+      }
+      if (ws.rows?.[row]) ws.rows[row].state = true;
+    };
+
     const applyRegionVisibilityInSpan = (ws: any, from: number, to: number) => {
       for (let r = from; r <= to; r += 1) {
         if (regionByRow.has(r)) applyOneRegion(ws, r);
       }
     };
 
-    const applyCategoryVisibilityDemo = (ws: any, row: number) => {
+    const applyCategoryVisibilityDemo = (
+      ws: any,
+      row: number,
+      opts?: { ignoreHistory?: boolean },
+    ) => {
       const meta = ws.rows?.[row];
       if (!meta?.group) return;
       const span = Number(meta.group) || 0;
       const open = !!meta.state;
+      const ignoreHistory = opts?.ignoreHistory !== false;
 
       /** 10万+：Category 用 setRowGroup；hideRow 仅用于 Region 州明细 */
       if (outlinePerf) {
@@ -1589,7 +2486,7 @@ function JspreadsheetPageInner() {
             }
           }
           try {
-            ws.setRowGroup?.(row, span, false, true);
+            ws.setRowGroup?.(row, span, false, ignoreHistory);
           } catch {
             try {
               ws.closeRowGroup?.(row);
@@ -1606,25 +2503,7 @@ function JspreadsheetPageInner() {
           return;
         }
         meta.state = true;
-        // 先清 hideRow，再以 open 状态重建行组（closeRowGroup 后单独 openRowGroup 常无效）
-        for (let i = row + 1; i <= row + span; i += 1) {
-          hiddenRows.delete(i);
-          try {
-            ws.showRow?.(i);
-          } catch {
-            // ignore
-          }
-        }
-        try {
-          ws.setRowGroup?.(row, span, true, true);
-        } catch {
-          try {
-            ws.openRowGroup?.(row);
-          } catch {
-            // ignore
-          }
-        }
-        meta.state = true;
+        showCategorySpanRows(ws, row, span, { ignoreHistory });
         applyRegionVisibilityInSpan(ws, row, row + span);
         try {
           ws.updateSelectionFromCoords?.(0, row, 0, row);
@@ -1643,31 +2522,48 @@ function JspreadsheetPageInner() {
           // ignore
         }
         meta.state = false;
-        for (let i = row + 1; i <= row + span; i += 1) setRowVisible(ws, i, false);
+        const childRows: number[] = [];
+        for (let i = row + 1; i <= row + span; i += 1) childRows.push(i);
+        setRowsVisible(ws, childRows, false);
         return;
       }
       meta.state = true;
-      try {
-        ws.openRowGroup?.(row);
-      } catch {
-        // ignore
-      }
-      meta.state = true;
-      for (let i = row + 1; i <= row + span; i += 1) setRowVisible(ws, i, true);
+      showCategorySpanRows(ws, row, span, { ignoreHistory });
       applyRegionVisibility(ws, { from: row, to: row + span });
     };
 
-    /** Category 语义收起时：仅按 Region 露出必要行；perf 下 openRowGroup 作 DOM 解锁，state 保持 false */
+    /** Category 语义收起时：仅按 Region 露出必要行；引擎层解锁但第一列 state 保持 false */
     const applyRegionWhenCategoryCollapsed = (ws: any, catRow: number) => {
       const meta = ws.rows?.[catRow];
       if (!meta?.group || meta.state) return;
       const span = Number(meta.group) || 0;
       meta.state = false;
 
-      try {
-        ws.openRowGroup?.(catRow);
-      } catch {
-        // ignore
+      // 10万+：须先解除 closeRowGroup，否则 showRow 无效；语义上 Category 仍收起
+      if (outlinePerf) {
+        for (let i = catRow + 1; i <= catRow + span; i += 1) {
+          hiddenRows.delete(i);
+          try {
+            ws.showRow?.(i);
+          } catch {
+            // ignore
+          }
+        }
+        try {
+          ws.setRowGroup?.(catRow, span, true, true);
+        } catch {
+          try {
+            ws.openRowGroup?.(catRow);
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        try {
+          ws.openRowGroup?.(catRow);
+        } catch {
+          // ignore
+        }
       }
       meta.state = false;
 
@@ -1689,6 +2585,12 @@ function JspreadsheetPageInner() {
           }
         }
         if (visible) setRowVisible(ws, i, true);
+      }
+
+      try {
+        ws.updateSelectionFromCoords?.(OUTLINE_REGION_COL, catRow, OUTLINE_REGION_COL, catRow);
+      } catch {
+        // ignore
       }
     };
 
@@ -1792,11 +2694,10 @@ function JspreadsheetPageInner() {
         return;
       }
       const initToken = sheetNonce;
-      const rowGroups = ws.rows || {};
       const collapsed: number[] = [];
-      Object.keys(rowGroups).forEach((key) => {
+      Object.keys(sheet.rows).forEach((key) => {
         const row = Number(key);
-        const meta = rowGroups[row];
+        const meta = sheet.rows[row];
         if (meta?.group && !meta.state) collapsed.push(row);
       });
       const finish = () => {
@@ -1813,21 +2714,23 @@ function JspreadsheetPageInner() {
       const run = () => {
         if (disposed || initToken !== sheetNonce) return;
         const end = Math.min(idx + batchSize, collapsed.length);
-        for (; idx < end; idx += 1) {
-          const catRow = collapsed[idx];
-          const span = Number(ws.rows?.[catRow]?.group) || 0;
-          try {
-            if (span > 0) ws.setRowGroup?.(catRow, span, false, true);
-            else ws.closeRowGroup?.(catRow);
-          } catch {
+        runWithoutHistory(() => {
+          for (; idx < end; idx += 1) {
+            const catRow = collapsed[idx];
+            const span = Number(ws.rows?.[catRow]?.group) || 0;
             try {
-              ws.closeRowGroup?.(catRow);
+              if (span > 0) ws.setRowGroup?.(catRow, span, false, true);
+              else ws.closeRowGroup?.(catRow);
             } catch {
-              // ignore
+              try {
+                ws.closeRowGroup?.(catRow);
+              } catch {
+                // ignore
+              }
             }
+            if (ws.rows?.[catRow]) ws.rows[catRow].state = false;
           }
-          if (ws.rows?.[catRow]) ws.rows[catRow].state = false;
-        }
+        });
         if (idx < collapsed.length) {
           const ric = (window as any).requestIdleCallback as
             | ((cb: () => void, opts?: { timeout: number }) => number)
@@ -1845,7 +2748,7 @@ function JspreadsheetPageInner() {
       else window.setTimeout(run, 0);
     };
 
-    const { stateDetailRows, negProfitRows } = outlineSheet;
+    const { stateDetailRows, negProfitRows } = sheet;
 
     const paintStateDetailCell = (cell: HTMLElement, col: number) => {
       if (cell.dataset.outlineStateCol === String(col)) return;
@@ -1921,13 +2824,19 @@ function JspreadsheetPageInner() {
       }
     };
 
+    let paintPending = false;
+
     const paint = (
       ws: any,
       root: HTMLElement,
       outlineTable?: HTMLElement | null,
       opts?: { stripIcons?: boolean },
     ) => {
-      if (disposed || painting) return;
+      if (disposed) return;
+      if (painting) {
+        paintPending = true;
+        return;
+      }
       painting = true;
       try {
         const table =
@@ -1960,7 +2869,7 @@ function JspreadsheetPageInner() {
           }
         } else if (!outlineBatch) {
           // fallback：虚拟滚动首帧尚无 data-x 时，按元数据补绘（仅小表）
-          outlineSheet.groupCells.forEach((meta) => {
+          sheet.groupCells.forEach((meta) => {
             const el = getCellEl(ws, meta.col, meta.row);
             if (el) paintCell(ws, el, meta);
           });
@@ -1970,6 +2879,10 @@ function JspreadsheetPageInner() {
         renumberVisibleRows(table);
       } finally {
         painting = false;
+        if (paintPending) {
+          paintPending = false;
+          paint(ws, root, outlineTable, opts);
+        }
       }
     };
 
@@ -1988,7 +2901,7 @@ function JspreadsheetPageInner() {
       paint(ws, root, outlineTable);
     };
 
-    const outlineBindKey = `outline-${sheetNonce}`;
+    const outlineBindKey = `${worksheetName}-${sheetNonce}`;
 
     let schedulePaintRef: (() => void) | null = null;
     let scrollPaintRef: (() => void) | null = null;
@@ -2037,36 +2950,43 @@ function JspreadsheetPageInner() {
         rootEl;
       onScrollPaint = () => scrollPaintRef?.();
       scrollTarget.addEventListener('scroll', onScrollPaint, { passive: true });
-      (rootEl as any).__outlineScrollEl = scrollTarget;
-      (rootEl as any).__outlineScrollFn = onScrollPaint;
+      (rootEl as any)[scrollElKey] = scrollTarget;
+      (rootEl as any)[scrollFnKey] = onScrollPaint;
     };
+
+    const clickHandlerKey = `__outlineClickHandler:${worksheetName}`;
+    const bindKeyProp = `__outlineBindKey:${worksheetName}`;
+    const scrollElKey = `__outlineScrollEl:${worksheetName}`;
+    const scrollFnKey = `__outlineScrollFn:${worksheetName}`;
+    const onTabKey = `__outlineOnTab:${worksheetName}`;
+    const tabElsKey = `__outlineTabEls:${worksheetName}`;
 
     const detachOutlineDom = (el: HTMLElement | null) => {
       if (!el) return;
-      const prevClick = (el as any).__outlineClickHandler as
+      const prevClick = (el as any)[clickHandlerKey] as
         | ((e: MouseEvent) => void)
         | undefined;
       if (prevClick) {
         el.removeEventListener('click', prevClick, true);
-        delete (el as any).__outlineClickHandler;
+        delete (el as any)[clickHandlerKey];
       }
-      delete (el as any).__outlineBindKey;
-      const prevScrollEl = (el as any).__outlineScrollEl as HTMLElement | null | undefined;
-      const prevScrollFn = (el as any).__outlineScrollFn as (() => void) | null | undefined;
+      delete (el as any)[bindKeyProp];
+      const prevScrollEl = (el as any)[scrollElKey] as HTMLElement | null | undefined;
+      const prevScrollFn = (el as any)[scrollFnKey] as (() => void) | null | undefined;
       if (prevScrollEl && prevScrollFn) {
         prevScrollEl.removeEventListener('scroll', prevScrollFn);
-        delete (el as any).__outlineScrollEl;
-        delete (el as any).__outlineScrollFn;
+        delete (el as any)[scrollElKey];
+        delete (el as any)[scrollFnKey];
       }
-      const prevTab = (el as any).__outlineOnTab as (() => void) | undefined;
-      const prevTabEls = (el as any).__outlineTabEls as NodeListOf<Element> | undefined;
+      const prevTab = (el as any)[onTabKey] as (() => void) | undefined;
+      const prevTabEls = (el as any)[tabElsKey] as NodeListOf<Element> | undefined;
       if (prevTab && prevTabEls) prevTabEls.forEach((node) => node.removeEventListener('click', prevTab));
-      delete (el as any).__outlineOnTab;
-      delete (el as any).__outlineTabEls;
+      delete (el as any)[onTabKey];
+      delete (el as any)[tabElsKey];
     };
 
     const bind = () => {
-      const ws = getWorksheetByName(spreadsheet, '透视源数据');
+      const ws = getWorksheetByName(spreadsheet, worksheetName);
       if (!ws) return false;
       const table = getOutlineTable(ws);
       if (!table) return false;
@@ -2077,8 +2997,8 @@ function JspreadsheetPageInner() {
         (table.closest('.jss_worksheet, .jss_content, .jss') as HTMLElement) ||
         table;
 
-      const outlineBindKey = `outline-${sheetNonce}`;
-      if ((root as any).__outlineBindKey === outlineBindKey) return true;
+      const outlineBindKey = `${worksheetName}-${sheetNonce}`;
+      if ((root as any)[bindKeyProp] === outlineBindKey) return true;
 
       ensureFoldStyle();
       root.classList.add('jss-outline-root');
@@ -2092,7 +3012,8 @@ function JspreadsheetPageInner() {
         if (outlineInitBusy || outlineBulkBusy) return;
         const target = e.target as HTMLElement | null;
         const toggle = target?.closest?.('.jss-outline-toggle') as HTMLElement | null;
-        if (!toggle || !root.contains(toggle)) return;
+        // 只处理本工作表表格内的折叠点击，避免双页签共享容器时互相抢事件
+        if (!toggle || !table.contains(toggle)) return;
         const kind = toggle.dataset.kind;
         if (kind !== 'category' && kind !== 'region') return;
 
@@ -2102,25 +3023,29 @@ function JspreadsheetPageInner() {
         if (!Number.isFinite(row)) return;
 
         if (kind === 'category') {
-          const groupMeta = ws.rows?.[row];
-          if (groupMeta?.group == null || groupMeta.group <= 0) return;
-          const span = Number(groupMeta.group) || 0;
-          const nextOpen = !groupMeta.state;
-          groupMeta.state = nextOpen;
-          if (!nextOpen) {
-            // Category 收起：第二列同步显示 ▶（子行已隐藏，Region 语义状态一并复位）
-            regionState.set(row, false);
-            for (let r = row + 1; r <= row + span; r += 1) {
-              if (regionByRow.has(r)) regionState.set(r, false);
+          runWithoutHistory(() => {
+            const groupMeta = ws.rows?.[row];
+            if (groupMeta?.group == null || groupMeta.group <= 0) return;
+            const span = Number(groupMeta.group) || 0;
+            const spanVisible = isCategorySpanVisible(ws, row, span);
+            let nextOpen = !groupMeta.state;
+            if (groupMeta.state && !spanVisible) {
+              nextOpen = true;
+            } else if (!groupMeta.state && spanVisible) {
+              nextOpen = false;
             }
-          }
-          applyCategoryVisibilityDemo(ws, row);
-          markRowSeqDirty();
-          rebuildRowSeqMap();
-          clearOutlineSnapInSpan(table, row, span);
-          paint(ws, root, table);
-          requestAnimationFrame(() => {
-            if (disposed || bindToken !== sheetNonce) return;
+            flipToggleIcon(toggle, nextOpen);
+            groupMeta.state = nextOpen;
+            if (!nextOpen) {
+              regionState.set(row, false);
+              for (let r = row + 1; r <= row + span; r += 1) {
+                if (regionByRow.has(r)) regionState.set(r, false);
+              }
+            }
+            applyCategoryVisibilityDemo(ws, row);
+            markRowSeqDirty();
+            rebuildRowSeqMap();
+            clearOutlineSnapInSpan(table, row, span);
             paint(ws, root, table);
           });
           return;
@@ -2129,39 +3054,47 @@ function JspreadsheetPageInner() {
         const meta = regionByRow.get(row);
         if (meta?.kind !== 'region') return;
 
-        const next = !regionState.get(row);
-        regionState.set(row, next);
+        runWithoutHistory(() => {
+          const next = !regionState.get(row);
+          flipToggleIcon(toggle, next);
+          regionState.set(row, next);
 
-        const catStart = findCategoryStart(ws, row);
-        if (catStart >= 0 && !ws.rows[catStart]?.state) {
-          if (outlinePerf) {
-            // perf 下 Category 已 closeRowGroup，须先展开 Category
+          const catStart = findCategoryStart(ws, row);
+          if (catStart >= 0 && !ws.rows[catStart]?.state) {
+            applyRegionWhenCategoryCollapsed(ws, catStart);
+            ws.rows[catStart].state = false;
+            const span = Number(ws.rows[catStart]?.group) || 0;
+            markRowSeqDirty();
+            rebuildRowSeqMap();
+            clearOutlineSnapInSpan(table, catStart, span);
             paint(ws, root, table);
             return;
           }
-          applyRegionWhenCategoryCollapsed(ws, catStart);
-          ws.rows[catStart].state = false;
-          const span = Number(ws.rows[catStart]?.group) || 0;
+          applyOneRegion(ws, row);
+          try {
+            ws.updateSelectionFromCoords?.(OUTLINE_REGION_COL, row, OUTLINE_REGION_COL, row);
+          } catch {
+            // ignore
+          }
+          const catSpan =
+            catStart >= 0 ? Number(ws.rows[catStart]?.group) || 0 : 0;
           rebuildRowSeqMap();
-          clearOutlineSnapInSpan(table, catStart, span);
+          if (catStart >= 0) clearOutlineSnapInSpan(table, catStart, catSpan);
           paint(ws, root, table);
-          return;
-        }
-        applyOneRegion(ws, row);
-        const catSpan =
-          catStart >= 0 ? Number(ws.rows[catStart]?.group) || 0 : 0;
-        rebuildRowSeqMap();
-        if (catStart >= 0) clearOutlineSnapInSpan(table, catStart, catSpan);
-        paint(ws, root, table);
+        });
       };
-      (root as any).__outlineClickHandler = clickHandler;
-      (root as any).__outlineBindKey = outlineBindKey;
+      (root as any)[clickHandlerKey] = clickHandler;
+      (root as any)[bindKeyProp] = outlineBindKey;
       root.addEventListener('click', clickHandler, true);
 
       const schedulePaint = () => {
         if (disposed || outlineBulkBusy || outlineInitBusy) return;
         if (paintTimer) window.clearTimeout(paintTimer);
-        const debounceMs = outlineBatch ? 80 : 32;
+        const debounceMs = outlineBatch ? 48 : 0;
+        if (debounceMs === 0) {
+          paint(ws, root, table);
+          return;
+        }
         paintTimer = window.setTimeout(() => {
           paintTimer = undefined;
           if (disposed || outlineBulkBusy || outlineInitBusy) return;
@@ -2203,16 +3136,8 @@ function JspreadsheetPageInner() {
 
       const tabEls = root.querySelectorAll('.jtabs-container, .jss_tabs, [class*="jtabs"]');
       tabEls.forEach((el) => el.addEventListener('click', onTab));
-      (root as any).__outlineOnTab = onTab;
-      (root as any).__outlineTabEls = tabEls;
-
-      const listCategoryRows = (sheet: any) => {
-        const rowGroups = sheet.rows || {};
-        return Object.keys(rowGroups)
-          .map(Number)
-          .filter((r) => rowGroups[r]?.group)
-          .sort((a, b) => a - b);
-      };
+      (root as any)[onTabKey] = onTab;
+      (root as any)[tabElsKey] = tabEls;
 
       const runOutlineBatch = (
         rows: number[],
@@ -2250,15 +3175,17 @@ function JspreadsheetPageInner() {
         run();
       };
 
+      if (withBridge) {
       outlineBridge.expandAll = (onDone) => {
         outlineBulkBusy = true;
-        // 全部展开：Category + Region 第二列一并展开
         regionByRow.forEach((_, r) => regionState.set(r, true));
-        const cats = listCategoryRows(ws);
-        const expandOne = (row: number) => {
-          ws.rows[row].state = true;
-          applyCategoryVisibilityDemo(ws, row);
-        };
+        const cats = listCategoryRows();
+        const expandOne = (row: number) =>
+          runWithoutHistory(() => {
+            ensureWsRowMetaFromSheet(ws);
+            ws.rows[row].state = true;
+            applyCategoryVisibilityDemo(ws, row);
+          });
         const finish = () => {
           outlineBulkBusy = false;
           rebuildRowSeqMap();
@@ -2276,11 +3203,13 @@ function JspreadsheetPageInner() {
       outlineBridge.collapseAll = (onDone) => {
         outlineBulkBusy = true;
         regionByRow.forEach((_, r) => regionState.set(r, false));
-        const cats = listCategoryRows(ws);
-        const collapseOne = (row: number) => {
-          ws.rows[row].state = false;
-          applyCategoryVisibilityDemo(ws, row);
-        };
+        const cats = listCategoryRows();
+        const collapseOne = (row: number) =>
+          runWithoutHistory(() => {
+            ensureWsRowMetaFromSheet(ws);
+            ws.rows[row].state = false;
+            applyCategoryVisibilityDemo(ws, row);
+          });
         const finish = () => {
           outlineBulkBusy = false;
           rebuildRowSeqMap();
@@ -2294,10 +3223,17 @@ function JspreadsheetPageInner() {
           finish();
         }
       };
+      }
 
       const applyInitialOutlineVisibility = (onDone: () => void) => {
-        const cats = listCategoryRows(ws);
-        const applyOne = (row: number) => applyCategoryVisibilityDemo(ws, row);
+        ensureWsRowMetaFromSheet(ws);
+        const cats = listCategoryRows();
+        const applyOne = (row: number) =>
+          runWithoutHistory(() => applyCategoryVisibilityDemo(ws, row));
+        if (!cats.length) {
+          window.setTimeout(() => applyInitialOutlineVisibility(onDone), 50);
+          return;
+        }
         if (cats.length > 6) {
           runOutlineBatch(cats, outlineBatch ? 8 : 4, applyOne, onDone);
           return;
@@ -2312,17 +3248,20 @@ function JspreadsheetPageInner() {
         rebuildRowSeqMap();
         flushPaint();
         startWatching(table, root);
-        outlineLoadBridge.restoreTab();
-        window.requestAnimationFrame(() => {
+        if (withBridge) {
+          outlineLoadBridge.restoreTab();
           window.requestAnimationFrame(() => {
-            if (disposed || bindToken !== sheetNonce) return;
-            outlineLoadBridge.onRenderDone();
+            window.requestAnimationFrame(() => {
+              if (disposed || bindToken !== sheetNonce) return;
+              outlineLoadBridge.onRenderDone();
+            });
           });
-        });
+        }
       };
 
       if (outlinePerf) {
         outlineInitBusy = true;
+        ensureWsRowMetaFromSheet(ws);
         initCollapsedGroups(ws, () => {
           if (!disposed && bindToken === sheetNonce) finishOutlineInit();
         });
@@ -2348,14 +3287,16 @@ function JspreadsheetPageInner() {
     if (bind()) {
       return () => {
         disposed = true;
-        outlineBridge.expandAll = () => {};
-        outlineBridge.collapseAll = () => {};
+        if (withBridge) {
+          outlineBridge.expandAll = () => {};
+          outlineBridge.collapseAll = () => {};
+        }
         clearOutlineTimers();
         stopWatching();
         detachOutlineDom(boundRoot);
         if (boundRoot) {
-          delete (boundRoot as any).__outlineOnTab;
-          delete (boundRoot as any).__outlineTabEls;
+          delete (boundRoot as any)[onTabKey];
+          delete (boundRoot as any)[tabElsKey];
         }
       };
     }
@@ -2365,18 +3306,34 @@ function JspreadsheetPageInner() {
     }, 50);
     return () => {
       disposed = true;
-      outlineBridge.expandAll = () => {};
-      outlineBridge.collapseAll = () => {};
+      if (withBridge) {
+        outlineBridge.expandAll = () => {};
+        outlineBridge.collapseAll = () => {};
+      }
       clearOutlineTimers();
       stopWatching();
       window.clearInterval(timer);
       observer?.disconnect();
       detachOutlineDom(boundRoot);
       if (boundRoot) {
-        delete (boundRoot as any).__outlineOnTab;
-        delete (boundRoot as any).__outlineTabEls;
+        delete (boundRoot as any)[onTabKey];
+        delete (boundRoot as any)[tabElsKey];
       }
     };
+    };
+
+    const cleanups: Array<() => void> = [];
+    if (outlineSheet.groupCells.length) {
+      cleanups.push(
+        attachOutlineFold({
+          worksheetName: '透视源数据',
+          sheet: outlineSheet,
+          outlinePerf: isOutlinePerf,
+          withBridge: true,
+        }),
+      );
+    }
+    return () => cleanups.forEach((fn) => fn());
   }, [outlineSheet, sheetNonce, isOutlinePerf]);
 
   // 全表：表头列组折叠 add/remove(+/-) → data-fold，由 CSS 画 ▼/▶
@@ -2536,39 +3493,241 @@ function JspreadsheetPageInner() {
         }
         return [item, ...prev].slice(0, 200);
       });
+      return { fromText, toText };
     },
     [stringifyValue],
   );
 
-  const syncAmount = useCallback((worksheet: any, col: number, row: number) => {
-    if (col !== 5 && col !== 6) return;
-    const qty = Number(worksheet.getValueFromCoords?.(5, row) ?? 0);
-    const price = Number(worksheet.getValueFromCoords?.(6, row) ?? 0);
-    if (Number.isNaN(qty) || Number.isNaN(price)) return;
-    const amount = Number((qty * price).toFixed(2));
-    const prev = worksheet.getValueFromCoords?.(7, row);
-    if (Number(prev) === amount) return;
-    const ignore = (jspreadsheet as any).history;
-    if (ignore) ignore.ignore = true;
-    worksheet.setValueFromCoords?.(7, row, amount, true);
-    if (ignore) ignore.ignore = false;
-  }, []);
+  const markDirtyRow = useCallback(
+    (row: number, change: DirtyRowChange) => {
+      const dirty = dirtyRowsRef.current;
+      const prev = dirty.get(row);
+      if (prev) {
+        prev.changes.push(change);
+      } else {
+        dirty.set(row, { changes: [change] });
+      }
+    },
+    [],
+  );
+
+  const recordCellDirty = useCallback(
+    (
+      worksheet: any,
+      col: number,
+      row: number,
+      oldValue: unknown,
+      newValue: unknown,
+    ) => {
+      const fromText = stringifyValue(oldValue);
+      const toText = stringifyValue(newValue);
+      if (fromText === toText) return false;
+
+      const name = cellName(col, row);
+      if (!name) return false;
+
+      const payload = buildCellChangePayload(
+        worksheet,
+        col,
+        row,
+        oldValue,
+        newValue,
+        outlineColumns,
+      );
+      markDirtyRow(row, {
+        cell: name,
+        field: payload.field,
+        col,
+        row,
+        rowNumber: payload.rowNumber,
+        oldValue: payload.oldValue,
+        value: payload.newValue,
+        from: fromText,
+        to: toText,
+        raw: payload.raw,
+        display: payload.display,
+        time: new Date().toLocaleString(),
+      });
+      dirtyCellsRef.current.add(cellCoordKey(col, row));
+      return true;
+    },
+    [markDirtyRow, outlineColumns, stringifyValue],
+  );
+
+  const syncChannelFromOrderDate = useCallback(
+    (worksheet: any, col: number, row: number) => {
+      const columns =
+        (worksheet?.options?.columns as Array<{ title?: unknown }>) ||
+        outlineColumns;
+      const orderDateCol = resolveWorksheetColumnIndex(
+        worksheet,
+        columns,
+        'OrderDate',
+        OUTLINE_ORDER_DATE_COL,
+      );
+      if (col !== orderDateCol) return;
+
+      const channelCol = resolveWorksheetColumnIndex(
+        worksheet,
+        columns,
+        'Channel',
+        OUTLINE_CHANNEL_COL,
+      );
+      if (channelCol < 0 || channelCol >= columns.length) return;
+      if (String((columns[channelCol] as { type?: unknown })?.type ?? 'text') === 'calendar') return;
+
+      window.setTimeout(() => {
+        if (!worksheet?.setValueFromCoords) return;
+        const orderDate = worksheet.getValueFromCoords?.(orderDateCol, row);
+        const channelValue = deriveChannelFromOrderDate(orderDate);
+        if (!channelValue) return;
+
+        const oldChannel = worksheet.getValueFromCoords?.(channelCol, row);
+        if (stringifyValue(oldChannel) === stringifyValue(channelValue)) return;
+
+        outlineProgrammaticCellSync = true;
+        try {
+          runWithoutHistory(() => {
+            worksheet.setValueFromCoords(channelCol, row, channelValue, true);
+          });
+        } finally {
+          outlineProgrammaticCellSync = false;
+        }
+      }, 0);
+    },
+    [outlineColumns, stringifyValue],
+  );
+
+  const syncBaselineSnapshot = useCallback(() => {
+    const ws =
+      getWorksheetByName(spreadsheet, '透视源数据') ||
+      getActiveWorksheet(spreadsheet);
+    if (!ws) return;
+    baselineDataRef.current = cloneTableData(ws.getData?.(false));
+    dirtyRowsRef.current.clear();
+    dirtyCellsRef.current.clear();
+  }, [spreadsheet]);
+
+  const handleSave = useCallback(() => {
+    const ws =
+      getWorksheetByName(spreadsheet, '透视源数据') ||
+      getActiveWorksheet(spreadsheet);
+    if (!ws) {
+      message.warning('未找到「透视源数据」工作表');
+      return null;
+    }
+
+    const fullScan = outlineSheet.data.length <= SAVE_FULL_DIFF_ROW_LIMIT;
+    const updatedRows = collectUpdatedRows(
+      ws,
+      baselineDataRef.current,
+      outlineColumns,
+      dirtyCellsRef.current,
+      fullScan,
+    ).map((item) => {
+      const dimensions = resolveOutlineRowDimensions(
+        ws,
+        item.rowIndex,
+        outlineDimensionIndex,
+      );
+      return {
+        ...item,
+        dimension: dimensions.dimension,
+        dimensions,
+      };
+    });
+
+    const modifiedCellCount = updatedRows.reduce(
+      (sum, row) => sum + row.modifiedFields.length,
+      0,
+    );
+
+    const savePayload = {
+      worksheetName: ws.getWorksheetName?.() ?? '透视源数据',
+      updatedRowCount: updatedRows.length,
+      modifiedCellCount,
+      updatedRows,
+    };
+
+    console.group('[Jspreadsheet 扩展] 保存');
+    console.log('修改的行（维度 / 字段 / 坐标 / 值）:', savePayload.updatedRows);
+    console.log('保存载荷:', savePayload);
+    console.groupEnd();
+
+    if (updatedRows.length === 0) {
+      message.info('无行变更');
+    } else {
+      message.success(
+        `已保存：${updatedRows.length} 行、${modifiedCellCount} 个单元格有更新（详见控制台）`,
+      );
+    }
+    syncBaselineSnapshot();
+    return savePayload;
+  }, [message, outlineColumns, outlineDimensionIndex, outlineSheet.data.length, spreadsheet, syncBaselineSnapshot]);
+
+  const handleSetF82 = useCallback(() => {
+    const ws =
+      getWorksheetByName(spreadsheet, '透视源数据') ||
+      getActiveWorksheet(spreadsheet);
+    if (!ws) {
+      message.warning('表格尚未加载');
+      return;
+    }
+    const value = 8888;
+    ws.setValue?.('F82', value, true);
+    message.success(`已将 F82（Sales 第 82 行）设为 ${value}`);
+  }, [message, spreadsheet]);
+
+  const logTableRenderFormat = useCallback(() => {
+    const ws =
+      getWorksheetByName(spreadsheet, '透视源数据') ||
+      getActiveWorksheet(spreadsheet);
+    if (!ws) return;
+    logOutlineTableRenderFormat(ws, outlineColumns, outlineSheet.data.length);
+  }, [outlineColumns, outlineSheet.data.length, spreadsheet]);
 
   historyBridge.onChange = (worksheet, x, y, oldValue, newValue) => {
     const col = Number(x);
     const row = Number(y);
     const name = cellName(col, row);
     if (!name) return;
+
+    const changed = recordCellDirty(worksheet, col, row, oldValue, newValue);
+    if (!changed) return;
+
+    const payload = buildCellChangePayload(
+      worksheet,
+      col,
+      row,
+      oldValue,
+      newValue,
+      outlineColumns,
+    );
+
+    console.log('[Jspreadsheet 扩展] 单元格更新', payload);
     setHistoryCell(name);
     pushTrack(name, oldValue, newValue);
-    syncAmount(worksheet, col, row);
+    setEditFormats((prev) => [
+      captureCellFormat(worksheet, col, row, newValue),
+      ...prev,
+    ].slice(0, 30));
+
+    if (!outlineProgrammaticCellSync) {
+      syncChannelFromOrderDate(worksheet, col, row);
+    }
   };
 
-  historyBridge.onSelect = (_worksheet, px, py, ux, uy) => {
+  historyBridge.onSelect = (worksheet, px, py, ux, uy) => {
     const start = cellName(Number(px), Number(py));
     const end = cellName(Number(ux), Number(uy));
     if (!start) return;
     setHistoryCell(start === end ? start : `${start}:${end}`);
+    if (start === end && worksheet) {
+      setEditFormats((prev) => [
+        captureCellFormat(worksheet, Number(px), Number(py)),
+        ...prev,
+      ].slice(0, 30));
+    }
   };
 
   // 高级批注扩展写入的是对象数组；不要再压成字符串，否则红三角弹层为空
@@ -2598,7 +3757,7 @@ function JspreadsheetPageInner() {
       const file = e.target.files?.[0];
       const target = attachTarget.current;
       const ws =
-        getWorksheetByName(spreadsheet, '订单明细') ||
+        getWorksheetByName(spreadsheet, '透视源数据') ||
         getActiveWorksheet(spreadsheet);
       e.target.value = '';
       if (!file || !target || !ws) return;
@@ -2675,26 +3834,6 @@ function JspreadsheetPageInner() {
           instance.showColumn(Array.from({ length: total }, (_, i) => i));
         },
       });
-      items.push({
-        title: '展开行组（下钻）',
-        icon: 'unfold_more',
-        onclick: () => instance.openRowGroup(typeof y === 'number' ? y : undefined),
-      });
-      items.push({
-        title: '折叠行组（上钻）',
-        icon: 'unfold_less',
-        onclick: () => instance.closeRowGroup(typeof y === 'number' ? y : undefined),
-      });
-      items.push({
-        title: '展开列组',
-        icon: 'view_column',
-        onclick: () => instance.openColumnGroup(typeof x === 'number' ? x : undefined),
-      });
-      items.push({
-        title: '折叠列组',
-        icon: 'view_week',
-        onclick: () => instance.closeColumnGroup(typeof x === 'number' ? x : undefined),
-      });
 
       return items;
     },
@@ -2704,90 +3843,45 @@ function JspreadsheetPageInner() {
   const toolbar = useCallback((defaultToolbar: any) => {
     const ws = () =>
       getActiveWorksheet(spreadsheet) ||
-      getWorksheetByName(spreadsheet, '订单明细');
+      getWorksheetByName(spreadsheet, '透视源数据');
 
-    const isOutlineSheetActive = () => {
-      const sheet = getActiveWorksheet(spreadsheet);
-      const name = sheet?.options?.worksheetName || sheet?.getWorksheetName?.();
-      return name === '透视源数据';
+    const saveItem = {
+      type: 'label',
+      content: '保存',
+      tooltip: '保存：控制台输出每行维度、修改字段、坐标与值',
+      onclick: () => handleSave(),
+    };
+
+    const insertSaveAfterRedo = (items: any[]) => {
+      const redoIndex = items.findIndex(
+        (item) =>
+          item &&
+          item.type !== 'divisor' &&
+          String(item.content || '').toLowerCase() === 'redo',
+      );
+      if (redoIndex >= 0) {
+        items.splice(redoIndex + 1, 0, saveItem);
+      } else {
+        items.unshift(saveItem);
+      }
+      return items;
     };
 
     const extraItems = [
       { type: 'divisor' },
       {
-        content: 'expand_all',
-        tooltip: '透视源数据：全部展开（Category 行组）',
-        render: renderOutlineToolbarIcon('expand_all'),
-        onclick: () => {
-          if (!isOutlineSheetActive()) {
-            message.warning('请先切换到「透视源数据」工作表');
-            return;
-          }
-          if (!getWorksheetByName(spreadsheet, '透视源数据')) return;
-          message.loading({ content: '正在全部展开…', key: 'outline-fold-all', duration: 0 });
-          outlineBridge.expandAll(() => {
-            message.success({ content: '已全部展开', key: 'outline-fold-all' });
-          });
-        },
-      },
-      {
-        content: 'collapse_all',
-        tooltip: '透视源数据：全部折叠（Category 行组）',
-        render: renderOutlineToolbarIcon('collapse_all'),
-        onclick: () => {
-          if (!isOutlineSheetActive()) {
-            message.warning('请先切换到「透视源数据」工作表');
-            return;
-          }
-          if (!getWorksheetByName(spreadsheet, '透视源数据')) return;
-          message.loading({ content: '正在全部折叠…', key: 'outline-fold-all', duration: 0 });
-          outlineBridge.collapseAll(() => {
-            message.success({ content: '已全部折叠', key: 'outline-fold-all' });
-          });
-        },
-      },
-      { type: 'divisor' },
-      {
-        content: 'content_copy',
+        type: 'label',
+        content: '复制',
         tooltip: '批量复制选区',
         onclick: () => {
           ws()?.copy?.();
           message.success('已复制选区');
         },
       },
-      {
-        content: 'search',
-        tooltip: '快速搜索',
-        onclick: () => {
-          const sheet = ws();
-          sheet?.showSearch?.();
-          (search as any)?.(sheet);
-        },
-      },
       { type: 'divisor' },
       {
-        content: 'unfold_more',
-        tooltip: '下钻：展开行组',
-        onclick: () => ws()?.openRowGroup?.(),
-      },
-      {
-        content: 'unfold_less',
-        tooltip: '上钻：折叠行组',
-        onclick: () => ws()?.closeRowGroup?.(),
-      },
-      {
-        content: 'view_column',
-        tooltip: '展开多列分组',
-        onclick: () => ws()?.openColumnGroup?.(),
-      },
-      {
-        content: 'view_week',
-        tooltip: '折叠多列分组',
-        onclick: () => ws()?.closeColumnGroup?.(),
-      },
-      { type: 'divisor' },
-      {
-        content: 'visibility_off',
+        type: 'label',
+        content: '隐藏列',
         tooltip: '隐藏选中列',
         onclick: () => {
           const sheet = ws();
@@ -2800,7 +3894,8 @@ function JspreadsheetPageInner() {
         },
       },
       {
-        content: 'visibility',
+        type: 'label',
+        content: '显示列',
         tooltip: '显示全部隐藏列',
         onclick: () => {
           const sheet = ws();
@@ -2809,7 +3904,8 @@ function JspreadsheetPageInner() {
         },
       },
       {
-        content: 'width_wide',
+        type: 'label',
+        content: '自适应',
         tooltip: '自适应内容宽度',
         onclick: () => {
           ws()?.autoWidth?.();
@@ -2817,7 +3913,8 @@ function JspreadsheetPageInner() {
         },
       },
       {
-        content: 'download',
+        type: 'label',
+        content: '导出',
         tooltip: '导出 CSV',
         onclick: () => ws()?.download?.(),
       },
@@ -2825,15 +3922,41 @@ function JspreadsheetPageInner() {
 
     // 官方约定：回调收到 { items, responsive, ... }，应原地追加，保留撤销/重做等默认项样式
     if (defaultToolbar && Array.isArray(defaultToolbar.items)) {
+      defaultToolbar.items = removeDefaultToolbarSave(defaultToolbar.items);
+      localizeToolbarItems(defaultToolbar.items);
+      insertSaveAfterRedo(defaultToolbar.items);
       defaultToolbar.items.push(...extraItems);
+      moveFullscreenToEnd(defaultToolbar.items);
       return defaultToolbar;
     }
     if (Array.isArray(defaultToolbar)) {
-      defaultToolbar.push(...extraItems);
-      return defaultToolbar;
+      const items = removeDefaultToolbarSave(defaultToolbar);
+      localizeToolbarItems(items);
+      insertSaveAfterRedo(items);
+      items.push(...extraItems);
+      moveFullscreenToEnd(items);
+      return items;
     }
     return { items: extraItems, responsive: true };
-  }, [columns.length, message, spreadsheet]);
+  }, [columns.length, handleSave, message, spreadsheet]);
+
+  useEffect(() => {
+    dirtyRowsRef.current.clear();
+    dirtyCellsRef.current.clear();
+    baselineDataRef.current = [];
+  }, [sheetNonce, outlineSheet]);
+
+  useEffect(() => {
+    if (sheetBusy) return undefined;
+    const timer = window.setTimeout(() => syncBaselineSnapshot(), 150);
+    return () => window.clearTimeout(timer);
+  }, [sheetBusy, sheetNonce, outlineSheet, syncBaselineSnapshot]);
+
+  useEffect(() => {
+    if (sheetBusy) return undefined;
+    const timer = window.setTimeout(() => logTableRenderFormat(), 100);
+    return () => window.clearTimeout(timer);
+  }, [sheetBusy, sheetNonce, outlineColumns, outlineScale, logTableRenderFormat]);
 
   const focusCell = historyCell.split(':')[0];
   const cellHistory = useMemo(
@@ -2844,22 +3967,11 @@ function JspreadsheetPageInner() {
   return (
     <div className="jss-page">
       <p className="jss-page__hint">
-        「订单明细已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
-        下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 / 大数据虚拟滚动 /
-        列宽拖动 / 自适应列宽。「透视源数据」：Category / Region 折叠；属性值、状态(下拉)、下单日期、Sales/Profit 可编辑；
-        「透视分析」读「透视底表」。
+        Jspreadsheet · 扩展页（透视源数据完整副本，与「大数据演示」互不影响）。Category / Region
+        折叠；多行表头 + 英文字段；编辑或选中单元格时展示列数据格式；Attribute、Status、OrderDate、Sales/Profit 可编辑；1 万行及以上双向虚拟滚动。
       </p>
 
       <div className="jss-page__outline-tools">
-        <span className="jss-page__outline-tools-label">订单明细 · 数据量</span>
-        <Select
-          size="small"
-          style={{ width: 200 }}
-          value={orderScale}
-          options={ORDER_SCALE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-          onChange={(v) => handleOrderScaleChange(v as OrderScale)}
-          disabled={sheetBusy}
-        />
         <span className="jss-page__outline-tools-label">透视源数据 · 数据量</span>
         <Select
           size="small"
@@ -2867,14 +3979,25 @@ function JspreadsheetPageInner() {
           value={outlineScale}
           options={OUTLINE_SCALE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
           onChange={(v) => handleOutlineScaleChange(v as OutlineScale)}
+          disabled={sheetBusy}
         />
         {sheetLoadInfo ? (
           <span className="jss-page__outline-tools-meta">{sheetLoadInfo}</span>
         ) : (
           <span className="jss-page__outline-tools-meta">
-            订单明细 / 透视源数据均可压测虚拟滚动（10 万 / 100 万行）
+            独立副本：切换数据量不会影响大数据演示页
           </span>
         )}
+        <Button size="small" onClick={handleSetF82} disabled={sheetBusy}>
+          设置 F82
+        </Button>
+        <Button
+          size="small"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => setSidePanelOpen((open) => !open)}
+        >
+          {sidePanelOpen ? '收起侧栏' : '展开侧栏'}
+        </Button>
       </div>
 
       <input
@@ -2885,7 +4008,7 @@ function JspreadsheetPageInner() {
         onChange={handleAttachFile}
       />
 
-      <div className="jss-page__body">
+      <div className={`jss-page__body${sidePanelOpen ? '' : ' jss-page__body--side-collapsed'}`}>
         <div className={`jss-page__sheet${sheetBusy ? ' is-loading' : ''}`}>
           {sheetBusy ? (
             <div className="jss-page__sheet-loading">
@@ -2893,28 +4016,20 @@ function JspreadsheetPageInner() {
             </div>
           ) : null}
           <Spreadsheet
-            key={`jss-sheet-${sheetNonce}`}
+            key={`jss-lab-outline-${sheetNonce}`}
             ref={spreadsheet}
             toolbar={toolbar}
             bar={true}
             extensions={extensions}
-            plugins={{ cellHistory: cellHistoryPlugin }}
             tabs={true}
             tableOverflow={true}
             tableWidth="100%"
             tableHeight="560px"
-            onevent={(event: string, ...rest: any[]) => {
-              cellHistoryPlugin.onevent(event, ...rest);
-            }}
             onload={() => {
-              const orderPending = orderLoadPendingRef.current;
-              if (orderPending) {
-                finishOrderLoad(orderPending.token);
-                return;
-              }
               if (outlineLoadPendingRef.current || outlineTabLockRef.current) {
                 restoreActiveWorksheet();
               }
+              window.setTimeout(() => syncBaselineSnapshot(), 100);
             }}
             oncreateworksheet={handleCreateWorksheet}
             onbeforeopenworksheet={handleBeforeOpenWorksheet}
@@ -2936,46 +4051,20 @@ function JspreadsheetPageInner() {
             contextMenu={contextMenu}
           >
             <Worksheet
-              worksheetName="订单明细"
-              data={orderData}
-              columns={orderColumns as any}
-              nestedHeaders={nestedHeaders}
-              rows={isOrderPerf ? undefined : orderRows}
-              comments={isOrderPerf ? undefined : commentsData}
-              allowComments={!isOrderPerf}
-              search={!isOrderPerf}
-              filters={!isOrderPerf}
-              columnResize={true}
-              columnDrag={!isOrderPerf}
-              rowResize={!isOrderPerf}
-              fillHandle={!isOrderPerf}
-              editable={true}
-              tableOverflow={true}
-              tableWidth="100%"
-              tableHeight="560px"
-              // 纵向虚拟滚动保性能；横向关掉，降低 dropdown 列错位/错显概率
-              virtualizationX={false}
-              virtualizationY={true}
-              pagination={false}
-            />
-            <Worksheet
-              worksheetName="透视分析"
-              pivotTables={pivotTables as any}
-              minDimensions={[16, 28]}
-            />
-            <Worksheet
               worksheetName="透视源数据"
-              data={outlineSheet.data}
+              data={outlineTableData}
               columns={outlineColumns}
-              rows={outlineSheet.rows}
+              nestedHeaders={outlineNestedHeaders}
+              rows={outlineRenderRows}
               cells={outlineReadonlyCells}
-              filters={!isOutlinePerf}
+              filters={false}
               columnResize={true}
-              rowResize={!isOutlinePerf}
+              rowResize={!isOutlineLarge}
+              defaultRowHeight={DEFAULT_OUTLINE_LAYOUT.defaultRowHeight}
               tableOverflow={true}
               tableWidth="100%"
               tableHeight="560px"
-              virtualizationX={false}
+              virtualizationX={isOutlineLarge}
               virtualizationY={true}
               pagination={false}
               oneditionstart={(_ws: any, _cell: any, x: any) => {
@@ -2984,19 +4073,42 @@ function JspreadsheetPageInner() {
                 return true;
               }}
             />
-            <Worksheet
-              worksheetName="透视底表"
-              data={pivotSourceData}
-              columns={pivotSourceColumns}
-              columnResize={true}
-              tableOverflow={true}
-              tableWidth="100%"
-              tableHeight="560px"
-            />
           </Spreadsheet>
         </div>
 
         <aside className="jss-page__side">
+          <section className="jss-panel" style={{ flex: 1 }}>
+            <div className="jss-panel__title">编辑数据格式</div>
+            {editFormats.length === 0 ? (
+              <div className="jss-panel__empty">
+                选中或编辑单元格后，展示字段名、坐标 (col/row)、type/mask/format 与 raw/display 值；每次更新也会打印到控制台。
+              </div>
+            ) : (
+              <ul className="jss-panel__list">
+                {editFormats.slice(0, 20).map((item, idx) => (
+                  <li key={`${item.cell}-${item.time}-${idx}`} className="jss-panel__item">
+                    <div>
+                      <strong>{item.cell}</strong>
+                      {item.title ? ` · ${item.title}` : ''}
+                      <span className="jss-panel__meta">
+                        {' '}
+                        · col={item.col} row={item.row}
+                      </span>
+                      <span className="jss-panel__meta"> · {item.time}</span>
+                    </div>
+                    <div className="jss-panel__meta">
+                      type: {item.type || '—'}
+                      {item.mask ? ` · mask: ${item.mask}` : ''}
+                      {item.format ? ` · format: ${item.format}` : ''}
+                    </div>
+                    <div>raw: {String(item.raw ?? '∅')}</div>
+                    <div>display: {String(item.display ?? '∅')}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           <section className="jss-panel" style={{ flex: 1.2 }}>
             <div className="jss-panel__title">数据追踪（最近变更）</div>
             {tracks.length === 0 ? (

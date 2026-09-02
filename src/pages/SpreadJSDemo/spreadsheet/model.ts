@@ -1,3 +1,47 @@
+import {
+  COLUMNS,
+  PRODUCT_ATTRIBUTE_COLUMN,
+  PRODUCT_HIERARCHY_COLUMN,
+  REGION_HIERARCHY_COLUMN,
+} from './business-column-schema';
+
+export {
+  BUSINESS_COLUMN_DATA,
+  COLUMNS,
+  COLUMN_GROUPS,
+  COLUMN_HEADER_CELLS,
+  COLUMN_HEADER_GROUPS,
+  COLUMN_HEADER_ROW_COUNT,
+  COLUMN_HEADER_SECTIONS,
+  HIERARCHY_COLUMN_COUNT,
+  AVG_ORDER_COLUMN,
+  COMPLETION_COLUMN,
+  DECIMAL_COLUMN,
+  getBusinessColumnDimension,
+  getBusinessColumnIndex,
+  ORDERS_COLUMN,
+  PRODUCT_ATTRIBUTE_COLUMN,
+  PRODUCT_HIERARCHY_COLUMN,
+  REGION_HIERARCHY_COLUMN,
+  REVENUE_COLUMN,
+  SERVICE_REVENUE_COLUMN,
+  STATUS_COLUMN,
+  STRESS_TEXT_SEARCH_COLUMNS,
+  UPDATED_AT_COLUMN,
+  VERIFIED_COLUMN,
+} from './business-column-schema';
+export type {
+  BusinessColumnGroup,
+  BusinessColumnDimension,
+  BusinessColumnLeaf,
+  BusinessColumnNode,
+  ColumnDataType,
+  ColumnDefinition,
+  ColumnEditor,
+  ColumnFormat,
+  ColumnHeaderCell,
+} from './business-column-schema';
+
 export type Status = '已核验' | '待复核' | '异常';
 export type PanelName =
   | 'comment'
@@ -23,6 +67,7 @@ export type ToastState = {
 };
 
 export type BusinessNode = {
+  /** 后台记录 ID；汇总节点和明细节点都必须全局唯一。 */
   id: string;
   name: string;
   hierarchyRole: HierarchyRole;
@@ -40,6 +85,8 @@ export type BusinessNode = {
   updatedAt: Date;
   adjustmentFactor: number;
   children?: BusinessNode[];
+  regionSummaries?: BusinessNode[];
+  detailIds?: string[];
 };
 
 export type CellAttachment = {
@@ -56,16 +103,25 @@ export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
 export type HierarchyRole = 'category' | 'subcategory' | 'region' | 'detail';
+export type BusinessRowDimension = {
+  category: string;
+  subcategory?: string;
+  region?: string;
+  detail?: string;
+};
 export type HierarchyField =
   | 'productHierarchy'
   | 'productAttribute'
   | 'regionHierarchy';
 export type BusinessField = Exclude<
   keyof BusinessNode,
-  'id' | 'children' | 'hierarchyRole'
+  'id' | 'children' | 'regionSummaries' | 'detailIds' | 'hierarchyRole'
 >;
 export type ColumnField = BusinessField | HierarchyField;
 export type ViewRow = BusinessNode & {
+  /** 从 BUSINESS_DATA 的 children 路径派生，不使用易变的 Worksheet 行号。 */
+  rowDimension: BusinessRowDimension;
+  sourceNodes: readonly BusinessNode[];
   level: number;
   hasChildren?: boolean;
   productId: string;
@@ -79,6 +135,9 @@ export type ViewRow = BusinessNode & {
   productRowSpan: number;
   regionId: string;
   regionRootId: string;
+  /** 后端返回的区域维度 ID；与仅用于表格投影的 regionRootId 分离。 */
+  regionBusinessId: string;
+  regionRootLabel: string;
   regionLabel: string;
   regionDepth: 0 | 1;
   regionIsGroup: boolean;
@@ -93,6 +152,12 @@ export type OutlineSnapshot = {
   regionExpanded: number;
   regionTotal: number;
   rowCount: number;
+};
+
+export type CellEditability = {
+  editable: boolean;
+  reason: string;
+  sourceNode: BusinessNode | null;
 };
 
 type StressAggregationRange = {
@@ -135,12 +200,6 @@ export type HistoryItem = {
   createdAt: number;
 };
 
-export type ColumnDefinition = {
-  field: ColumnField;
-  label: string;
-  width: number;
-};
-
 export const AGGREGATE_MODES = [
   'SUM',
   'AVG',
@@ -150,68 +209,12 @@ export const AGGREGATE_MODES = [
   'CUSTOM',
 ] as const satisfies readonly AggregateMode[];
 
-export const COLUMNS: ColumnDefinition[] = [
-  { field: 'productHierarchy', label: '产品层级', width: 178 },
-  { field: 'productAttribute', label: '产品属性', width: 144 },
-  { field: 'regionHierarchy', label: '区域层级', width: 168 },
-  { field: 'revenue', label: '净收入', width: 112 },
-  { field: 'productRevenue', label: '商品收入', width: 108 },
-  { field: 'serviceRevenue', label: '服务收入', width: 108 },
-  { field: 'orders', label: '订单数', width: 92 },
-  { field: 'onlineOrders', label: '线上订单', width: 92 },
-  { field: 'offlineOrders', label: '线下订单', width: 92 },
-  { field: 'avgOrder', label: '客单价', width: 98 },
-  { field: 'completion', label: '目标达成', width: 96 },
-  { field: 'owner', label: '负责人', width: 84 },
-  { field: 'status', label: '核验状态', width: 96 },
-  { field: 'verified', label: '已核验', width: 82 },
-  { field: 'updatedAt', label: '更新日期', width: 104 },
-  { field: 'adjustmentFactor', label: '调整系数', width: 96 },
-];
-
-export const COLUMN_GROUPS = [
-  { summaryCol: 3, detailStart: 4, detailCount: 7 },
-  { summaryCol: 3, detailStart: 4, detailCount: 2 },
-  { summaryCol: 6, detailStart: 7, detailCount: 3 },
-  { summaryCol: 11, detailStart: 12, detailCount: 4 },
-  { summaryCol: 11, detailStart: 12, detailCount: 2 },
-] as const;
-
-export const COLUMN_HEADER_SECTIONS = [
-  { label: '业务维度', startCol: 0, colCount: 3 },
-  { label: '核心经营指标', startCol: 3, colCount: 8 },
-  { label: '业务治理', startCol: 11, colCount: 5 },
-] as const;
-
-// 业务维度列（产品树/产品属性/区域树）没有真实的二级表头细分，
-// 因此不在此处列出——渲染时会让 COLUMN_HEADER_SECTIONS 的对应
-// 表头纵向合并两行，避免出现内部代码名（rowTree / extensionRows）
-// 这类开发调试信息展示给业务用户。
-export const COLUMN_HEADER_GROUPS = [
-  { label: '收入指标', startCol: 3, colCount: 3 },
-  { label: '订单指标', startCol: 6, colCount: 4 },
-  { label: '目标管理', startCol: 10, colCount: 1 },
-  { label: '责任与核验', startCol: 11, colCount: 3 },
-  { label: '记录信息', startCol: 14, colCount: 2 },
-] as const;
-
-export const PRODUCT_HIERARCHY_COLUMN = 0;
-export const PRODUCT_ATTRIBUTE_COLUMN = 1;
-export const REGION_HIERARCHY_COLUMN = 2;
-export const HIERARCHY_COLUMN_COUNT = 3;
-export const REVENUE_COLUMN = 3;
-export const SERVICE_REVENUE_COLUMN = 5;
-export const ORDERS_COLUMN = 6;
-export const AVG_ORDER_COLUMN = 9;
-export const COMPLETION_COLUMN = 10;
-export const STATUS_COLUMN = 12;
-export const VERIFIED_COLUMN = 13;
-export const UPDATED_AT_COLUMN = 14;
-export const DECIMAL_COLUMN = 15;
 export const STRESS_ROW_COUNT = 100_000;
 export const STRESS_PAGE_SIZE = 400;
 export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
-export const STRESS_TEXT_SEARCH_COLUMNS = new Set([0, 1, 2, 11, 12, 13, 14]);
+// 模拟一次“分批拉取”的后端网络往返耗时：滚动到已加载数据底部时，
+// 每批新数据都会先经历这段延迟，再返回给前端写入表格。
+export const STRESS_PAGE_FETCH_DELAY_MS = 220;
 
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
@@ -284,6 +287,255 @@ function makeNode(
   };
 }
 
+type BackendAggregateMetrics = Pick<
+  BusinessNode,
+  | 'revenue'
+  | 'productRevenue'
+  | 'serviceRevenue'
+  | 'orders'
+  | 'onlineOrders'
+  | 'offlineOrders'
+  | 'avgOrder'
+  | 'completion'
+  | 'adjustmentFactor'
+>;
+
+// 模拟后端直接返回的产品、子类和区域汇总指标。这里只做 ID 映射，
+// 不根据 children 在浏览器中执行求和、平均值或状态归并。
+const BACKEND_AGGREGATE_METRICS: Record<string, BackendAggregateMetrics> = {
+  furniture: {
+    revenue: 15_099_200,
+    productRevenue: 11_777_376,
+    serviceRevenue: 3_321_824,
+    orders: 2_736,
+    onlineOrders: 1_724,
+    offlineOrders: 1_012,
+    avgOrder: 5_519,
+    completion: 0.927875,
+    adjustmentFactor: 0.88,
+  },
+  'furniture-bookcases': {
+    revenue: 6_018_000,
+    productRevenue: 4_694_040,
+    serviceRevenue: 1_323_960,
+    orders: 1_090,
+    onlineOrders: 687,
+    offlineOrders: 403,
+    avgOrder: 5_521,
+    completion: 0.944,
+    adjustmentFactor: 0.85,
+  },
+  'bookcases-east': {
+    revenue: 3_724_800,
+    productRevenue: 2_905_344,
+    serviceRevenue: 819_456,
+    orders: 646,
+    onlineOrders: 407,
+    offlineOrders: 239,
+    avgOrder: 5_766,
+    completion: 0.9675,
+    adjustmentFactor: 1.06,
+  },
+  'bookcases-central': {
+    revenue: 2_293_200,
+    productRevenue: 1_788_696,
+    serviceRevenue: 504_504,
+    orders: 444,
+    onlineOrders: 280,
+    offlineOrders: 164,
+    avgOrder: 5_165,
+    completion: 0.9205,
+    adjustmentFactor: 0.9,
+  },
+  'furniture-chairs': {
+    revenue: 9_081_200,
+    productRevenue: 7_083_336,
+    serviceRevenue: 1_997_864,
+    orders: 1_646,
+    onlineOrders: 1_037,
+    offlineOrders: 609,
+    avgOrder: 5_517,
+    completion: 0.91175,
+    adjustmentFactor: 0.83,
+  },
+  'chairs-east': {
+    revenue: 4_267_000,
+    productRevenue: 3_328_260,
+    serviceRevenue: 938_740,
+    orders: 728,
+    onlineOrders: 459,
+    offlineOrders: 269,
+    avgOrder: 5_861,
+    completion: 0.919,
+    adjustmentFactor: 0.95,
+  },
+  'chairs-south': {
+    revenue: 4_814_200,
+    productRevenue: 3_755_076,
+    serviceRevenue: 1_059_124,
+    orders: 918,
+    onlineOrders: 578,
+    offlineOrders: 340,
+    avgOrder: 5_244,
+    completion: 0.9045,
+    adjustmentFactor: 0.99,
+  },
+  'office-supplies': {
+    revenue: 11_399_200,
+    productRevenue: 8_891_376,
+    serviceRevenue: 2_507_824,
+    orders: 2_906,
+    onlineOrders: 1_831,
+    offlineOrders: 1_075,
+    avgOrder: 3_923,
+    completion: 0.916625,
+    adjustmentFactor: 1.03,
+  },
+  'office-paper': {
+    revenue: 5_218_000,
+    productRevenue: 4_070_040,
+    serviceRevenue: 1_147_960,
+    orders: 1_450,
+    onlineOrders: 914,
+    offlineOrders: 536,
+    avgOrder: 3_599,
+    completion: 0.9315,
+    adjustmentFactor: 1.04,
+  },
+  'paper-east': {
+    revenue: 2_624_800,
+    productRevenue: 2_047_344,
+    serviceRevenue: 577_456,
+    orders: 786,
+    onlineOrders: 495,
+    offlineOrders: 291,
+    avgOrder: 3_339,
+    completion: 0.9575,
+    adjustmentFactor: 0.91,
+  },
+  'paper-north': {
+    revenue: 2_593_200,
+    productRevenue: 2_022_696,
+    serviceRevenue: 570_504,
+    orders: 664,
+    onlineOrders: 418,
+    offlineOrders: 246,
+    avgOrder: 3_905,
+    completion: 0.9055,
+    adjustmentFactor: 0.93,
+  },
+  'office-storage': {
+    revenue: 6_181_200,
+    productRevenue: 4_821_336,
+    serviceRevenue: 1_359_864,
+    orders: 1_456,
+    onlineOrders: 917,
+    offlineOrders: 539,
+    avgOrder: 4_245,
+    completion: 0.90175,
+    adjustmentFactor: 1.1,
+  },
+  'storage-central': {
+    revenue: 2_767_000,
+    productRevenue: 2_158_260,
+    serviceRevenue: 608_740,
+    orders: 658,
+    onlineOrders: 415,
+    offlineOrders: 243,
+    avgOrder: 4_205,
+    completion: 0.909,
+    adjustmentFactor: 0.87,
+  },
+  'storage-south': {
+    revenue: 3_414_200,
+    productRevenue: 2_663_076,
+    serviceRevenue: 751_124,
+    orders: 798,
+    onlineOrders: 503,
+    offlineOrders: 295,
+    avgOrder: 4_278,
+    completion: 0.8945,
+    adjustmentFactor: 1.03,
+  },
+  technology: {
+    revenue: 34_544_000,
+    productRevenue: 26_944_320,
+    serviceRevenue: 7_599_680,
+    orders: 6_990,
+    onlineOrders: 4_404,
+    offlineOrders: 2_586,
+    avgOrder: 4_942,
+    completion: 0.991,
+    adjustmentFactor: 0.95,
+  },
+  'technology-mobile': {
+    revenue: 16_560_000,
+    productRevenue: 12_916_800,
+    serviceRevenue: 3_643_200,
+    orders: 3_620,
+    onlineOrders: 2_281,
+    offlineOrders: 1_339,
+    avgOrder: 4_575,
+    completion: 0.99675,
+    adjustmentFactor: 1.04,
+  },
+  'mobile-east': {
+    revenue: 8_786_000,
+    productRevenue: 6_853_080,
+    serviceRevenue: 1_932_920,
+    orders: 1_880,
+    onlineOrders: 1_184,
+    offlineOrders: 696,
+    avgOrder: 4_673,
+    completion: 1.0115,
+    adjustmentFactor: 1,
+  },
+  'mobile-north': {
+    revenue: 7_774_000,
+    productRevenue: 6_063_720,
+    serviceRevenue: 1_710_280,
+    orders: 1_740,
+    onlineOrders: 1_096,
+    offlineOrders: 644,
+    avgOrder: 4_468,
+    completion: 0.982,
+    adjustmentFactor: 0.84,
+  },
+  'technology-equipment': {
+    revenue: 17_984_000,
+    productRevenue: 14_027_520,
+    serviceRevenue: 3_956_480,
+    orders: 3_370,
+    onlineOrders: 2_123,
+    offlineOrders: 1_247,
+    avgOrder: 5_336,
+    completion: 0.98525,
+    adjustmentFactor: 1.02,
+  },
+  'equipment-south': {
+    revenue: 11_214_000,
+    productRevenue: 8_746_920,
+    serviceRevenue: 2_467_080,
+    orders: 1_960,
+    onlineOrders: 1_235,
+    offlineOrders: 725,
+    avgOrder: 5_721,
+    completion: 1.023,
+    adjustmentFactor: 0.87,
+  },
+  'equipment-central': {
+    revenue: 6_770_000,
+    productRevenue: 5_280_600,
+    serviceRevenue: 1_489_400,
+    orders: 1_410,
+    onlineOrders: 888,
+    offlineOrders: 522,
+    avgOrder: 4_801,
+    completion: 0.9475,
+    adjustmentFactor: 0.95,
+  },
+};
+
 function makeGroup(
   id: string,
   name: string,
@@ -291,24 +543,22 @@ function makeGroup(
   children: BusinessNode[],
   owner: string,
   status: Status = '已核验',
+  regionSummaries?: BusinessNode[],
 ): BusinessNode {
-  const revenue = children.reduce((sum, child) => sum + child.revenue, 0);
-  const orders = children.reduce((sum, child) => sum + child.orders, 0);
-  const completion =
-    children.reduce((sum, child) => sum + child.completion, 0) /
-    Math.max(children.length, 1);
-  return makeNode(
+  const metrics = BACKEND_AGGREGATE_METRICS[id];
+  if (!metrics) throw new Error(`缺少后端汇总数据：${id}`);
+  return {
     id,
     name,
     hierarchyRole,
-    revenue,
-    orders,
-    completion,
+    ...metrics,
     owner,
     status,
-    '2026-08-21',
+    verified: status === '已核验',
+    updatedAt: new Date('2026-08-21T00:00:00'),
     children,
-  );
+    regionSummaries,
+  };
 }
 
 function makeRegion(
@@ -723,13 +973,102 @@ const technologyEquipment = makeGroup(
   '待复核',
 );
 
-export const BUSINESS_DATA = [
+type BackendRegionSummaryInput = Omit<
+  BusinessNode,
+  'updatedAt' | 'children' | 'regionSummaries'
+> & {
+  updatedAt: string;
+  detailIds: string[];
+};
+
+function backendRegionSummary(
+  summary: BackendRegionSummaryInput,
+): BusinessNode {
+  return {
+    ...summary,
+    updatedAt: new Date(`${summary.updatedAt}T00:00:00`),
+  };
+}
+
+/**
+ * 模拟后台返回的完整树形业务数据。
+ *
+ * children 表达实际业务层级；每一级节点都包含后台给出的完整指标，
+ * 因此 category、subcategory、region 汇总和 detail 明细都能独立编辑。
+ * category 的 regionSummaries 是跨子类区域汇总，不由前端重新计算。
+ */
+export const BUSINESS_DATA: BusinessNode[] = [
   makeGroup(
     'furniture',
     '家具',
     'category',
     [furnitureBookcases, furnitureChairs],
     '林嘉',
+    '已核验',
+    [
+      backendRegionSummary({
+        id: 'furniture-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 7_991_800,
+        productRevenue: 6_233_604,
+        serviceRevenue: 1_758_196,
+        orders: 1_374,
+        onlineOrders: 866,
+        offlineOrders: 508,
+        avgOrder: 5_816,
+        completion: 0.9437314497359793,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: [
+          'bookcases-shanghai',
+          'bookcases-jiangsu',
+          'chairs-zhejiang',
+          'chairs-anhui',
+        ],
+      }),
+      backendRegionSummary({
+        id: 'furniture-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 2_293_200,
+        productRevenue: 1_788_696,
+        serviceRevenue: 504_504,
+        orders: 444,
+        onlineOrders: 280,
+        offlineOrders: 164,
+        avgOrder: 5_165,
+        completion: 0.9231251526251527,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 1,
+        detailIds: ['bookcases-hubei', 'bookcases-henan'],
+      }),
+      backendRegionSummary({
+        id: 'furniture-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 4_814_200,
+        productRevenue: 3_755_076,
+        serviceRevenue: 1_059_124,
+        orders: 918,
+        onlineOrders: 578,
+        offlineOrders: 340,
+        avgOrder: 5_244,
+        completion: 0.9130844169332392,
+        owner: '林嘉',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: ['chairs-guangdong', 'chairs-fujian'],
+      }),
+    ],
   ),
   makeGroup(
     'office-supplies',
@@ -738,6 +1077,84 @@ export const BUSINESS_DATA = [
     [officePaper, officeStorage],
     '罗蔚',
     '待复核',
+    [
+      backendRegionSummary({
+        id: 'office-supplies-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 2_624_800,
+        productRevenue: 2_047_344,
+        serviceRevenue: 577_456,
+        orders: 786,
+        onlineOrders: 495,
+        offlineOrders: 291,
+        avgOrder: 3_339,
+        completion: 0.9594224321853093,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.85,
+        detailIds: ['paper-shanghai', 'paper-nanjing'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-north',
+        name: '华北',
+        hierarchyRole: 'region',
+        revenue: 2_593_200,
+        productRevenue: 2_022_696,
+        serviceRevenue: 570_504,
+        orders: 664,
+        onlineOrders: 418,
+        offlineOrders: 246,
+        avgOrder: 3_905,
+        completion: 0.9104629801018047,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.86,
+        detailIds: ['paper-beijing', 'paper-tianjin'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 2_767_000,
+        productRevenue: 2_158_260,
+        serviceRevenue: 608_740,
+        orders: 658,
+        onlineOrders: 415,
+        offlineOrders: 243,
+        avgOrder: 4_205,
+        completion: 0.9111684134441633,
+        owner: '罗蔚',
+        status: '已核验',
+        verified: true,
+        updatedAt: '2026-08-20',
+        adjustmentFactor: 0.83,
+        detailIds: ['storage-wuhan', 'storage-changsha'],
+      }),
+      backendRegionSummary({
+        id: 'office-supplies-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 3_414_200,
+        productRevenue: 2_663_076,
+        serviceRevenue: 751_124,
+        orders: 798,
+        onlineOrders: 502,
+        offlineOrders: 296,
+        avgOrder: 4_278,
+        completion: 0.9010980610391892,
+        owner: '罗蔚',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.92,
+        detailIds: ['storage-shenzhen', 'storage-xiamen'],
+      }),
+    ],
   ),
   makeGroup(
     'technology',
@@ -746,8 +1163,182 @@ export const BUSINESS_DATA = [
     [technologyMobile, technologyEquipment],
     '程澈',
     '待复核',
+    [
+      backendRegionSummary({
+        id: 'technology-summary-east',
+        name: '华东',
+        hierarchyRole: 'region',
+        revenue: 8_786_000,
+        productRevenue: 6_853_080,
+        serviceRevenue: 1_932_920,
+        orders: 1_880,
+        onlineOrders: 1_184,
+        offlineOrders: 696,
+        avgOrder: 4_673,
+        completion: 1.0141156385158205,
+        owner: '程澈',
+        status: '已核验',
+        verified: true,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.9,
+        detailIds: ['mobile-shanghai', 'mobile-zhejiang'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-north',
+        name: '华北',
+        hierarchyRole: 'region',
+        revenue: 7_774_000,
+        productRevenue: 6_063_720,
+        serviceRevenue: 1_710_280,
+        orders: 1_740,
+        onlineOrders: 1_097,
+        offlineOrders: 643,
+        avgOrder: 4_468,
+        completion: 0.9934751736557756,
+        owner: '程澈',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.82,
+        detailIds: ['mobile-beijing', 'mobile-tianjin'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-south',
+        name: '华南',
+        hierarchyRole: 'region',
+        revenue: 11_214_000,
+        productRevenue: 8_746_920,
+        serviceRevenue: 2_467_080,
+        orders: 1_960,
+        onlineOrders: 1_235,
+        offlineOrders: 725,
+        avgOrder: 5_721,
+        completion: 1.0265118601747816,
+        owner: '程澈',
+        status: '待复核',
+        verified: false,
+        updatedAt: '2026-08-21',
+        adjustmentFactor: 0.99,
+        detailIds: ['equipment-shenzhen', 'equipment-guangzhou'],
+      }),
+      backendRegionSummary({
+        id: 'technology-summary-central',
+        name: '华中',
+        hierarchyRole: 'region',
+        revenue: 6_770_000,
+        productRevenue: 5_280_600,
+        serviceRevenue: 1_489_400,
+        orders: 1_410,
+        onlineOrders: 888,
+        offlineOrders: 522,
+        avgOrder: 4_801,
+        completion: 0.9501586410635156,
+        owner: '程澈',
+        status: '异常',
+        verified: false,
+        updatedAt: '2026-08-20',
+        adjustmentFactor: 1.03,
+        detailIds: ['equipment-wuhan', 'equipment-zhengzhou'],
+      }),
+    ],
   ),
 ];
+
+/**
+ * 在接入真实接口时尽早暴露列字段与业务数据不匹配的问题。
+ * recordId 必须唯一，所有非投影列都必须能在每个业务节点上读取。
+ */
+function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
+  const recordIds = new Set<string>();
+  const visit = (node: BusinessNode) => {
+    if (recordIds.has(node.id))
+      throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
+    recordIds.add(node.id);
+    COLUMNS.forEach((column) => {
+      if (isHierarchyField(column.field)) return;
+      if (!(column.field in node))
+        throw new Error(
+          `BUSINESS_DATA 记录 ${node.id} 缺少列字段：${column.field}`,
+        );
+      const value = node[column.field];
+      const typeMatches =
+        (column.dataType === 'date' && value instanceof Date) ||
+        (column.dataType !== 'date' && typeof value === column.dataType);
+      if (!typeMatches)
+        throw new Error(
+          `BUSINESS_DATA 记录 ${node.id} 的 ${column.field} 应为 ${column.dataType}`,
+        );
+    });
+    node.children?.forEach(visit);
+    node.regionSummaries?.forEach(visit);
+  };
+  nodes.forEach(visit);
+}
+
+assertBusinessDataMatchesColumns(BUSINESS_DATA);
+
+export const BUSINESS_ROW_DIMENSION_KEYS = [
+  'category',
+  'subcategory',
+  'region',
+  'detail',
+] as const satisfies readonly (keyof BusinessRowDimension)[];
+
+export function businessRowDimensionKey(dimension: BusinessRowDimension) {
+  return JSON.stringify(
+    BUSINESS_ROW_DIMENSION_KEYS.map((key) => dimension[key] ?? null),
+  );
+}
+
+const BUSINESS_ROW_DIMENSION_BY_ID = new Map<string, BusinessRowDimension>();
+const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, BusinessNode>();
+
+function indexBusinessRowDimensions(
+  nodes: readonly BusinessNode[],
+  parent?: BusinessRowDimension,
+) {
+  nodes.forEach((node) => {
+    if (!parent && node.hierarchyRole !== 'category')
+      throw new Error(`BUSINESS_DATA 根节点必须是 category：${node.id}`);
+    const dimension: BusinessRowDimension =
+      node.hierarchyRole === 'category'
+        ? { category: node.name }
+        : {
+            ...(parent as BusinessRowDimension),
+            [node.hierarchyRole]: node.name,
+          };
+    const key = businessRowDimensionKey(dimension);
+    const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
+    if (duplicate)
+      throw new Error(
+        `BUSINESS_DATA 行维度不唯一：${duplicate.id} 与 ${node.id}`,
+      );
+    BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
+    BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
+    if (node.children?.length)
+      indexBusinessRowDimensions(node.children, dimension);
+    if (node.regionSummaries?.length)
+      indexBusinessRowDimensions(node.regionSummaries, dimension);
+  });
+}
+
+indexBusinessRowDimensions(BUSINESS_DATA);
+
+/** 根据后台记录 ID 得到完整行维度；返回副本，避免调用方修改索引。 */
+export function getBusinessRowDimension(recordId: string) {
+  const dimension = BUSINESS_ROW_DIMENSION_BY_ID.get(recordId);
+  return dimension ? { ...dimension } : null;
+}
+
+/** 后台给出行维度时，可以直接反查 BUSINESS_DATA 中的唯一记录。 */
+export function findBusinessNodeByRowDimension(
+  dimension: BusinessRowDimension,
+) {
+  return (
+    BUSINESS_NODE_BY_ROW_DIMENSION.get(businessRowDimensionKey(dimension)) ??
+    null
+  );
+}
 
 export const INITIAL_PRODUCT_EXPANDED = ['furniture'] as const;
 
@@ -763,6 +1354,24 @@ const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
   'technology-equipment': '商用硬件',
 };
 
+const REGION_KEYS: Readonly<Record<string, string>> = {
+  华东: 'east',
+  华中: 'central',
+  华南: 'south',
+  华北: 'north',
+};
+
+function normalizedTreeKey(label: string) {
+  return (
+    REGION_KEYS[label] ??
+    label
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^\p{Letter}\p{Number}-]/gu, '')
+  );
+}
+
 type VisibleProductNode = {
   node: BusinessNode;
   id: string;
@@ -777,6 +1386,8 @@ type VisibleProductNode = {
 type RegionProjectionNode = {
   id: string;
   rootId: string;
+  businessId: string;
+  rootLabel: string;
   label: string;
   depth: 0 | 1;
   isGroup: boolean;
@@ -790,7 +1401,10 @@ export function findBusinessNode(
 ): BusinessNode | undefined {
   for (const node of nodes) {
     if (node.id === nodeId) return node;
-    const child = findBusinessNode(node.children ?? [], nodeId);
+    const child = findBusinessNode(
+      [...(node.children ?? []), ...(node.regionSummaries ?? [])],
+      nodeId,
+    );
     if (child) return child;
   }
   return undefined;
@@ -864,6 +1478,7 @@ function getVisibleProducts(
 }
 
 function productRegionSources(product: BusinessNode) {
+  if (product.regionSummaries?.length) return product.regionSummaries;
   const productNodes =
     product.hierarchyRole === 'category'
       ? (product.children ?? []).filter(
@@ -875,54 +1490,24 @@ function productRegionSources(product: BusinessNode) {
   );
 }
 
-const REGION_KEYS: Readonly<Record<string, string>> = {
-  华东: 'east',
-  华中: 'central',
-  华南: 'south',
-  华北: 'north',
-};
-
-function normalizedTreeKey(label: string) {
-  return (
-    REGION_KEYS[label] ??
-    label
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^\p{Letter}\p{Number}-]/gu, '')
-  );
-}
-
 function getRegionRoots(product: BusinessNode) {
-  const groupedRegions = new Map<string, BusinessNode[]>();
-  productRegionSources(product).forEach((region) => {
-    const current = groupedRegions.get(region.name) ?? [];
-    current.push(region);
-    groupedRegions.set(region.name, current);
-  });
-
-  return [...groupedRegions.entries()].map(([label, regions]) => {
-    const groupedDetails = new Map<string, BusinessNode[]>();
-    regions.forEach((region) => {
-      const details = region.children?.length ? region.children : [region];
-      details.forEach((detail) => {
-        const current = groupedDetails.get(detail.name) ?? [];
-        current.push(detail);
-        groupedDetails.set(detail.name, current);
-      });
-    });
-    const rootId = `region:${normalizedTreeKey(label)}`;
+  return productRegionSources(product).map((region) => {
+    const rootId = `region:${normalizedTreeKey(region.name)}`;
+    const details = region.detailIds?.length
+      ? region.detailIds
+          .map((detailId) => findBusinessNode(BUSINESS_DATA, detailId))
+          .filter((detail): detail is BusinessNode => Boolean(detail))
+      : region.children ?? [];
     return {
       id: rootId,
-      label,
-      sourceNodes: [...groupedDetails.values()].flat(),
-      children: [...groupedDetails.entries()].map(
-        ([detailLabel, sourceNodes]) => ({
-          id: `${rootId}:detail:${normalizedTreeKey(detailLabel)}`,
-          label: detailLabel,
-          sourceNodes,
-        }),
-      ),
+      businessId: region.id,
+      label: region.name,
+      sourceNodes: [region],
+      children: details.map((detail) => ({
+        id: `${rootId}:detail:${normalizedTreeKey(detail.name)}`,
+        label: detail.name,
+        sourceNodes: [detail],
+      })),
     };
   });
 }
@@ -936,6 +1521,8 @@ function getVisibleRegions(
     const rootNode: RegionProjectionNode = {
       id: root.id,
       rootId: root.id,
+      businessId: root.businessId,
+      rootLabel: root.label,
       label: root.label,
       depth: 0,
       isGroup: root.children.length > 0,
@@ -949,6 +1536,8 @@ function getVisibleRegions(
         (child): RegionProjectionNode => ({
           id: child.id,
           rootId: root.id,
+          businessId: root.businessId,
+          rootLabel: root.label,
           label: child.label,
           depth: 1,
           isGroup: false,
@@ -1027,17 +1616,23 @@ export function createBusinessProjectionRows(
       product.node,
       regionExpandedByProduct.get(product.id) ?? new Set<string>(),
     );
-    return regions.map(
-      (region, index): ViewRow => ({
+    return regions.map((region, index): ViewRow => {
+      const backendNode = region.sourceNodes[0] ?? product.node;
+      const rowDimension = getBusinessRowDimension(backendNode.id);
+      if (!rowDimension)
+        throw new Error(`BUSINESS_DATA 记录缺少行维度：${backendNode.id}`);
+      return {
+        ...backendNode,
         id: `${product.id}::${region.id}`,
         name: `${product.label} / ${region.label}`,
         hierarchyRole: product.isGroup ? 'category' : 'subcategory',
-        ...aggregateBusinessNodes(region.sourceNodes, product.node),
         children: product.isGroup
           ? product.node.children?.filter(
               (child) => child.hierarchyRole === 'subcategory',
             )
           : undefined,
+        rowDimension,
+        sourceNodes: region.sourceNodes,
         level: product.depth,
         hasChildren: product.isGroup,
         productId: product.id,
@@ -1051,12 +1646,14 @@ export function createBusinessProjectionRows(
         productRowSpan: regions.length,
         regionId: region.id,
         regionRootId: region.rootId,
+        regionBusinessId: region.businessId,
+        regionRootLabel: region.rootLabel,
         regionLabel: region.label,
         regionDepth: region.depth,
         regionIsGroup: region.isGroup,
         regionExpanded: region.expanded,
-      }),
-    );
+      };
+    });
   });
 }
 
@@ -1249,6 +1846,13 @@ function createStressRecord(index: number): ViewRow {
     ? regionLabel
     : detailLabel;
   const sourceId = `stress-${index}`;
+  const rowDimension: BusinessRowDimension = {
+    category: businessGroupLabel,
+  };
+  if (!isBusinessGroup) rowDimension.subcategory = productLabel;
+  if (!isBusinessGroup && !isProductLine) rowDimension.region = regionLabel;
+  if (!isBusinessGroup && !isProductLine && !isRegion)
+    rowDimension.detail = detailLabel;
   return {
     ...makeNode(
       sourceId,
@@ -1267,6 +1871,8 @@ function createStressRecord(index: number): ViewRow {
       status,
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
+    rowDimension,
+    sourceNodes: [],
     level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
     hasChildren: isBusinessGroup || isRegion,
     productId: isBusinessGroup ? businessGroupId : productId,
@@ -1287,6 +1893,8 @@ function createStressRecord(index: number): ViewRow {
       : 1,
     regionId,
     regionRootId: regionId,
+    regionBusinessId: regionId,
+    regionRootLabel: isBusinessGroup ? '全国 · 事业群汇总' : regionLabel,
     regionLabel: isBusinessGroup
       ? '全国 · 事业群汇总'
       : isRegion
@@ -1405,6 +2013,7 @@ type StressProjectionRegion = {
 type StressProjectionProduct = {
   id: string;
   parentId: string | null;
+  categoryLabel: string;
   label: string;
   attribute: string;
   depth: 0 | 1;
@@ -1477,7 +2086,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
         const region: StressProjectionRegion = {
           id: regionSummary.regionRootId,
           label: regionSummary.regionLabel,
-          summaryRows: [regionSummary],
+          summaryRows: details,
           details,
         };
         regions.push(region);
@@ -1495,7 +2104,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
           };
           categoryRegions.set(region.label, categoryRegion);
         }
-        categoryRegion.summaryRows.push(regionSummary);
+        categoryRegion.summaryRows.push(...details);
         // 事业群区域展开到产品线汇总即可；明细记录仍由对应产品线的
         // 区域节点展开。这样与常规模式的“父级聚合、子级明细”一致，
         // 也避免同一批 10 万条事实在父子产品下重复投影。
@@ -1504,12 +2113,14 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
           id: `${regionSummary.id}:category-detail`,
           name: productSummary.productLabel,
           regionLabel: productSummary.productLabel,
+          sourceNodes: details,
         });
       }
 
       const product: StressProjectionProduct = {
         id: productSummary.productId,
         parentId: groupSummary.productId,
+        categoryLabel: groupSummary.productLabel,
         label: productSummary.productLabel,
         attribute: productSummary.productAttribute,
         depth: 1,
@@ -1526,6 +2137,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
     const root: StressProjectionProduct = {
       id: groupSummary.productId,
       parentId: null,
+      categoryLabel: groupSummary.productLabel,
       label: groupSummary.productLabel,
       attribute: groupSummary.productAttribute,
       depth: 0,
@@ -1576,6 +2188,16 @@ function projectStressProduct(
       name: `${product.label} / ${region.label}`,
       hierarchyRole: product.isGroup ? 'category' : 'subcategory',
       children: undefined,
+      rowDimension: product.isGroup
+        ? { category: product.categoryLabel, region: region.label }
+        : {
+            category: product.categoryLabel,
+            subcategory: product.label,
+            region: region.label,
+          },
+      sourceNodes: region.summaryRows.flatMap((row) =>
+        row.sourceNodes.length ? row.sourceNodes : [row],
+      ),
       level: product.depth,
       hasChildren: product.isGroup,
       productId: product.id,
@@ -1589,6 +2211,8 @@ function projectStressProduct(
       productRowSpan: 1,
       regionId: region.id,
       regionRootId: region.id,
+      regionBusinessId: region.id,
+      regionRootLabel: region.label,
       regionLabel: region.label,
       regionDepth: 0,
       regionIsGroup: region.details.length > 0,
@@ -1597,13 +2221,25 @@ function projectStressProduct(
     if (!expanded) return [root];
     return [
       root,
-      ...region.details.map(
-        (detail): ViewRow => ({
+      ...region.details.map((detail): ViewRow => {
+        const sourceNodes = detail.sourceNodes.length
+          ? detail.sourceNodes
+          : [detail];
+        return {
           ...detail,
+          ...aggregateBusinessNodes(sourceNodes, detail),
           id: `${product.id}::${region.id}::${detail.id}`,
           name: `${product.label} / ${detail.regionLabel}`,
           hierarchyRole: 'detail',
           children: undefined,
+          rowDimension: product.isGroup
+            ? {
+                category: product.categoryLabel,
+                subcategory: detail.regionLabel,
+                region: region.label,
+              }
+            : detail.rowDimension,
+          sourceNodes,
           level: product.depth,
           hasChildren: false,
           productId: product.id,
@@ -1617,12 +2253,14 @@ function projectStressProduct(
           productRowSpan: 1,
           regionId: `${region.id}:detail:${detail.id}`,
           regionRootId: region.id,
+          regionBusinessId: region.id,
+          regionRootLabel: region.label,
           regionLabel: detail.regionLabel,
           regionDepth: 1,
           regionIsGroup: false,
           regionExpanded: false,
-        }),
-      ),
+        };
+      }),
     ];
   });
   if (!rows.length) return rows;
@@ -1754,6 +2392,15 @@ export function releaseStressRecords() {
   stressRecordsCache = null;
 }
 
+// 模拟一次分批加载请求的网络往返：可见投影（含展开/折叠、汇总合并后的
+// 树形结构）已经在内存中就绪，这里只补上“这批数据是从后端取回来的”
+// 这段延迟，供前端在把某一批可见行写入表格前先等待，制造真实的分批加载感。
+export async function simulateStressBackendDelay() {
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, STRESS_PAGE_FETCH_DELAY_MS),
+  );
+}
+
 export function productHierarchyText(row: ViewRow) {
   if (!row.productBlockStart) return '';
   if (!row.productIsGroup) return row.productLabel;
@@ -1771,6 +2418,42 @@ export function isHierarchyField(field: ColumnField): field is HierarchyField {
     field === 'productAttribute' ||
     field === 'regionHierarchy'
   );
+}
+
+export function getCellEditability(
+  row: ViewRow | undefined,
+  col: number,
+): CellEditability {
+  const column = COLUMNS[col];
+  if (!row || !column)
+    return { editable: false, reason: '单元格不存在', sourceNode: null };
+  if (!column.editable) {
+    return {
+      editable: false,
+      reason: isHierarchyField(column.field)
+        ? '层级和属性字段由业务数据源维护'
+        : column.field === 'avgOrder'
+        ? '客单价由净收入 ÷ 订单数自动计算'
+        : '后台列配置将该字段设为只读',
+      sourceNode: null,
+    };
+  }
+  const sourceNode = row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  if (!sourceNode) {
+    return {
+      editable: false,
+      reason: '当前投影无法唯一映射到一条后台业务记录',
+      sourceNode: null,
+    };
+  }
+  return {
+    editable: true,
+    reason:
+      sourceNode.hierarchyRole === 'detail'
+        ? '可编辑明细记录'
+        : '可编辑后台汇总记录',
+    sourceNode,
+  };
 }
 
 export function viewRowCellValue(row: ViewRow, col: number) {
@@ -1802,15 +2485,11 @@ export function stressCellSearchText(
   }
   if (typeof value === 'boolean') return value ? '是 true' : '否 false';
   if (typeof value === 'number') {
-    if (col === COMPLETION_COLUMN)
-      return `${value} ${(value * 100).toFixed(1)}%`;
-    if (col === DECIMAL_COLUMN) return `${value} ${value.toFixed(2)}`;
+    const format = COLUMNS[col]?.format;
+    if (format === 'percent') return `${value} ${(value * 100).toFixed(1)}%`;
+    if (format === 'decimal') return `${value} ${value.toFixed(2)}`;
     if (includeFormattedNumber) {
-      const currency =
-        (col >= REVENUE_COLUMN && col <= SERVICE_REVENUE_COLUMN) ||
-        col === AVG_ORDER_COLUMN
-          ? '¥'
-          : '';
+      const currency = format === 'currency' ? '¥' : '';
       return `${value} ${currency}${value.toLocaleString('zh-CN')}`;
     }
     return String(value);
@@ -1831,6 +2510,16 @@ export function updateBusinessNode(
   field: BusinessField,
   value: unknown,
 ) {
+  const updateAverageOrder = () => {
+    node.avgOrder = Math.round(node.revenue / Math.max(node.orders, 1));
+  };
+  const parsedNumber =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+      ? Number(value.replace(/[\s,¥￥]/g, ''))
+      : Number.NaN;
+  const finiteNumber = Number.isFinite(parsedNumber) ? parsedNumber : null;
   switch (field) {
     case 'name':
       if (typeof value === 'string') node.name = value.replace(/^\u3000+/, '');
@@ -1856,9 +2545,68 @@ export function updateBusinessNode(
       if (!Number.isNaN(nextDate.getTime())) node.updatedAt = nextDate;
       break;
     }
-    default:
-      if (typeof value === 'number' && Number.isFinite(value))
-        node[field] = value;
+    case 'revenue':
+      if (finiteNumber !== null) {
+        const previousComponentTotal =
+          node.productRevenue + node.serviceRevenue;
+        const productShare = previousComponentTotal
+          ? node.productRevenue / previousComponentTotal
+          : 0.78;
+        node.revenue = Math.max(0, Math.round(finiteNumber));
+        node.productRevenue = Math.round(node.revenue * productShare);
+        node.serviceRevenue = node.revenue - node.productRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'productRevenue':
+      if (finiteNumber !== null) {
+        node.productRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'serviceRevenue':
+      if (finiteNumber !== null) {
+        node.serviceRevenue = Math.max(0, Math.round(finiteNumber));
+        node.revenue = node.productRevenue + node.serviceRevenue;
+        updateAverageOrder();
+      }
+      break;
+    case 'orders':
+      if (finiteNumber !== null) {
+        const previousOrderTotal = node.onlineOrders + node.offlineOrders;
+        const onlineShare = previousOrderTotal
+          ? node.onlineOrders / previousOrderTotal
+          : 0.63;
+        node.orders = Math.max(0, Math.round(finiteNumber));
+        node.onlineOrders = Math.round(node.orders * onlineShare);
+        node.offlineOrders = node.orders - node.onlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'onlineOrders':
+      if (finiteNumber !== null) {
+        node.onlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'offlineOrders':
+      if (finiteNumber !== null) {
+        node.offlineOrders = Math.max(0, Math.round(finiteNumber));
+        node.orders = node.onlineOrders + node.offlineOrders;
+        updateAverageOrder();
+      }
+      break;
+    case 'avgOrder':
+      // Derived field. Kept in the switch so programmatic callers cannot
+      // accidentally break the revenue/order relationship.
+      updateAverageOrder();
+      break;
+    case 'completion':
+    case 'adjustmentFactor':
+      if (finiteNumber !== null) node[field] = finiteNumber;
+      break;
   }
 }
 
@@ -1869,13 +2617,10 @@ export function roundToTwoDecimals(value: number) {
 export function numericDisplayForColumn(
   col: number,
 ): Exclude<NumericDisplay, 'mixed'> {
-  if (
-    (col >= REVENUE_COLUMN && col <= SERVICE_REVENUE_COLUMN) ||
-    col === AVG_ORDER_COLUMN
-  )
-    return 'currency';
-  if (col === COMPLETION_COLUMN) return 'percent';
-  if (col === DECIMAL_COLUMN) return 'decimal';
+  const format = COLUMNS[col]?.format;
+  if (format === 'currency') return 'currency';
+  if (format === 'percent') return 'percent';
+  if (format === 'decimal') return 'decimal';
   return 'number';
 }
 

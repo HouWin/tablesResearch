@@ -7,6 +7,7 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
+import { enrichCellChangeRecord } from './cellChangeContext';
 import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights } from './renderer';
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
@@ -20,7 +21,7 @@ import {
   TREE_VIEWPORT_WINDOW_SIZE,
 } from './treeViewport';
 import type { TreeViewportStats } from './treeViewport';
-import type { ETableFlattenResult } from './types';
+import type { ETableCellChangeRecord, ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
 import {
@@ -53,13 +54,33 @@ import {
   showAttachmentsModal,
   uploadAndAttachToCell,
 } from './attachment';
+import { buildTableExportData } from './exportData';
+import { mergeTreeDataWithRows } from './treeMerge';
+import { getCellValueFromTable, getRowValueFromTable, setCellValueOnTable, setRowValueOnTable } from './cellValue';
 import { registerAllIcons } from './icons';
 import { customizeColumnHeaders } from './header';
 import type {
   ETableAttachmentFile,
+  ETableCell,
+  ETableCellLocator,
+  ETableColumn,
   ETableDataTraceNode,
+  ETableExportData,
+  ETableGetTableDataOptions,
+  ETableGetCellValueOptions,
+  ETableGetCellValueResult,
+  ETableGetRowValueOptions,
+  ETableGetRowValueResult,
+  ETablePrimitive,
   ETableProps,
   ETableRef,
+  ETableRow,
+  ETableRowLocator,
+  ETableSetCellValueOptions,
+  ETableSetCellValueResult,
+  ETableSetRowValueResult,
+  ETableTreeConfig,
+  ETableTreeNode,
 } from './types';
 import { message } from 'antd';
 import UniverPresetSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
@@ -77,37 +98,41 @@ import '@univerjs/preset-sheets-find-replace/lib/index.css';
 
 
 /**
-* Table
-*
-* 基于 Univer 封装的通用电子表格组件。
-*
-* =========================================================
-* 已有功能
-* =========================================================
-*
-* 1. 多级表头
-* 2. 自定义原生列头
-* 3. 自定义列宽
-* 4. 自定义行高
-* 5. 表格数据
-* 6. 单元格合并
-* 7. 行分组
-* 8. 列分组
-* 9. 行冻结
-* 10. 列冻结
-* 11. 网格线控制
-* 12. 单元格批注
-* 13. Univer API 暴露
-* 14. 树形数据 + 属性层折叠（treeData）
-* 15. 列分组折叠（columnGroups / treeConfig.columnGroups）
-* 16. 单元格附件
-* 17. 上钻 / 下钻
-* 18. 单元格历史 / 数据追踪
-* 19. 快速搜索
-* 20. 列类型（number / select 下拉）
-*/
+ * ============================================================================
+ * ETable（UniverTable）— 基于 Univer Sheets 封装的业务二维表格组件
+ * ============================================================================
+ *
+ * 【实现形态】
+ * - 非透视表：树形/分组数据在应用层展平为 rows + columns，写入普通 Worksheet
+ * - 非 OLAP 交叉：列布局在初始化时固定，编辑的是物化后的单元格网格
+ *
+ * 【数据输入优先级】
+ *   treeData + treeConfig  >  groupData + groupConfig  >  columns + rows
+ *
+ * 【大数据渲染路径】（finishInit 内按条件分支）
+ *   1. treeUI 且行数 ≥ 5000  → setupTreeViewport（工作表仅投影 ~300 行窗口）
+ *   2. 平铺表且行数 ≥ 5000   → createVirtualDataLoader（按页 2000 行懒写入）
+ *   3. 行数 ≥ 1000           → renderDataAsync（分片 setValues）image.png
+ *   4. 否则                    → renderData 全量写入
+ *
+ * 【树形折叠】
+ *   - 小数据：setupTreeCellCollapse（hideRows / showRows）
+ *   - 大数据：treeViewport 过滤可见逻辑行，不 hide 全表
+ *
+ * 【编辑回传】
+ *   setupCellHistory 监听 SheetEditEnded → onCellChange(ETableCellChangeRecord)
+ *   不会自动写回 treeData/rows，业务层需自行同步
+ *
+ * 【已加载 Univer Preset】（无 sheets-pivot）
+ *   Core / Advanced / ThreadComment / Note / DataValidation / FindReplace
+ *
+ * 详细文档：tablesResearch/docs/UniverTable.md
+ * ============================================================================
+ */
 const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
-  // 取组件参数
+  // --------------------------------------------------------------------------
+  // Props 解构：支持直接模式（columns/rows）与树形/分组模式（treeData/groupData）
+  // --------------------------------------------------------------------------
   const {
     columns: propsColumns = [],
     rows: propsRows = [],
@@ -130,6 +155,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     onReady,
   } = props;
 
+  // 回调 ref：避免 useEffect 闭包拿到过期的 onCellChange 等处理器
   const onUploadAttachmentRef = useRef(onUploadAttachment);
   const onAttachmentsChangeRef = useRef(onAttachmentsChange);
   const onCellChangeRef = useRef(onCellChange);
@@ -143,9 +169,10 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   onViewCellHistoryRef.current = onViewCellHistory;
   onViewDataTraceRef.current = onViewDataTrace;
 
-  /**
-   * 树形/分组数据异步展平，避免万行级 flatten 阻塞 React 首帧（Loading 无法显示）。
-   */
+  // --------------------------------------------------------------------------
+  // 数据展平：树形/分组在 setTimeout(0) 中异步 flatten，首帧可显示「展平数据中…」
+  // 展平完成后 flattened 变化会触发下方 Univer 初始化 effect 整表重建
+  // --------------------------------------------------------------------------
   const needsFlatten = Boolean(
     (treeData && treeConfig) || (groupData && groupConfig),
   );
@@ -189,6 +216,29 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     };
   }, [needsFlatten, treeData, treeConfig, groupData, groupConfig]);
 
+  useEffect(() => {
+    treeDataRef.current = treeData;
+    treeConfigRef.current = treeConfig;
+    groupConfigRef.current = groupConfig;
+  }, [treeData, treeConfig, groupConfig]);
+
+  const notifyCellChange = (record: ETableCellChangeRecord) => {
+    const enriched = enrichCellChangeRecord(record, {
+      headerDepth: headerDepthRef.current,
+      columns: columnsRef.current,
+      leafColumns: leafColumnsRef.current,
+      rows: rowsRef.current,
+      treeConfig: treeConfigRef.current,
+      groupConfig: groupConfigRef.current,
+      getLogicalDataRow: (dataRow) =>
+        logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+      getRowPath: (logicalRow) =>
+        treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
+    });
+    onCellChangeRef.current?.(enriched);
+  };
+
+  // 统一数据源：展平结果优先，否则使用 props 直接传入的二维表结构
   const columns = flattened?.columns ?? propsColumns;
   const rows = flattened?.rows ?? propsRows;
   const merges = flattened?.merges ?? propsMerges;
@@ -221,6 +271,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     enableContextMenu = true,
   } = options as any;
 
+  // --------------------------------------------------------------------------
+  // 实例 Ref：贯穿初始化与对外 API，保存 Univer 与各子模块句柄
+  // --------------------------------------------------------------------------
   // Univer DOM 容器
   const containerRef = useRef<HTMLDivElement>(null);
   // Univer API
@@ -236,9 +289,16 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
+  const columnsRef = useRef<ETableColumn[]>([]);
+  const rowsRef = useRef<ETableRow[]>([]);
+  const treeDataRef = useRef<ETableTreeNode[] | undefined>(undefined);
+  const treeConfigRef = useRef<ETableTreeConfig | undefined>(undefined);
+  const groupConfigRef = useRef<typeof groupConfig>(undefined);
+  const useTreeViewportRef = useRef(false);
   const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
   const treeViewportStatsRef = useRef<TreeViewportStats | null>(null);
 
+  /** 构建「数据追踪」树：当前值 + 列信息 + 行面包屑 + 单元格历史 */
   const buildDataTrace = (cell?: string): ETableDataTraceNode | null => {
     const worksheet = worksheetRef.current;
     if (!worksheet) {
@@ -315,7 +375,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     }
   };
 
-  //  对外暴露API
+  // --------------------------------------------------------------------------
+  // useImperativeHandle：对外暴露 ETableRef（行列大纲、批注、附件、搜索、历史等）
+  // --------------------------------------------------------------------------
   useImperativeHandle(ref, () => ({
     // Univer API
     getUniverAPI() {
@@ -617,9 +679,114 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     getTreeViewportStats() {
       return treeViewportStatsRef.current;
     },
+    getTableData(options?: ETableGetTableDataOptions): ETableExportData {
+      return buildTableExportData({
+        columns: columnsRef.current,
+        rows: rowsRef.current,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        tracks: cellHistoryApiRef.current?.getTracks() ?? [],
+        useTreeViewport: useTreeViewportRef.current,
+        virtualLoader: virtualLoaderRef.current,
+        options,
+      });
+    },
+    getTreeData(options?: ETableGetTableDataOptions): ETableTreeNode[] | null {
+      const sourceTree = treeDataRef.current;
+      const config = treeConfigRef.current;
+      if (!sourceTree?.length || !config) {
+        return null;
+      }
+      const exportData = buildTableExportData({
+        columns: columnsRef.current,
+        rows: rowsRef.current,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        tracks: cellHistoryApiRef.current?.getTracks() ?? [],
+        useTreeViewport: useTreeViewportRef.current,
+        virtualLoader: virtualLoaderRef.current,
+        options,
+      });
+      return mergeTreeDataWithRows(sourceTree, config, exportData.rows);
+    },
+    setCellValue(
+      locator: ETableCellLocator,
+      value: ETablePrimitive | ETableCell,
+      options?: ETableSetCellValueOptions,
+    ): ETableSetCellValueResult {
+      return setCellValueOnTable({
+        locator,
+        value,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        recordChange: cellHistoryApiRef.current?.recordChange,
+        options,
+      });
+    },
+    setRowValue(
+      locator: ETableRowLocator,
+      data: Record<string, ETablePrimitive | ETableCell>,
+      options?: ETableSetCellValueOptions,
+    ): ETableSetRowValueResult {
+      return setRowValueOnTable({
+        locator,
+        data,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        recordChange: cellHistoryApiRef.current?.recordChange,
+        options,
+      });
+    },
+    getCellValue(
+      locator: ETableCellLocator,
+      options?: ETableGetCellValueOptions,
+    ): ETableGetCellValueResult {
+      return getCellValueFromTable({
+        locator,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        options,
+      });
+    },
+    getRowValue(
+      locator: ETableRowLocator,
+      options?: ETableGetRowValueOptions,
+    ): ETableGetRowValueResult {
+      return getRowValueFromTable({
+        locator,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        options,
+      });
+    },
   }), []);
 
-  // 初始化 Univer
+  // --------------------------------------------------------------------------
+  // Univer 生命周期：flatten 完成后创建实例 → finishInit 渲染 → 卸载时 dispose
+  // 依赖 [needsFlatten, flattenPreparing, flattened]；直接模式 rows 变更不会自动热更新
+  // --------------------------------------------------------------------------
   useEffect(() => {
     // 没有 DOM 容器，不初始化
     if (!containerRef.current) {
@@ -631,6 +798,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     }
     const useTreeViewport =
       treeUI && rows.length >= TREE_VIEWPORT_THRESHOLD && treeToggles.length > 0;
+    useTreeViewportRef.current = useTreeViewport;
+    columnsRef.current = columns;
+    rowsRef.current = rows;
     // 防止重复初始化
     if (univerAPIRef.current) {
       return;
@@ -769,7 +939,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     let disposeContextMenuBlock: (() => void) | undefined;
 
     const finishInit = async () => {
-      // 6. 渲染数据（树视口投影 / 懒虚拟 / 异步分片 / 全量）
+      // ------ 6. 数据写入（四选一渲染路径）------
       if (useTreeViewport) {
         // 数据由 setupTreeViewport 按可见窗口写入，跳过全量 setValues
       } else if (useLazyVirtual) {
@@ -839,7 +1009,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       if (typeof freezeColumns === 'number') {
         worksheet.setFrozenColumns(freezeColumns);
       }
-      // 9. 行分组：treeUI 用单元格内折叠（不创建左侧大纲）
+      // ------ 9. 树形折叠 / 行大纲（treeUI 不创建左侧大纲栏）------
       if (isAsyncRender && !isLargeData) {
         await new Promise<void>((resolve) => {
           window.requestAnimationFrame(() => resolve());
@@ -912,7 +1082,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         treeCollapseApiRef.current = null;
         createRowOutlines(worksheet, rowGroups, maxDepth);
       }
-      // 9.5 表头 + 维度/属性列只读（红框区域不可编辑）
+      // ------ 9.5 只读区域：表头 + 维度列 + 汇总行（BeforeSheetEditStart 拦截）------
       const readonlyColumnSet = new Set(
         leafColumns
           .map((column, index) => (column.editable === false ? index : -1))
@@ -1006,7 +1176,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
         // 13.5 单元格历史 / 数据追踪
         historyApi = setupCellHistory(univerAPI, worksheet, {
-          onChange: (record) => onCellChangeRef.current?.(record),
+          onChange: notifyCellChange,
           onSelectionChange: (cell, row, column) =>
             onSelectionChangeRef.current?.(cell, row, column),
         });
@@ -1221,8 +1391,20 @@ export type {
   ETableAttachmentFile,
   ETableComment,
   ETableCellChangeRecord,
+  ETableDimensionInfo,
+  ETableCellLocator,
   ETableDataTraceNode,
+  ETableExportData,
+  ETableGetTableDataOptions,
   ETableGroupStatistics,
+  ETableSetCellValueOptions,
+  ETableSetCellValueResult,
+  ETableSetRowValueResult,
+  ETableRowLocator,
+  ETableGetCellValueOptions,
+  ETableGetCellValueResult,
+  ETableGetRowValueOptions,
+  ETableGetRowValueResult,
   ETableGroupStatisticField,
 } from './types';
 

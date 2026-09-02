@@ -1,3 +1,13 @@
+/**
+ * 单元格编辑历史（cellHistory.ts）
+ *
+ * 监听 Univer 事件记录变更，供 onCellChange / 右键「查看单元格历史」使用：
+ * - SheetEditStarted：记录编辑前值
+ * - SheetEditEnded：对比新旧值，推送 ETableCellChangeRecord
+ * - SelectionChanged / CellClicked：触发 onSelectionChange
+ *
+ * from/to 为字符串化显示值（含数字格式如 ¥20,000），非原始 number。
+ */
 import type { ETableCellChangeRecord } from './types';
 
 const columnName = (column: number): string => {
@@ -50,6 +60,13 @@ export interface ETableCellHistoryApi {
   getTracks: () => ETableCellChangeRecord[];
   getCellHistory: (cell: string) => ETableCellChangeRecord[];
   clear: () => void;
+  /** 程序化写入单元格时记录变更（source: 'api'） */
+  recordChange: (
+    row: number,
+    column: number,
+    from: string,
+    to: string,
+  ) => void;
 }
 
 /**
@@ -238,6 +255,9 @@ export const setupCellHistory = (
     clear: () => {
       tracks.length = 0;
       tracksByCell.clear();
+    },
+    recordChange: (row, column, from, to) => {
+      push(row, column, from, to, 'api');
     },
   };
 };

@@ -1,3 +1,13 @@
+/**
+ * 树形折叠 - hideRows 模式（treeCollapse.ts）
+ *
+ * 用于 treeUI 且行数 < 5000 的场景：
+ * - 单元格内 ▶/▼ 点击切换折叠状态
+ * - 通过 hideRows / showRows 隐藏子行（大数据时性能较差）
+ * - Region 展开后 reapplyMergesForRowSpan 修复因 hideRows 破坏的合并
+ *
+ * 行数 ≥ 5000 时由 treeViewport.ts 接管（视口投影，不再全表 hideRows）。
+ */
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
 import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
@@ -533,6 +543,40 @@ export const setupTreeCellCollapse = (
     }
   };
 
+  const captureScrollAnchor = () => {
+    try {
+      const state = worksheet.getScrollState?.();
+      if (!state) {
+        return null;
+      }
+      return {
+        row:
+          typeof state.sheetViewStartRow === 'number'
+            ? state.sheetViewStartRow
+            : dataStartRow,
+        column:
+          typeof state.sheetViewStartColumn === 'number'
+            ? state.sheetViewStartColumn
+            : 0,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const restoreScrollAnchor = (anchor: { row: number; column: number } | null) => {
+    if (!anchor) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      try {
+        worksheet.scrollToCell?.(anchor.row, anchor.column, 0);
+      } catch {
+        // ignore
+      }
+    });
+  };
+
   const hideCategoryBody = (categoryGroupId: string) => {
     const categoryGroup = groupMap.get(categoryGroupId);
     if (!categoryGroup?.count) {
@@ -847,34 +891,74 @@ export const setupTreeCellCollapse = (
   };
 
   const expandAll = () => {
-    categoryToggles.forEach((toggle) => {
-      applyCollapsed(toggle.groupId, false);
-    });
+    const scrollAnchor = captureScrollAnchor();
 
-    if (!useBatchToggle) {
+    const expandCollapsedRegions = () => {
       toggles
         .filter((toggle) => toggle.kind === 'region' && collapsedState.get(toggle.groupId))
         .forEach((toggle) => {
-          const group = groupMap.get(toggle.groupId);
-          if (group) {
-            setRowsCollapsed(worksheet, dataStartRow, group, true);
-          }
+          applyCollapsed(toggle.groupId, false);
         });
+    };
+
+    const expandCategories = async () => {
+      for (let i = 0; i < categoryToggles.length; i += 1) {
+        const toggle = categoryToggles[i];
+        if (collapsedState.get(toggle.groupId)) {
+          await applyCollapsed(toggle.groupId, false);
+        }
+        if (useBatchToggle) {
+          await yieldToMain();
+        }
+      }
+    };
+
+    if (useBatchToggle) {
+      enqueueToggleTask(async () => {
+        await expandCategories();
+        expandCollapsedRegions();
+        restoreScrollAnchor(scrollAnchor);
+      });
       return;
     }
 
-    enqueueToggleTask(async () => {
-      const collapsedRegions = toggles.filter(
-        (toggle) => toggle.kind === 'region' && collapsedState.get(toggle.groupId),
-      );
-      await batchHideRegionToggles(collapsedRegions);
+    categoryToggles.forEach((toggle) => {
+      if (collapsedState.get(toggle.groupId)) {
+        applyCollapsed(toggle.groupId, false);
+      }
     });
+    expandCollapsedRegions();
+    restoreScrollAnchor(scrollAnchor);
   };
 
   const collapseAll = () => {
-    categoryToggles.forEach((toggle) => {
-      applyCollapsed(toggle.groupId, true, { skipLabel: false });
-    });
+    const scrollAnchor = captureScrollAnchor();
+
+    const collapseExpanded = async () => {
+      toggles
+        .filter((toggle) => toggle.kind === 'region' && !collapsedState.get(toggle.groupId))
+        .forEach((toggle) => {
+          applyCollapsed(toggle.groupId, true);
+        });
+
+      for (let i = 0; i < categoryToggles.length; i += 1) {
+        const toggle = categoryToggles[i];
+        if (!collapsedState.get(toggle.groupId)) {
+          applyCollapsed(toggle.groupId, true, { skipLabel: false });
+        }
+        if (useBatchToggle) {
+          await yieldToMain();
+        }
+      }
+      restoreScrollAnchor(scrollAnchor);
+    };
+
+    if (useBatchToggle) {
+      enqueueToggleTask(collapseExpanded);
+      return;
+    }
+
+    void collapseExpanded();
   };
 
   const groupCoverIntervals = toggles
