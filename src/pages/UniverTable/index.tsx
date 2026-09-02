@@ -52,6 +52,7 @@ import {
   PlusOutlined,
   FullscreenOutlined,
   FullscreenExitOutlined,
+  SaveOutlined,
 } from '@ant-design/icons';
 import ETable from '@/components/UniverTable';
 import { defaultContextMenuItems } from '@/components/UniverTable/contextMenu';
@@ -61,6 +62,7 @@ import type {
   ETableCellChangeRecord,
   ETableColumn,
   ETableDataTraceNode,
+  ETableDimensionInfo,
   ETableOptions,
   ETablePrimitive,
   ETableRef,
@@ -673,6 +675,59 @@ const countNodes = (nodes: ETableTreeNode[]): number =>
 
 const TABLE_VIEW_HEIGHT = 560;
 
+/** 保存接口：每个变更单元格一条，含行列维度 */
+interface ETableCellSavePatch {
+  cell: string;
+  field?: string;
+  from: string;
+  to: string;
+  time: string;
+  source?: ETableCellChangeRecord['source'];
+  dataRow?: number;
+  logicalRow?: number;
+  rowDimensions?: ETableDimensionInfo[];
+  columnDimensions?: ETableDimensionInfo[];
+  rowPath?: string[];
+}
+
+interface ETableSavePayload {
+  updatedAt: string;
+  changeCount: number;
+  patches: ETableCellSavePatch[];
+}
+
+/** 按 cell 去重：保留最新 to / 维度，from 取最早一次编辑前的值 */
+const buildSavePayload = (records: ETableCellChangeRecord[]): ETableSavePayload => {
+  const byCell = new Map<string, ETableCellSavePatch>();
+
+  records.forEach((record) => {
+    const existing = byCell.get(record.cell);
+    if (!existing) {
+      byCell.set(record.cell, {
+        cell: record.cell,
+        field: record.field,
+        from: record.from,
+        to: record.to,
+        time: record.time,
+        source: record.source,
+        dataRow: record.dataRow,
+        logicalRow: record.logicalRow,
+        rowDimensions: record.rowDimensions,
+        columnDimensions: record.columnDimensions,
+        rowPath: record.rowPath,
+      });
+      return;
+    }
+    existing.from = record.from;
+  });
+
+  return {
+    updatedAt: new Date().toISOString(),
+    changeCount: byCell.size,
+    patches: Array.from(byCell.values()),
+  };
+};
+
 /**
  * 演示页主组件：工具栏控制数据规模与表格选项，侧栏展示编辑历史与数据追踪
  */
@@ -709,7 +764,6 @@ const UniverTablePage = () => {
   const [addColumnKey, setAddColumnKey] = useState<string | undefined>();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewportRange, setViewportRange] = useState<string | null>(null);
-
   // ---------- 全屏：监听 fullscreenchange 并触发 resize 让 Univer 重算布局 ----------
   useEffect(() => {
     const syncFullscreen = () => {
@@ -917,14 +971,14 @@ const UniverTablePage = () => {
 
   const handleExpandAll = () => {
     tableRef.current?.expandAllRows();
-    message.success('已展开全部行组');
+    message.success('已展开全部折叠项');
     window.setTimeout(refreshViewportRange, 0);
     refreshBreadcrumb();
   };
 
   const handleCollapseAll = () => {
     tableRef.current?.collapseAllRows();
-    message.success('已折叠全部行组');
+    message.success('已收起全部展开项');
     window.setTimeout(refreshViewportRange, 0);
     refreshBreadcrumb();
   };
@@ -978,6 +1032,15 @@ const UniverTablePage = () => {
     const trace = tableRef.current?.getDataTrace(cell) || null;
     setTraceTree(trace);
     setTraceOpen(true);
+  };
+
+  const handleSave = () => {
+    const payload = buildSavePayload(tracks);
+    if (!payload.patches.length) {
+      console.warn('[UniverTable] save skipped: 暂无变更数据');
+      return;
+    }
+    console.log('[UniverTable] save payload', payload);
   };
 
   const toAntdTree = (node: ETableDataTraceNode, key = 'root'): any => ({
@@ -1034,12 +1097,16 @@ const UniverTablePage = () => {
               >
                 重新生成
               </Button>
-              <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
-                全部展开
-              </Button>
-              <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
-                全部折叠
-              </Button>
+              <Tooltip title="展开所有折叠项（品类 / 区域等全部行组）">
+                <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
+                  全部展开
+                </Button>
+              </Tooltip>
+              <Tooltip title="收起所有展开项（品类 / 区域等全部行组）">
+                <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
+                  全部折叠
+                </Button>
+              </Tooltip>
             </Space>
           </Col>
         </Row>
@@ -1130,6 +1197,11 @@ const UniverTablePage = () => {
               <Row gutter={[16, 12]} align="middle" justify="space-between" wrap>
                 <Col flex="1 1 auto" style={{ minWidth: 0 }}>
                   <Space wrap>
+                    <Tooltip title="保存所有单元格变更（含行维度 / 列维度）">
+                      <Button type="primary" icon={<SaveOutlined />} onClick={handleSave}>
+                        保存
+                      </Button>
+                    </Tooltip>
                     <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
                       <Button icon={<UndoOutlined />} onClick={handleUndo}>
                         回撤
@@ -1156,12 +1228,16 @@ const UniverTablePage = () => {
                         上钻
                       </Button>
                     </Tooltip>
-                    <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
-                      展开行
-                    </Button>
-                    <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
-                      折叠行
-                    </Button>
+                    <Tooltip title="展开所有折叠项（品类 / 区域等全部行组）">
+                      <Button icon={<ExpandAltOutlined />} onClick={handleExpandAll}>
+                        展开行
+                      </Button>
+                    </Tooltip>
+                    <Tooltip title="收起所有展开项（品类 / 区域等全部行组）">
+                      <Button icon={<ShrinkOutlined />} onClick={handleCollapseAll}>
+                        折叠行
+                      </Button>
+                    </Tooltip>
                     <Input.Search
                       placeholder="快速搜索"
                       allowClear
@@ -1305,7 +1381,6 @@ const UniverTablePage = () => {
                   onCellChange={(record: ETableCellChangeRecord) => {
                     setTracks((prev) => [record, ...prev].slice(0, 200));
                     setFocusCell(record.cell);
-                    console.log(record, 'record')
                   }}
                   onSelectionChange={(cell: string) => {
                     setFocusCell(cell);
@@ -1428,6 +1503,8 @@ const UniverTablePage = () => {
           <Col xs={24} md={12}>
             <h4>💡 功能说明</h4>
             <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, paddingBottom: 8, margin: 0 }}>
+              <li><Tag color="green">保存：收集全部变更单元格，含 rowDimensions / columnDimensions</Tag></li>
+              <li><Tag color="green">展开行 / 折叠行：展开所有折叠项、收起所有展开项（含品类与区域行组）</Tag></li>
               <li><Tag color="green">上钻 / 下钻：按当前选中行折叠或展开行组，顶部显示面包屑</Tag></li>
               <li><Tag color="green">回撤 / 重做：工具栏按钮、右键菜单或 Ctrl/Cmd+Z / Ctrl+Y</Tag></li>
               <li><Tag color="green">单元格历史 / 数据追踪：编辑后右侧记录；右键可打开追踪树</Tag></li>

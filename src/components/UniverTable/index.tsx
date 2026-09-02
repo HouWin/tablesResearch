@@ -7,6 +7,7 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
+import { enrichCellChangeRecord } from './cellChangeContext';
 import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights } from './renderer';
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
@@ -20,7 +21,7 @@ import {
   TREE_VIEWPORT_WINDOW_SIZE,
 } from './treeViewport';
 import type { TreeViewportStats } from './treeViewport';
-import type { ETableFlattenResult } from './types';
+import type { ETableCellChangeRecord, ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
 import {
@@ -218,7 +219,24 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   useEffect(() => {
     treeDataRef.current = treeData;
     treeConfigRef.current = treeConfig;
-  }, [treeData, treeConfig]);
+    groupConfigRef.current = groupConfig;
+  }, [treeData, treeConfig, groupConfig]);
+
+  const notifyCellChange = (record: ETableCellChangeRecord) => {
+    const enriched = enrichCellChangeRecord(record, {
+      headerDepth: headerDepthRef.current,
+      columns: columnsRef.current,
+      leafColumns: leafColumnsRef.current,
+      rows: rowsRef.current,
+      treeConfig: treeConfigRef.current,
+      groupConfig: groupConfigRef.current,
+      getLogicalDataRow: (dataRow) =>
+        logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+      getRowPath: (logicalRow) =>
+        treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
+    });
+    onCellChangeRef.current?.(enriched);
+  };
 
   // 统一数据源：展平结果优先，否则使用 props 直接传入的二维表结构
   const columns = flattened?.columns ?? propsColumns;
@@ -275,6 +293,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const rowsRef = useRef<ETableRow[]>([]);
   const treeDataRef = useRef<ETableTreeNode[] | undefined>(undefined);
   const treeConfigRef = useRef<ETableTreeConfig | undefined>(undefined);
+  const groupConfigRef = useRef<typeof groupConfig>(undefined);
   const useTreeViewportRef = useRef(false);
   const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
   const treeViewportStatsRef = useRef<TreeViewportStats | null>(null);
@@ -1157,7 +1176,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
         // 13.5 单元格历史 / 数据追踪
         historyApi = setupCellHistory(univerAPI, worksheet, {
-          onChange: (record) => onCellChangeRef.current?.(record),
+          onChange: notifyCellChange,
           onSelectionChange: (cell, row, column) =>
             onSelectionChangeRef.current?.(cell, row, column),
         });
@@ -1372,6 +1391,7 @@ export type {
   ETableAttachmentFile,
   ETableComment,
   ETableCellChangeRecord,
+  ETableDimensionInfo,
   ETableCellLocator,
   ETableDataTraceNode,
   ETableExportData,

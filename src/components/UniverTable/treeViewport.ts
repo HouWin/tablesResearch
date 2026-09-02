@@ -811,11 +811,10 @@ export const setupTreeViewport = (
     });
     toggles.forEach((toggle) => {
       if (toggle.kind === 'region') {
-        collapsedState.set(toggle.groupId, true);
+        collapsedState.set(toggle.groupId, false);
       }
     });
-    windowOffset = 0;
-    refresh({ scrollRow: 0, preserveScroll: false });
+    refresh({ preserveScroll: true });
   };
 
   const collapseAll = () => {
@@ -823,8 +822,7 @@ export const setupTreeViewport = (
       collapsedState.set(toggle.groupId, true);
       syncCategoryRegionCollapsedState(toggle.groupId, true);
     });
-    windowOffset = 0;
-    refresh({ scrollRow: 0, preserveScroll: false });
+    refresh({ preserveScroll: true });
   };
 
   const resolveToggleHit = (

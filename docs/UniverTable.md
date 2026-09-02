@@ -110,7 +110,7 @@ UniverTable（内部组件名 `ETable`）在 Univer Sheets 之上提供：
 | **物理行** `dataStartRow + projectedIndex` | Worksheet 上实际行号，视口模式仅 ~300 行窗口 |
 | **列** | 逻辑列与物理列一致（无列投影），`leafColumns[i]` ↔ 工作表第 `i` 列 |
 
-对外 `onCellChange`、`comments`、`attachments` 的 `cell: 'D5'` 等，最终都落在 **二维 A1 记法** 上；视口模式通过 `logicalRowResolver` 把物理行反查为逻辑行。
+对外 `onCellChange`、`comments`、`attachments` 的 `cell: 'D5'` 等，最终都落在 **二维 A1 记法** 上；视口模式通过 `logicalRowResolver` 把物理行反查为逻辑行。`onCellChange` 回调中已自动附带 `logicalRow`、`rowDimensions`（行维度）、`columnDimensions`（列维度路径）。
 
 **与「多维表 / 透视 / 图模型」的对比：**
 
@@ -215,6 +215,12 @@ dimensions[]            measures[] / measureGroups[]
 **`onCellChange(record: ETableCellChangeRecord)`**
 
 ```ts
+interface ETableDimensionInfo {
+  field: string;
+  title: string;
+  value?: ETablePrimitive; // 行维度带 value；列维度路径节点无 value
+}
+
 interface ETableCellChangeRecord {
   id: string;           // 变更唯一 id
   cell: string;         // A1 记法，含表头行（如 "F8"）
@@ -224,30 +230,67 @@ interface ETableCellChangeRecord {
   to: string;           // 编辑后值
   time: string;         // 本地时间字符串
   source?: 'edit' | 'paste' | 'api';  // 当前主要走 'edit'
+
+  // —— 以下由 enrichCellChangeRecord 自动补充 ——
+  field?: string;       // 叶子列 field，如 'revenue'
+  dataRow?: number;     // 数据区相对行（0-based；视口模式下为投影行）
+  logicalRow?: number;  // 逻辑行下标，可反查 rows[]
+  rowDimensions?: ETableDimensionInfo[];    // 行维度 field / title / value
+  columnDimensions?: ETableDimensionInfo[]; // 列维度多级表头路径
+  rowPath?: string[];   // 树分组面包屑（展示用）
 }
 ```
 
-触发时机：`setupCellHistory` 监听 `SheetEditStarted` / `SheetEditEnded`，**每次确认编辑一个单元格**触发一条 `onCellChange`（`from === to` 时跳过）。
+触发时机：`setupCellHistory` 监听 `SheetEditStarted` / `SheetEditEnded`，**每次确认编辑一个单元格**触发一条 `onCellChange`（`from === to` 时跳过）。组件在回调前通过 `enrichCellChangeRecord`（`cellChangeContext.ts`）补充 `field`、行列维度与逻辑行信息。
+
+**行维度 `rowDimensions`**
+
+树形模式下**不能仅读 `rows[logicalRow].data`**：城市明细行会清空品类列，区域列显示城市名（如「上海」）而非区域组名（如「华东」）。
+
+展平阶段会为每行写入 `ETableRow.dimensionContext`（完整业务层级快照），`onCellChange` **优先读取此字段**；无快照时再回退到 `rowPath` + `row.data` 合并解析。
+
+| 数据模式 | 解析策略 | 示例（编辑「家具 → 华东 → 华东 → 上海」行） |
+|----------|----------|---------------------------------------------|
+| 树形 `treeConfig` | `row.dimensionContext` 优先 | `[{ field: 'category', title: '品类', value: '家具' }, { field: 'subcategory', title: '子品类', value: '华东' }, { field: 'region', title: '区域', value: '华东' }, { field: 'regionDetail', title: '区域', value: '上海' }]` |
+| 分组 `groupConfig` | `rowPath` 按序映射 `dimensions[]` | 按分组层级从左到右 |
+| 直接 `rows` 模式 | 无 `treeConfig` / `groupConfig` 时不填充 | — |
+
+`dimensionContext` 在 `flattenTreeData` 时由 `buildDimensionContext()` 写入，不受明细行「清空品类列」等展示逻辑影响。
+
+**列维度 `columnDimensions`**
+
+从 `columns` 多级表头树 DFS 到当前叶子列的完整路径，每项含 `field` + `title`，不含 `value`。例如编辑「净收入」列：
+
+```json
+[
+  { "field": "core-metrics", "title": "核心经营指标" },
+  { "field": "revenue-metrics", "title": "收入指标" },
+  { "field": "revenue", "title": "净收入" }
+]
+```
+
+**`rowPath`**
+
+树形折叠分组路径（与右键「数据追踪」中的行路径一致），由 `treeCollapse` / `treeViewport` 的 `getBreadcrumb(logicalRow)` 生成，例如 `['家具', '书柜', '华东']`。
 
 **`onSelectionChange(cell, row, column)`**
 
 - `cell`：如 `"D5"`
 - `row` / `column`：同上，**工作表绝对坐标**
 
-**映射回业务字段：**
+**映射回业务字段（可直接使用 record 上的补充字段）：**
 
 ```ts
-const headerDepth = options.freezeRows ?? maxDepth; // 表头占用行数
-const dataRow = record.row - headerDepth;           // 数据区相对行（0-based）
-const columnId = leafColumns[record.column]?.id;    // 业务字段名
+// 推荐：直接使用 enrich 后的字段
+const { field, dataRow, logicalRow, rowDimensions, columnDimensions } = record;
 
-// 非视口模式（<5000 行）：dataRow === rows[] 下标
-// 视口模式（≥5000 行 treeUI）：dataRow 为工作表投影行，≠ rows[] 下标
-//   公开 API 仅 getTreeViewportStats()（displayRangeStart/End、windowOffset）
-//   精确 logicalRow 反查当前未随 onCellChange 回传，业务层建议：
-//   - 可编辑场景控制 <5000 行，或
-//   - 以 cell + columnId + record.to 调后端，或
-//   - ref.getWorksheet() 读值 + 结合 stats 窗口范围自行换算
+// 等价手动换算（兼容旧代码）
+const headerDepth = options.freezeRows ?? maxDepth;
+const dataRow = record.dataRow ?? record.row - headerDepth;
+const field = record.field ?? leafColumns[record.column]?.id;
+
+// 视口模式（≥5000 行 treeUI）：dataRow 为工作表投影行，用 logicalRow 访问 rows[]
+const row = rows[record.logicalRow ?? dataRow];
 ```
 
 **Ref 查询：**
@@ -277,11 +320,20 @@ const columnId = leafColumns[record.column]?.id;    // 业务字段名
 
 ```tsx
 onCellChange={(record) => {
-  const dataRow = record.row - headerDepth;
-  const field = leafColumns[record.column]?.id;
-  if (!field) return;
-  // 1. 乐观更新本地 rows / 调 API
-  patchRow(dataRow, field, record.to);
+  const { field, logicalRow, dataRow, rowDimensions, columnDimensions } = record;
+  if (!field || dataRow === undefined || dataRow < 0) return;
+
+  // 1. 用 logicalRow 定位 rows[]（视口模式必备）
+  patchRow(logicalRow ?? dataRow, field, record.to);
+
+  // 2. 上报后端时可附带行列维度上下文
+  savePatch({
+    field,
+    value: record.to,
+    rowDimensions,      // [{ field, title, value }]
+    columnDimensions,   // [{ field, title }]
+    rowPath: record.rowPath,
+  });
 }}
 ```
 
@@ -350,24 +402,23 @@ ref.getTreeViewportStats();
 **方式 1：回调（推荐，实时）**
 
 ```tsx
-const HEADER_DEPTH = 3; // 与 options.freezeRows 一致
-const leafColumns = [...]; // 与传入 columns / treeConfig 叶子列顺序一致
-
 <ETable
   onCellChange={(record) => {
-    // 原始变更记录
     const patch = {
-      cell: record.cell,           // "D7"
-      sheetRow: record.row,        // 6（0-based，含表头）
-      sheetColumn: record.column,  // 3
-      field: leafColumns[record.column]?.id,  // "revenue"
-      dataRow: record.row - HEADER_DEPTH,     // 3（数据区相对行）
-      oldValue: record.from,       // "¥200"（格式化后的字符串）
-      newValue: record.to,         // "¥20,000"
+      cell: record.cell,
+      sheetRow: record.row,
+      sheetColumn: record.column,
+      field: record.field,                    // 已补充，无需 leafColumns[record.column]
+      dataRow: record.dataRow,                // 已补充
+      logicalRow: record.logicalRow,          // 视口模式反查 rows[]
+      rowDimensions: record.rowDimensions,    // 行维度
+      columnDimensions: record.columnDimensions, // 列维度路径
+      rowPath: record.rowPath,
+      oldValue: record.from,
+      newValue: record.to,
       time: record.time,
       source: record.source ?? 'edit',
     };
-
   }}
 />
 ```
@@ -391,16 +442,36 @@ const latest = history[0];
   "from": "¥200",
   "to": "¥20,000",
   "time": "11:12:36",
-  "source": "edit"
+  "source": "edit",
+  "field": "revenue",
+  "dataRow": 3,
+  "logicalRow": 3,
+  "rowDimensions": [
+    { "field": "category", "title": "品类", "value": "家具" },
+    { "field": "subcategory", "title": "子品类", "value": "华东" },
+    { "field": "region", "title": "区域", "value": "华东" },
+    { "field": "regionDetail", "title": "区域", "value": "上海" }
+  ],
+  "columnDimensions": [
+    { "field": "core-metrics", "title": "核心经营指标" },
+    { "field": "revenue-metrics", "title": "收入指标" },
+    { "field": "revenue", "title": "净收入" }
+  ],
+  "rowPath": ["家具", "书柜", "华东"]
 }
 ```
 
 | 字段 | 含义（演示页） |
 |------|----------------|
-| `cell` / `row` / `column` | 工作表坐标；D 列 = 第 4 列 = `revenue`（净收入） |
-| `row: 6` | 第 7 行；减去表头 3 行 → 数据区第 4 行（`dataRow = 3`） |
+| `cell` / `row` / `column` | 工作表坐标 |
+| `field` | 叶子列 field；上例为 `revenue`（净收入） |
+| `dataRow` | 数据区相对行（`row - headerDepth`） |
+| `logicalRow` | 逻辑行下标；非视口模式通常等于 `dataRow` |
+| `rowDimensions` | 行维度 field / title / value；明细行含 `regionDetail` 等城市级标签 |
+| `columnDimensions` | 当前列的多级表头路径（列维度） |
+| `rowPath` | 树分组面包屑，与数据追踪 Drawer 一致 |
 | `from` / `to` | **显示值字符串**（含 `¥`、千分位），不是原始 `number` |
-| `source` | 当前实现主要为 `edit`；粘贴批量写入**不一定**逐格回调 |
+| `source` | 当前实现主要为 `edit`；`setCellValue({ recordChange: true })` 为 `api`；粘贴批量写入**不一定**逐格回调 |
 
 **数值列解析示例：**
 
@@ -431,8 +502,12 @@ const [tracks, setTracks] = useState<ETableCellChangeRecord[]>([]);
 // 导出为业务 patch 列表
 const patches = tracks.map((r) => ({
   cell: r.cell,
-  field: leafColumns[r.column]?.id,
-  dataRow: r.row - HEADER_DEPTH,
+  field: r.field,
+  dataRow: r.dataRow,
+  logicalRow: r.logicalRow,
+  rowDimensions: r.rowDimensions,
+  columnDimensions: r.columnDimensions,
+  rowPath: r.rowPath,
   from: r.from,
   to: r.to,
   time: r.time,
@@ -533,9 +608,9 @@ const handleExport = () => {
 const [rows, setRows] = useState<ETableRow[]>(initialRows);
 
 const handleCellChange = (record: ETableCellChangeRecord) => {
-  const dataRow = record.row - HEADER_DEPTH;
-  const field = leafColumns[record.column]?.id;
-  if (!field || dataRow < 0) return;
+  const dataRow = record.logicalRow ?? record.dataRow;
+  const field = record.field;
+  if (!field || dataRow === undefined || dataRow < 0) return;
 
   setRows((prev) =>
     prev.map((row, i) =>
@@ -558,7 +633,7 @@ import { flattenTreeData } from '@/components/UniverTable';
 const [flatRows, setFlatRows] = useState(() =>
   flattenTreeData(treeData, treeConfig).rows,
 );
-// onCellChange 更新 flatRows[dataRow].data[field]
+// onCellChange 更新 flatRows[record.logicalRow ?? record.dataRow].data[record.field]
 ```
 
 ---
@@ -625,6 +700,7 @@ const { rows, columns, merges } = snapshot;
                     单个更新          全量更新（Diff）       全量表格（快照）
                     ────────          ──────────────       ──────────────
 实时回调            onCellChange      onCellChange 累积     —
+                    (含行列维度)      (含行列维度)
 Ref 查询            getCellHistory    getTracks()           getTableData()
 父组件 state        —                 tracks[]              rows / treeData 镜像
 组件内置导出        —                 —                     getTableData()
@@ -800,7 +876,7 @@ UniverTable/
 ├── renderer.ts         # setValues、合并、异步渲染
 ├── header.tsx          # 自定义列头
 ├── columnTypes.ts      # 数字格式、下拉校验
-├── tree.ts             # 树形数据展平 → rows / merges / toggles
+├── tree.ts             # 树形数据展平 → rows / merges / toggles / dimensionContext
 ├── treeMerge.ts        # 展平行合并回树形源数据（getTreeData）
 ├── treeCollapse.ts     # 中小数据树折叠（hideRows）
 ├── treeViewport.ts     # 大数据树视口投影（≥5000 行）
@@ -813,6 +889,8 @@ UniverTable/
 ├── contextMenu.ts      # 右键菜单注册与默认项
 ├── attachment.ts       # 单元格附件
 ├── cellHistory.ts      # 变更历史 / 数据追踪
+├── cellChangeContext.ts# onCellChange 行列维度补充（enrichCellChangeRecord）
+├── cellValue.ts        # get/set 单元格与行值、定位解析
 ├── search.ts           # 快速搜索、查找框约束
 └── icons.tsx           # 右键菜单 SVG 图标
 ```
@@ -1297,7 +1375,7 @@ attachments: [{
 | 分组 | `groupData`, `groupConfig` | 多重分组 |
 | 批注 | `comments` | Thread Comment 初始化 |
 | 附件 | `attachments`, `onUploadAttachment`, `onAttachmentsChange` | 元数据写入 `customMetaData` |
-| 事件 | `onCellChange`, `onSelectionChange`, `onViewCellHistory`, `onViewDataTrace` | |
+| 事件 | `onCellChange`, `onSelectionChange`, `onViewCellHistory`, `onViewDataTrace` | `onCellChange` 含 `rowDimensions` / `columnDimensions` |
 | 配置 | `options` | 见下表 |
 | 生命周期 | `onReady` | 返回 `univerAPI`、`renderMs`、`rowCount`、`treeViewport` 等 |
 
@@ -1320,7 +1398,8 @@ attachments: [{
 | 方法 | 说明 |
 |------|------|
 | `getUniverAPI()` / `getWorkbook()` / `getWorksheet()` | Univer 实例 |
-| `collapseRowGroup` / `expandRowGroup` / `collapseAllRows` / `expandAllRows` | 行大纲 |
+| `collapseRowGroup` / `expandRowGroup` | 折叠/展开指定行组 |
+| `collapseAllRows` / `expandAllRows` | 收起所有展开项 / 展开所有折叠项（含品类与区域行组） |
 | `collapseColumnGroup` / … | 列大纲 |
 | `addComment` / `getComments` / `deleteComment` | 批注 |
 | `addAttachment` / `setAttachments` / `getAttachments` / `viewAttachments` | 附件 |
@@ -1355,11 +1434,17 @@ export default function Page() {
       treeData={treeData}
       treeConfig={treeConfig}
       options={{ freezeRows: HEADER_DEPTH }}
-      // ① 单个更新：每次编辑一条
+      // ① 单个更新：每次编辑一条（含行列维度）
       onCellChange={(record) => {
         setTracks((prev) => [record, ...prev]);
-        const field = leafColumns[record.column]?.id;
-        console.log('单格更新', { cell: record.cell, field, to: record.to });
+        console.log('单格更新', {
+          cell: record.cell,
+          field: record.field,
+          to: record.to,
+          rowDimensions: record.rowDimensions,
+          columnDimensions: record.columnDimensions,
+          rowPath: record.rowPath,
+        });
       }}
     />
   );
@@ -1469,6 +1554,8 @@ onUploadAttachment={async (file, cell) => ({
 ## 11. 单元格历史与数据追踪
 
 - `setupCellHistory()`：监听编辑、粘贴，写入 `ETableCellChangeRecord`
+- `enrichCellChangeRecord()`（`cellChangeContext.ts`）：在 `onCellChange` 回调前补充 `field`、`dataRow`、`logicalRow`、`rowDimensions`、`columnDimensions`、`rowPath`
+- 工具函数：`resolveColumnDimensionPath()`、`resolveRowDimensions()` 可单独用于测试或自定义 enrich
 - 右键「查看单元格历史」→ `onViewCellHistory`
 - 右键「数据追踪」→ `onViewDataTrace`（`getDataTrace()` 构建简化血缘树）
 - 演示页右侧 Drawer 展示 `tracks` 与 `traceTree`

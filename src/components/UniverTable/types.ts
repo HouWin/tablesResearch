@@ -100,6 +100,11 @@ export interface ETableRow {
     /** 背景色，如 #E8F3FF */
     bg?: string;
   };
+  /**
+   * 展平时写入的业务行维度快照（不受明细行清空品类列等展示逻辑影响）。
+   * onCellChange 优先读取此字段解析 rowDimensions。
+   */
+  dimensionContext?: Record<string, ETablePrimitive>;
 }
 
 /**
@@ -514,6 +519,13 @@ export interface ETableGroupConfig {
   collapsedPaths?: Array<Partial<Record<string, ETablePrimitive>>>;
 }
 
+/** 行/列维度节点（field + title，行维度可带 value）。 */
+export interface ETableDimensionInfo {
+  field: string;
+  title: string;
+  value?: ETablePrimitive;
+}
+
 /**
  * 单元格变更记录（历史 / 数据追踪）。
  */
@@ -526,6 +538,18 @@ export interface ETableCellChangeRecord {
   to: string;
   time: string;
   source?: 'edit' | 'paste' | 'api';
+  /** 叶子列 field */
+  field?: string;
+  /** 数据区相对行（0-based，视口模式下为投影行） */
+  dataRow?: number;
+  /** 逻辑行下标（反查 rows[]） */
+  logicalRow?: number;
+  /** 当前行的维度值（如品类 / 子品类 / 区域） */
+  rowDimensions?: ETableDimensionInfo[];
+  /** 当前列的多级表头路径（列维度） */
+  columnDimensions?: ETableDimensionInfo[];
+  /** 行分组面包屑（树折叠路径，展示用） */
+  rowPath?: string[];
 }
 
 /**
