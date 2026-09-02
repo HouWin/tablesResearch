@@ -16,10 +16,15 @@ import {
   Eye,
   EyeOff,
   Info,
+  LocateFixed,
   Search,
   TableProperties,
   X,
 } from 'lucide-react';
+import {
+  isBusinessCellDimension,
+  type BusinessCellDimension,
+} from '../spreadsheet/business-cell-coordinate';
 import {
   COLUMNS,
   FEATURES,
@@ -226,6 +231,130 @@ export function SearchPopover({
       >
         {result}
       </small>
+    </div>
+  );
+}
+
+const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
+  {
+    row: {
+      category: '家具',
+      subcategory: '书柜',
+      region: '华中',
+      detail: '湖北',
+    },
+    column: ['core-metrics', 'income-metrics', 'revenue'],
+  },
+  null,
+  2,
+);
+
+/** 仅用于人工验收业务维度 -> 物理单元格的反向转换。 */
+export function DimensionLocatorPopover({
+  anchorRef,
+  onLocate,
+  onClose,
+}: {
+  anchorRef: RefObject<HTMLElement>;
+  onLocate: (dimension: BusinessCellDimension) => boolean;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(DIMENSION_LOCATOR_EXAMPLE);
+  const [error, setError] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { popoverRef, style } = useAnchoredPopover(anchorRef);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        anchorRef.current?.contains(target) ||
+        popoverRef.current?.contains(target)
+      )
+        return;
+      onClose();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePress, true);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress, true);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [anchorRef, onClose, popoverRef]);
+
+  const locate = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      setError('JSON 格式不正确，请检查引号、逗号和括号。');
+      return;
+    }
+    if (!isBusinessCellDimension(parsed)) {
+      setError('必须包含有效的 row 行维对象和 column 列维路径。');
+      return;
+    }
+    if (!onLocate(parsed)) {
+      setError('当前数据中没有找到这个业务单元格。');
+      return;
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      ref={popoverRef}
+      style={style}
+      id="dimension-locator-popover"
+      className="toolbar-popover dimension-locator-popover"
+      role="dialog"
+      aria-labelledby="dimension-locator-title"
+    >
+      <div className="popover-title">
+        <div>
+          <LocateFixed size={14} />
+          <span id="dimension-locator-title">按业务维度定位</span>
+        </div>
+        <small>仅用于验证</small>
+      </div>
+      <label htmlFor="dimension-locator-input">行维与列维 JSON</label>
+      <textarea
+        ref={textareaRef}
+        id="dimension-locator-input"
+        value={value}
+        spellCheck={false}
+        aria-describedby="dimension-locator-help dimension-locator-error"
+        onChange={(event) => {
+          setValue(event.target.value);
+          if (error) setError('');
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey))
+            return;
+          event.preventDefault();
+          locate();
+        }}
+      />
+      <small id="dimension-locator-help">
+        点击定位，或按 Ctrl/⌘ + Enter。表格会自动展开并选中目标单元格。
+      </small>
+      <div className="dimension-locator-footer">
+        <span id="dimension-locator-error" role="alert">
+          {error}
+        </span>
+        <button type="button" onClick={locate} disabled={!value.trim()}>
+          <LocateFixed size={14} />
+          定位单元格
+        </button>
+      </div>
     </div>
   );
 }

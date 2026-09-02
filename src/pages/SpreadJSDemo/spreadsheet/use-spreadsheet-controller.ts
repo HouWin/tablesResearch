@@ -7,6 +7,7 @@ import {
   describeClipboardRange,
 } from './clipboard';
 import {
+  describeBusinessCellDimension,
   isBusinessCellDimension,
   resolveBusinessCellDimension,
   toBusinessCellDimension,
@@ -19,7 +20,6 @@ import {
   COLUMN_GROUPS,
   COLUMN_HEADER_CELLS,
   COLUMN_HEADER_ROW_COUNT,
-  DECIMAL_COLUMN,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
@@ -31,8 +31,6 @@ import {
   STRESS_FULL_PAGE_VISIBLE_ROWS,
   STRESS_PAGE_SIZE,
   STRESS_TEXT_SEARCH_COLUMNS,
-  UPDATED_AT_COLUMN,
-  VERIFIED_COLUMN,
   canDrillNode,
   columnName,
   createBusinessProjectionRows,
@@ -63,6 +61,7 @@ import {
   type AggregateMode,
   type BusinessField,
   type CellAttachment,
+  type ColumnFormat,
   type DataMode,
   type DrillView,
   type HistoryItem,
@@ -553,12 +552,18 @@ export function useSpreadsheetController(
       spread.options.scrollByPixel = true;
       spread.options.scrollPixel = 22;
 
-      // Cell types are immutable after setup. Reusing them avoids allocating
-      // new controls and validators for every lazily loaded stress-data page.
-      const statusCellType = new GC.Spread.Sheets.CellTypes.ComboBox();
-      statusCellType.items(['已核验', '待复核', '异常']);
-      statusCellType.editable(false);
-      const verifiedCellType = new GC.Spread.Sheets.CellTypes.CheckBox();
+      // 编辑器完全由后台列配置生成，并在所有数据行复用。
+      const columnCellTypes = COLUMNS.map((column) => {
+        if (column.editor?.type === 'select') {
+          const cellType = new GC.Spread.Sheets.CellTypes.ComboBox();
+          cellType.items([...column.editor.options]);
+          cellType.editable(false);
+          return cellType;
+        }
+        if (column.editor?.type === 'checkbox')
+          return new GC.Spread.Sheets.CellTypes.CheckBox();
+        return undefined;
+      });
       const datePickerCellButton: import('@grapecity-software/spread-sheets').Spread.Sheets.ICellButton =
         {
           imageType: GC.Spread.Sheets.ButtonImageType.dropdown,
@@ -758,7 +763,7 @@ export function useSpreadsheetController(
           if (row >= oldRows || col >= oldCols) return;
           const cell = sheet.getCell(row, col);
           cell.cellButtons(
-            col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [],
+            COLUMNS[col]?.editor?.type === 'date' ? [datePickerCellButton] : [],
           );
           cell.tag(null);
         });
@@ -785,7 +790,8 @@ export function useSpreadsheetController(
         const count = attachmentsRef.current.get(key)?.length ?? 0;
         const cell = sheet.getCell(row, col);
         const buttons =
-          col === UPDATED_AT_COLUMN && getCellEditability(node, col).editable
+          column.editor?.type === 'date' &&
+          getCellEditability(node, col).editable
             ? [datePickerCellButton]
             : [];
         if (count) {
@@ -853,8 +859,8 @@ export function useSpreadsheetController(
             cell.locked(!editability.editable);
             if (
               isHierarchyField(COLUMNS[col].field) ||
-              col === STATUS_COLUMN ||
-              col === VERIFIED_COLUMN
+              COLUMNS[col].editor?.type === 'select' ||
+              COLUMNS[col].editor?.type === 'checkbox'
             )
               continue;
             if (editability.editable) {
@@ -894,11 +900,7 @@ export function useSpreadsheetController(
             rejected.push({ request, reason: editability.reason });
             return;
           }
-          const dimension = toBusinessCellDimension(
-            row,
-            request.col,
-            activeDataMode,
-          );
+          const dimension = toBusinessCellDimension(row, request.col);
           if (!dimension) {
             rejected.push({
               request,
@@ -1189,49 +1191,39 @@ export function useSpreadsheetController(
       const configureCellTypes = (startRow: number, rowCount: number) => {
         const endRow = Math.min(activeRows.length, startRow + rowCount);
         for (let row = startRow; row < endRow; row += 1) {
-          const statusEditable = getCellEditability(
-            activeRows[row],
-            STATUS_COLUMN,
-          ).editable;
-          const verifiedEditable = getCellEditability(
-            activeRows[row],
-            VERIFIED_COLUMN,
-          ).editable;
-          const dateEditable = getCellEditability(
-            activeRows[row],
-            UPDATED_AT_COLUMN,
-          ).editable;
-          sheet
-            .getCell(row, STATUS_COLUMN)
-            .cellType(statusEditable ? statusCellType : undefined);
-          sheet
-            .getCell(row, VERIFIED_COLUMN)
-            .cellType(verifiedEditable ? verifiedCellType : undefined);
-          const updatedAtCell = sheet.getCell(row, UPDATED_AT_COLUMN);
-          updatedAtCell.cellButtons(dateEditable ? [datePickerCellButton] : []);
-          updatedAtCell.dropDowns(
-            dateEditable
-              ? [
-                  {
-                    type: GC.Spread.Sheets.DropDownType.dateTimePicker,
-                    option: {
-                      showTime: false,
-                      calendarPage: GC.Spread.Sheets.CalendarPage.day,
-                      startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+          COLUMNS.forEach((column, col) => {
+            const editable = getCellEditability(activeRows[row], col).editable;
+            const cell = sheet.getCell(row, col);
+            cell.cellType(editable ? columnCellTypes[col] : undefined);
+            const dateEditable = editable && column.editor?.type === 'date';
+            cell.cellButtons(dateEditable ? [datePickerCellButton] : []);
+            cell.dropDowns(
+              dateEditable
+                ? [
+                    {
+                      type: GC.Spread.Sheets.DropDownType.dateTimePicker,
+                      option: {
+                        showTime: false,
+                        calendarPage: GC.Spread.Sheets.CalendarPage.day,
+                        startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+                      },
                     },
-                  },
-                ]
-              : [],
-          );
+                  ]
+                : [],
+            );
+          });
         }
-        sheet.setDataValidator(
-          startRow,
-          DECIMAL_COLUMN,
-          rowCount,
-          1,
-          decimalValidator,
-          GC.Spread.Sheets.SheetArea.viewport,
-        );
+        COLUMNS.forEach((column, col) => {
+          if (column.format !== 'decimal') return;
+          sheet.setDataValidator(
+            startRow,
+            col,
+            rowCount,
+            1,
+            decimalValidator,
+            GC.Spread.Sheets.SheetArea.viewport,
+          );
+        });
       };
 
       const styleDataRows = (
@@ -1239,9 +1231,7 @@ export function useSpreadsheetController(
         rowCount: number,
         columnCount: number,
       ) => {
-        const formatters: Partial<
-          Record<(typeof COLUMNS)[number]['valueType'], string>
-        > = {
+        const formatters: Record<ColumnFormat, string> = {
           currency: '¥#,##0',
           integer: '#,##0',
           percent: '0.0%',
@@ -1249,7 +1239,9 @@ export function useSpreadsheetController(
           decimal: '0.00',
         };
         COLUMNS.forEach((column, col) => {
-          const formatter = formatters[column.valueType];
+          const formatter = column.format
+            ? formatters[column.format]
+            : undefined;
           if (formatter)
             sheet.getRange(startRow, col, rowCount, 1).formatter(formatter);
         });
@@ -2142,42 +2134,33 @@ export function useSpreadsheetController(
       };
 
       /**
-       * 使用后端回传的业务维度定位单元格。定位前只展开目标所需的
+       * 使用后端回传的行维和列维定位单元格。定位前只展开目标所需的
        * 产品和区域祖先；常规模式若处于下钻页，会回到全量投影重试。
        */
       const locateBusinessCell = (dimension: BusinessCellDimension) => {
         if (!isBusinessCellDimension(dimension)) {
-          notify('后端返回的业务维度不完整', 'error');
-          return false;
-        }
-        if (dimension.dataset !== activeDataMode) {
-          notify(
-            `维度属于${
-              dimension.dataset === 'stress' ? '10 万行' : '常规'
-            }模式，请先切换到对应数据集`,
-            'error',
-          );
+          notify('后端返回的行维或列维不完整', 'error');
           return false;
         }
 
         if (activeDataMode === 'stress') {
-          const col = COLUMNS.findIndex(
-            (column) => column.field === dimension.metricField,
+          const source = resolveBusinessCellDimension(
+            stressSourceRows,
+            dimension,
           );
-          const sourceRow = stressSourceRows.findIndex(
-            (row) => row.id === dimension.recordId,
-          );
-          if (col < 0 || sourceRow < 0) {
+          if (!source) {
             notify('当前 10 万行数据中未找到该业务单元格', 'error');
             return false;
           }
-          const located = revealStressSearchMatch(sourceRow, col);
+          const located = revealStressSearchMatch(source.row, source.col);
           if (!located) {
             notify('业务维度存在，但无法投影到当前表格', 'error');
             return false;
           }
           notify(
-            `已定位 ${dimension.label} · ${columnName(col)}${located.row + 1}`,
+            `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+              source.col,
+            )}${located.row + 1}`,
           );
           return true;
         }
@@ -2232,9 +2215,9 @@ export function useSpreadsheetController(
         }
         revealSearchMatch(visible.row, visible.col);
         notify(
-          `已定位 ${dimension.label} · ${columnName(visible.col)}${
-            visible.row + 1
-          }`,
+          `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+            visible.col,
+          )}${visible.row + 1}`,
         );
         return true;
       };
@@ -3096,7 +3079,7 @@ export function useSpreadsheetController(
       sheet.bind(
         GC.Spread.Sheets.Events.ValidationError,
         (_sender: unknown, args: ValidationErrorArgs) => {
-          if (args.col !== DECIMAL_COLUMN) return;
+          if (COLUMNS[args.col]?.format !== 'decimal') return;
 
           args.validationResult =
             GC.Spread.Sheets.DataValidation.DataValidationResult.discard;

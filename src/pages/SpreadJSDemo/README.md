@@ -96,15 +96,19 @@ SpreadJS Worksheet
 - `category`、`subcategory`、`region` 都是后台返回的可编辑汇总记录，不由前端根据子节点重算；
 - `detail` 是叶子明细；
 - 顶层产品大类的 `regionSummaries` 是跨多个产品子类的区域汇总。它同样由后台直接返回；`detailIds` 只引用树中已有明细，避免复制同一条记录；
-- 所有节点 `id` 全局唯一，因此 `id + metricField` 可以唯一确定一个业务单元格。
+- 所有节点 `id` 仍然全局唯一，供前端内部更新数据；前后台单元格通信使用完整行维路径和列维路径。应用启动时会检查完整行维是否唯一。
 
 例如，后台编辑“座椅 × 华东”的净收入时，只需要：
 
 ```ts
-    {
-      recordId: 'chairs-east',
-      metricField: 'revenue'
-    }
+{
+  row: {
+    category: '家具',
+    subcategory: '座椅',
+    region: '华东'
+  },
+  column: ['core-metrics', 'income-metrics', 'revenue']
+}
 ```
 
 ### 1.1 业务维度和双列独立折叠
@@ -157,7 +161,9 @@ regionExpandedByProduct: Map<productId, Set<regionId>>
           field: 'revenue',
           label: '净收入',
           width: 112,
-          valueType: 'currency',
+          dataType: 'number',
+          format: 'currency',
+          editor: { type: 'number' },
           editable: true
         },
         // 商品收入、服务收入……
@@ -174,8 +180,28 @@ regionExpandedByProduct: Map<productId, Set<regionId>>
 - 数组顺序就是最终列顺序；
 - `summaryField` 指定列组折叠后常驻的汇总列；
 - `frozen` 指定需要冻结的根分组；
-- `valueType` 控制金额、整数、百分比、日期等显示格式；
+- `dataType` 只描述业务值类型，例如 `string`、`number`、`boolean`、`date`；日期在 JSON 中可以传 ISO 字符串，前端入模时转换为 `Date`；
+- `format` 只描述显示格式，例如 `currency`、`integer`、`percent`、`date`、`decimal`；
+- `editor` 只描述编辑控件，例如普通输入框、下拉框、复选框或日期选择器；
 - `editable` 控制该字段是否允许编辑。
+
+例如，`status` 本质上是字符串，只是使用固定选项下拉框；`verified` 才是真正的布尔值：
+
+```ts
+{
+  field: 'status',
+  dataType: 'string',
+  editor: { type: 'select', options: ['已核验', '待复核', '异常'] },
+  editable: true
+}
+
+{
+  field: 'verified',
+  dataType: 'boolean',
+  editor: { type: 'checkbox' },
+  editable: true
+}
+```
 
 前端通过 `buildBusinessColumnModel()` 一次性派生：
 
@@ -188,7 +214,7 @@ BUSINESS_COLUMN_DATA
   └─ field → columnIndex：业务字段到物理列号
 ```
 
-列树与 `BUSINESS_DATA` 通过 `field` 配合：普通叶子列的 `field` 必须是业务节点上的字段，例如 `revenue`；产品层级、产品属性和区域层级是投影字段。应用启动时会检查所有 `recordId` 唯一，并检查每个业务节点是否具有后台列配置要求的字段，配置错误会立即报出。
+列树与 `BUSINESS_DATA` 通过 `field` 配合：普通叶子列的 `field` 必须是业务节点上的字段，例如 `revenue`；产品层级、产品属性和区域层级是投影字段。应用启动时会检查所有业务节点 `id` 和完整行维唯一，并检查每个业务节点是否具有后台列配置要求的字段，配置错误会立即报出。
 
 最终生成的表头包括：
 
@@ -239,7 +265,7 @@ DrillView 路径
   ↓ getCellEditability()
 定位唯一 BUSINESS_DATA 树节点（汇总或明细）
   ↓ toBusinessCellDimension()
-生成扁平、稳定的业务维度
+从两棵后台树生成稳定的行维路径和列维路径
   ↓ updateBusinessNode()
 更新直接字段及收入、订单、状态等同级联动字段
   ↓ createBusinessProjectionRows() / createStressProjectionRows()
@@ -259,30 +285,37 @@ DrillView 路径
 
 #### 前后端业务单元格维度
 
-不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们会随着折叠、展开和下钻变化。编辑回调只返回修改前值、修改后值和一个扁平业务维度：
+不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们会随着折叠、展开和下钻变化。编辑回调只返回修改前值、修改后值以及明确分开的行维和列维：
 
 ```ts
 {
-  oldValue: 3724800,
-  newValue: 3800000,
+  oldValue: 4814200,
+  newValue: 4900000,
   dimension: {
-    label: '书柜 / 华东 / 净收入',
-    dataset: 'regular',
-    recordId: 'bookcases-east',
-    metricField: 'revenue'
+    row: {
+      category: '家具',
+      subcategory: '书柜',
+      region: '华东',
+      detail: '上海'
+    },
+    column: ['core-metrics', 'income-metrics', 'revenue']
   }
 }
 ```
 
-`label` 让日志一眼可读；后台通信和反向定位只需要唯一的 `recordId` 与 `metricField`。产品、区域、成员等完整维度可以沿 `BUSINESS_DATA` 的父子路径获得，不在每次修改回调里重复传输。
+其中：
+
+- `dimension.row` 来自 `BUSINESS_DATA` 的 `children` 路径，键固定为 `category → subcategory → region → detail`；汇总行只包含实际存在的层级，例如大类区域汇总是 `{ category: '家具', region: '华东' }`；
+- `dimension.column` 来自 `BUSINESS_COLUMN_DATA` 的 `children` 路径，数组内容全部是稳定 `id`，最后一项是叶子列 ID；
+- 行维、列维都不包含物理行号或列号。前端启动时会校验行路径唯一、列 ID 和字段唯一，避免后台维度定位到多个业务单元格。
 
 转换方向如下：
 
 ```text
 表格行列位置
-  ↓ toBusinessCellDimension(row, col, dataMode)
-BusinessCellDimension（随修改请求发给后台）
-  ↓ 后端原样返回 dimension
+  ↓ toBusinessCellDimension(viewRow, col)
+{ row: BusinessRowDimension, column: BusinessColumnDimension }
+  ↓ 随修改请求发给后台，后台可原样返回
 isBusinessCellDimension() 运行时校验
   ↓ resolveBusinessCellDimension()
 全展开投影中的目标及祖先
@@ -306,6 +339,16 @@ useSpreadsheetController({
 ```ts
 actionsRef.current?.locateBusinessCell(response.dimension);
 ```
+
+底层的纯转换方法也可以单独使用：
+
+```ts
+const dimension = toBusinessCellDimension(viewRow, columnIndex);
+const location = resolveBusinessCellDimension(fullyExpandedRows, dimension);
+// location.row / location.col 是当前投影中的物理坐标。
+```
+
+页面工具栏提供“维度定位”验证入口。粘贴 `{ row, column }` JSON 后点击“定位单元格”（或按 Ctrl/⌘ + Enter），页面会调用 `locateBusinessCell()`，自动展开必要的产品、区域和列分组，再滚动并选中目标单元格。该入口只用于人工验收双向转换，不属于正式业务流程。
 
 ### 1.5 撤销、重做和单元格历史
 
@@ -618,7 +661,7 @@ index.tsx 增加按钮或面板
 
 - `BUSINESS_DATA`：包含全部汇总与明细记录的完整业务快照；
 - 压力数据叶子节点：10 万行模式的模拟明细；
-- `BusinessCellDimension`：编辑接口的产品、区域、记录和指标维度；
+- `BusinessCellDimension`：编辑接口的 `row` 行层级路径和 `column` 列树路径；
 - `commentsRef`：批注；
 - `historyRef`：审计历史；
 - `attachmentsRef`：附件元数据。

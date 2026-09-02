@@ -1,13 +1,8 @@
 import {
-  AVG_ORDER_COLUMN,
   COLUMNS,
-  COMPLETION_COLUMN,
-  DECIMAL_COLUMN,
   PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
-  REVENUE_COLUMN,
-  SERVICE_REVENUE_COLUMN,
 } from './business-column-schema';
 
 export {
@@ -22,6 +17,8 @@ export {
   AVG_ORDER_COLUMN,
   COMPLETION_COLUMN,
   DECIMAL_COLUMN,
+  getBusinessColumnDimension,
+  getBusinessColumnIndex,
   ORDERS_COLUMN,
   PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
@@ -35,11 +32,14 @@ export {
 } from './business-column-schema';
 export type {
   BusinessColumnGroup,
+  BusinessColumnDimension,
   BusinessColumnLeaf,
   BusinessColumnNode,
+  ColumnDataType,
   ColumnDefinition,
+  ColumnEditor,
+  ColumnFormat,
   ColumnHeaderCell,
-  ColumnValueType,
 } from './business-column-schema';
 
 export type Status = '已核验' | '待复核' | '异常';
@@ -103,6 +103,12 @@ export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
 export type HierarchyRole = 'category' | 'subcategory' | 'region' | 'detail';
+export type BusinessRowDimension = {
+  category: string;
+  subcategory?: string;
+  region?: string;
+  detail?: string;
+};
 export type HierarchyField =
   | 'productHierarchy'
   | 'productAttribute'
@@ -113,6 +119,8 @@ export type BusinessField = Exclude<
 >;
 export type ColumnField = BusinessField | HierarchyField;
 export type ViewRow = BusinessNode & {
+  /** 从 BUSINESS_DATA 的 children 路径派生，不使用易变的 Worksheet 行号。 */
+  rowDimension: BusinessRowDimension;
   sourceNodes: readonly BusinessNode[];
   level: number;
   hasChildren?: boolean;
@@ -1247,9 +1255,18 @@ function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
       throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
     recordIds.add(node.id);
     COLUMNS.forEach((column) => {
-      if (!isHierarchyField(column.field) && !(column.field in node))
+      if (isHierarchyField(column.field)) return;
+      if (!(column.field in node))
         throw new Error(
           `BUSINESS_DATA 记录 ${node.id} 缺少列字段：${column.field}`,
+        );
+      const value = node[column.field];
+      const typeMatches =
+        (column.dataType === 'date' && value instanceof Date) ||
+        (column.dataType !== 'date' && typeof value === column.dataType);
+      if (!typeMatches)
+        throw new Error(
+          `BUSINESS_DATA 记录 ${node.id} 的 ${column.field} 应为 ${column.dataType}`,
         );
     });
     node.children?.forEach(visit);
@@ -1259,6 +1276,69 @@ function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
 }
 
 assertBusinessDataMatchesColumns(BUSINESS_DATA);
+
+export const BUSINESS_ROW_DIMENSION_KEYS = [
+  'category',
+  'subcategory',
+  'region',
+  'detail',
+] as const satisfies readonly (keyof BusinessRowDimension)[];
+
+export function businessRowDimensionKey(dimension: BusinessRowDimension) {
+  return JSON.stringify(
+    BUSINESS_ROW_DIMENSION_KEYS.map((key) => dimension[key] ?? null),
+  );
+}
+
+const BUSINESS_ROW_DIMENSION_BY_ID = new Map<string, BusinessRowDimension>();
+const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, BusinessNode>();
+
+function indexBusinessRowDimensions(
+  nodes: readonly BusinessNode[],
+  parent?: BusinessRowDimension,
+) {
+  nodes.forEach((node) => {
+    if (!parent && node.hierarchyRole !== 'category')
+      throw new Error(`BUSINESS_DATA 根节点必须是 category：${node.id}`);
+    const dimension: BusinessRowDimension =
+      node.hierarchyRole === 'category'
+        ? { category: node.name }
+        : {
+            ...(parent as BusinessRowDimension),
+            [node.hierarchyRole]: node.name,
+          };
+    const key = businessRowDimensionKey(dimension);
+    const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
+    if (duplicate)
+      throw new Error(
+        `BUSINESS_DATA 行维度不唯一：${duplicate.id} 与 ${node.id}`,
+      );
+    BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
+    BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
+    if (node.children?.length)
+      indexBusinessRowDimensions(node.children, dimension);
+    if (node.regionSummaries?.length)
+      indexBusinessRowDimensions(node.regionSummaries, dimension);
+  });
+}
+
+indexBusinessRowDimensions(BUSINESS_DATA);
+
+/** 根据后台记录 ID 得到完整行维度；返回副本，避免调用方修改索引。 */
+export function getBusinessRowDimension(recordId: string) {
+  const dimension = BUSINESS_ROW_DIMENSION_BY_ID.get(recordId);
+  return dimension ? { ...dimension } : null;
+}
+
+/** 后台给出行维度时，可以直接反查 BUSINESS_DATA 中的唯一记录。 */
+export function findBusinessNodeByRowDimension(
+  dimension: BusinessRowDimension,
+) {
+  return (
+    BUSINESS_NODE_BY_ROW_DIMENSION.get(businessRowDimensionKey(dimension)) ??
+    null
+  );
+}
 
 export const INITIAL_PRODUCT_EXPANDED = ['furniture'] as const;
 
@@ -1538,6 +1618,9 @@ export function createBusinessProjectionRows(
     );
     return regions.map((region, index): ViewRow => {
       const backendNode = region.sourceNodes[0] ?? product.node;
+      const rowDimension = getBusinessRowDimension(backendNode.id);
+      if (!rowDimension)
+        throw new Error(`BUSINESS_DATA 记录缺少行维度：${backendNode.id}`);
       return {
         ...backendNode,
         id: `${product.id}::${region.id}`,
@@ -1548,6 +1631,7 @@ export function createBusinessProjectionRows(
               (child) => child.hierarchyRole === 'subcategory',
             )
           : undefined,
+        rowDimension,
         sourceNodes: region.sourceNodes,
         level: product.depth,
         hasChildren: product.isGroup,
@@ -1762,6 +1846,13 @@ function createStressRecord(index: number): ViewRow {
     ? regionLabel
     : detailLabel;
   const sourceId = `stress-${index}`;
+  const rowDimension: BusinessRowDimension = {
+    category: businessGroupLabel,
+  };
+  if (!isBusinessGroup) rowDimension.subcategory = productLabel;
+  if (!isBusinessGroup && !isProductLine) rowDimension.region = regionLabel;
+  if (!isBusinessGroup && !isProductLine && !isRegion)
+    rowDimension.detail = detailLabel;
   return {
     ...makeNode(
       sourceId,
@@ -1780,6 +1871,7 @@ function createStressRecord(index: number): ViewRow {
       status,
       index % 3 === 0 ? '2026-08-21' : '2026-08-20',
     ),
+    rowDimension,
     sourceNodes: [],
     level: isBusinessGroup ? 0 : isProductLine ? 1 : isRegion ? 2 : 3,
     hasChildren: isBusinessGroup || isRegion,
@@ -1921,6 +2013,7 @@ type StressProjectionRegion = {
 type StressProjectionProduct = {
   id: string;
   parentId: string | null;
+  categoryLabel: string;
   label: string;
   attribute: string;
   depth: 0 | 1;
@@ -2027,6 +2120,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
       const product: StressProjectionProduct = {
         id: productSummary.productId,
         parentId: groupSummary.productId,
+        categoryLabel: groupSummary.productLabel,
         label: productSummary.productLabel,
         attribute: productSummary.productAttribute,
         depth: 1,
@@ -2043,6 +2137,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
     const root: StressProjectionProduct = {
       id: groupSummary.productId,
       parentId: null,
+      categoryLabel: groupSummary.productLabel,
       label: groupSummary.productLabel,
       attribute: groupSummary.productAttribute,
       depth: 0,
@@ -2093,6 +2188,13 @@ function projectStressProduct(
       name: `${product.label} / ${region.label}`,
       hierarchyRole: product.isGroup ? 'category' : 'subcategory',
       children: undefined,
+      rowDimension: product.isGroup
+        ? { category: product.categoryLabel, region: region.label }
+        : {
+            category: product.categoryLabel,
+            subcategory: product.label,
+            region: region.label,
+          },
       sourceNodes: region.summaryRows.flatMap((row) =>
         row.sourceNodes.length ? row.sourceNodes : [row],
       ),
@@ -2130,6 +2232,13 @@ function projectStressProduct(
           name: `${product.label} / ${detail.regionLabel}`,
           hierarchyRole: 'detail',
           children: undefined,
+          rowDimension: product.isGroup
+            ? {
+                category: product.categoryLabel,
+                subcategory: detail.regionLabel,
+                region: region.label,
+              }
+            : detail.rowDimension,
           sourceNodes,
           level: product.depth,
           hasChildren: false,
@@ -2376,15 +2485,11 @@ export function stressCellSearchText(
   }
   if (typeof value === 'boolean') return value ? '是 true' : '否 false';
   if (typeof value === 'number') {
-    if (col === COMPLETION_COLUMN)
-      return `${value} ${(value * 100).toFixed(1)}%`;
-    if (col === DECIMAL_COLUMN) return `${value} ${value.toFixed(2)}`;
+    const format = COLUMNS[col]?.format;
+    if (format === 'percent') return `${value} ${(value * 100).toFixed(1)}%`;
+    if (format === 'decimal') return `${value} ${value.toFixed(2)}`;
     if (includeFormattedNumber) {
-      const currency =
-        (col >= REVENUE_COLUMN && col <= SERVICE_REVENUE_COLUMN) ||
-        col === AVG_ORDER_COLUMN
-          ? '¥'
-          : '';
+      const currency = format === 'currency' ? '¥' : '';
       return `${value} ${currency}${value.toLocaleString('zh-CN')}`;
     }
     return String(value);
@@ -2512,10 +2617,10 @@ export function roundToTwoDecimals(value: number) {
 export function numericDisplayForColumn(
   col: number,
 ): Exclude<NumericDisplay, 'mixed'> {
-  const valueType = COLUMNS[col]?.valueType;
-  if (valueType === 'currency') return 'currency';
-  if (valueType === 'percent') return 'percent';
-  if (valueType === 'decimal') return 'decimal';
+  const format = COLUMNS[col]?.format;
+  if (format === 'currency') return 'currency';
+  if (format === 'percent') return 'percent';
+  if (format === 'decimal') return 'decimal';
   return 'number';
 }
 

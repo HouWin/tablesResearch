@@ -1,15 +1,21 @@
 import type { ColumnField } from './model';
 
-export type ColumnValueType =
-  | 'hierarchy'
-  | 'text'
+export type ColumnDataType = 'string' | 'number' | 'boolean' | 'date';
+export type ColumnFormat =
   | 'currency'
   | 'integer'
   | 'percent'
-  | 'status'
-  | 'boolean'
   | 'date'
   | 'decimal';
+export type ColumnEditor =
+  | { type: 'text' }
+  | { type: 'number' }
+  | { type: 'select'; options: readonly string[] }
+  | { type: 'checkbox' }
+  | { type: 'date' };
+
+/** 根分组到叶子列的稳定 ID 路径，例如 core-metrics/income-metrics/revenue。 */
+export type BusinessColumnDimension = readonly string[];
 
 /** 后台列树中的叶子节点，对应 Worksheet 中的一列。 */
 export type BusinessColumnLeaf = {
@@ -17,7 +23,9 @@ export type BusinessColumnLeaf = {
   field: ColumnField;
   label: string;
   width: number;
-  valueType: ColumnValueType;
+  dataType: ColumnDataType;
+  format?: ColumnFormat;
+  editor?: ColumnEditor;
   editable: boolean;
   searchable?: boolean;
 };
@@ -73,7 +81,7 @@ export const BUSINESS_COLUMN_DATA = [
         field: 'productHierarchy',
         label: '产品层级',
         width: 178,
-        valueType: 'hierarchy',
+        dataType: 'string',
         editable: false,
         searchable: true,
       },
@@ -82,7 +90,7 @@ export const BUSINESS_COLUMN_DATA = [
         field: 'productAttribute',
         label: '产品属性',
         width: 144,
-        valueType: 'text',
+        dataType: 'string',
         editable: false,
         searchable: true,
       },
@@ -91,7 +99,7 @@ export const BUSINESS_COLUMN_DATA = [
         field: 'regionHierarchy',
         label: '区域层级',
         width: 168,
-        valueType: 'hierarchy',
+        dataType: 'string',
         editable: false,
         searchable: true,
       },
@@ -112,7 +120,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'revenue',
             label: '净收入',
             width: 112,
-            valueType: 'currency',
+            dataType: 'number',
+            format: 'currency',
+            editor: { type: 'number' },
             editable: true,
           },
           {
@@ -120,7 +130,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'productRevenue',
             label: '商品收入',
             width: 108,
-            valueType: 'currency',
+            dataType: 'number',
+            format: 'currency',
+            editor: { type: 'number' },
             editable: true,
           },
           {
@@ -128,7 +140,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'serviceRevenue',
             label: '服务收入',
             width: 108,
-            valueType: 'currency',
+            dataType: 'number',
+            format: 'currency',
+            editor: { type: 'number' },
             editable: true,
           },
         ],
@@ -143,7 +157,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'orders',
             label: '订单数',
             width: 92,
-            valueType: 'integer',
+            dataType: 'number',
+            format: 'integer',
+            editor: { type: 'number' },
             editable: true,
           },
           {
@@ -151,7 +167,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'onlineOrders',
             label: '线上订单',
             width: 92,
-            valueType: 'integer',
+            dataType: 'number',
+            format: 'integer',
+            editor: { type: 'number' },
             editable: true,
           },
           {
@@ -159,7 +177,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'offlineOrders',
             label: '线下订单',
             width: 92,
-            valueType: 'integer',
+            dataType: 'number',
+            format: 'integer',
+            editor: { type: 'number' },
             editable: true,
           },
           {
@@ -167,7 +187,8 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'avgOrder',
             label: '客单价',
             width: 98,
-            valueType: 'currency',
+            dataType: 'number',
+            format: 'currency',
             editable: false,
           },
         ],
@@ -181,7 +202,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'completion',
             label: '目标达成',
             width: 96,
-            valueType: 'percent',
+            dataType: 'number',
+            format: 'percent',
+            editor: { type: 'number' },
             editable: true,
           },
         ],
@@ -203,7 +226,8 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'owner',
             label: '负责人',
             width: 84,
-            valueType: 'text',
+            dataType: 'string',
+            editor: { type: 'text' },
             editable: true,
             searchable: true,
           },
@@ -212,7 +236,11 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'status',
             label: '核验状态',
             width: 96,
-            valueType: 'status',
+            dataType: 'string',
+            editor: {
+              type: 'select',
+              options: ['已核验', '待复核', '异常'],
+            },
             editable: true,
             searchable: true,
           },
@@ -221,7 +249,8 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'verified',
             label: '已核验',
             width: 82,
-            valueType: 'boolean',
+            dataType: 'boolean',
+            editor: { type: 'checkbox' },
             editable: true,
             searchable: true,
           },
@@ -236,7 +265,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'updatedAt',
             label: '更新日期',
             width: 104,
-            valueType: 'date',
+            dataType: 'date',
+            format: 'date',
+            editor: { type: 'date' },
             editable: true,
             searchable: true,
           },
@@ -245,7 +276,9 @@ export const BUSINESS_COLUMN_DATA = [
             field: 'adjustmentFactor',
             label: '调整系数',
             width: 96,
-            valueType: 'decimal',
+            dataType: 'number',
+            format: 'decimal',
+            editor: { type: 'number' },
             editable: true,
           },
         ],
@@ -269,14 +302,21 @@ export function buildBusinessColumnModel(
 ) {
   const ids = new Set<string>();
   const fields = new Set<ColumnField>();
+  const pathByField = new Map<ColumnField, BusinessColumnDimension>();
+  const indexByDimension = new Map<string, number>();
 
-  const validateNode = (node: BusinessColumnNode) => {
+  const validateNode = (
+    node: BusinessColumnNode,
+    parentPath: BusinessColumnDimension,
+  ) => {
     if (ids.has(node.id)) throw new Error(`后台列配置存在重复 id：${node.id}`);
     ids.add(node.id);
+    const path = [...parentPath, node.id];
     if (isColumnLeaf(node)) {
       if (fields.has(node.field))
         throw new Error(`后台列配置存在重复 field：${node.field}`);
       fields.add(node.field);
+      pathByField.set(node.field, path);
       return;
     }
     if (!node.children.length)
@@ -285,14 +325,19 @@ export function buildBusinessColumnModel(
     const containsGroup = node.children.some((child) => !isColumnLeaf(child));
     if (containsLeaf && containsGroup)
       throw new Error(`同一列分组不能混合叶子列和子分组：${node.id}`);
-    node.children.forEach(validateNode);
+    node.children.forEach((child) => validateNode(child, path));
   };
-  roots.forEach(validateNode);
+  roots.forEach((root) => validateNode(root, []));
 
   const columns = leavesOf(roots);
   const indexByField = new Map(
     columns.map((column, index) => [column.field, index]),
   );
+  columns.forEach((column, index) => {
+    const path = pathByField.get(column.field);
+    if (!path) throw new Error(`后台叶子列缺少维度路径：${column.id}`);
+    indexByDimension.set(JSON.stringify(path), index);
+  });
   const spanOf = (group: BusinessColumnGroup): ColumnHeaderSpan => {
     const leaves = leavesOf(group.children);
     const startCol = indexByField.get(leaves[0].field);
@@ -391,6 +436,8 @@ export function buildBusinessColumnModel(
     outlineGroups,
     frozenColumnCount: frozenColumns.length,
     indexByField,
+    pathByField,
+    indexByDimension,
   };
 }
 
@@ -403,6 +450,19 @@ export const COLUMN_HEADER_CELLS = COLUMN_MODEL.headerCells;
 export const COLUMN_HEADER_ROW_COUNT = COLUMN_MODEL.headerRowCount;
 export const COLUMN_GROUPS = COLUMN_MODEL.outlineGroups;
 export const HIERARCHY_COLUMN_COUNT = COLUMN_MODEL.frozenColumnCount;
+
+/** 根据业务字段得到后台列树中的完整路径。 */
+export function getBusinessColumnDimension(
+  field: ColumnField,
+): BusinessColumnDimension | null {
+  const path = COLUMN_MODEL.pathByField.get(field);
+  return path ? [...path] : null;
+}
+
+/** 根据后台给出的完整列路径得到物理列号；路径不完整或不匹配时返回 -1。 */
+export function getBusinessColumnIndex(dimension: BusinessColumnDimension) {
+  return COLUMN_MODEL.indexByDimension.get(JSON.stringify(dimension)) ?? -1;
+}
 
 function requiredColumnIndex(field: ColumnField) {
   const index = COLUMN_MODEL.indexByField.get(field);

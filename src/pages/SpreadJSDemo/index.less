@@ -311,6 +311,65 @@
     color: var(--faint);
     font-size: 9px;
   }
+  .dimension-locator-popover {
+    width: min(450px, calc(100vw - 24px));
+  }
+  .dimension-locator-popover > label {
+    display: block;
+    margin-bottom: 7px;
+  }
+  .dimension-locator-popover textarea {
+    display: block;
+    width: 100%;
+    min-height: 230px;
+    padding: 10px 11px;
+    resize: vertical;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    outline: 0;
+    background: #fafbfc;
+    color: #273142;
+    font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      monospace;
+    tab-size: 2;
+  }
+  .dimension-locator-popover textarea:focus {
+    border-color: #9f8ae7;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(101, 72, 200, 0.09);
+  }
+  .dimension-locator-popover > small {
+    display: block;
+    margin-top: 7px;
+    color: var(--faint);
+    font-size: 9px;
+  }
+  .dimension-locator-footer {
+    min-height: 32px;
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .dimension-locator-footer > span {
+    min-width: 0;
+    flex: 1;
+    color: var(--danger);
+    font-size: 9px;
+    line-height: 1.4;
+  }
+  .dimension-locator-footer button {
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #fff;
+  }
+  .dimension-locator-footer button:hover:not(:disabled) {
+    background: var(--accent-strong);
+    color: #fff;
+  }
   .column-popover {
     width: 282px;
     max-height: min(520px, calc(100vh - 24px));

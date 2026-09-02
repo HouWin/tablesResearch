@@ -1,20 +1,24 @@
 import {
+  BUSINESS_ROW_DIMENSION_KEYS,
   COLUMNS,
+  businessRowDimensionKey,
+  getBusinessColumnDimension,
+  getBusinessColumnIndex,
   isHierarchyField,
-  type BusinessField,
-  type DataMode,
+  type BusinessColumnDimension,
+  type BusinessRowDimension,
   type ViewRow,
 } from './model';
 
 /**
- * 回调和后台定位共用的扁平业务维度。
- * label 仅用于展示，定位只使用其余稳定 ID 与 metricField。
+ * 前后台共用的业务单元格坐标。
+ *
+ * row 来自 BUSINESS_DATA 的 children 路径；column 来自
+ * BUSINESS_COLUMN_DATA 的 children 路径。两者都不依赖易变的物理行列号。
  */
 export type BusinessCellDimension = {
-  label: string;
-  dataset: Exclude<DataMode, 'loading'>;
-  recordId: string;
-  metricField: BusinessField;
+  row: BusinessRowDimension;
+  column: BusinessColumnDimension;
 };
 
 export type BusinessCellLocation = {
@@ -27,20 +31,49 @@ export type BusinessCellLocation = {
   regionDepth: 0 | 1;
 };
 
+export function isBusinessRowDimension(
+  value: unknown,
+): value is BusinessRowDimension {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const keys = Object.keys(row);
+  if (
+    !keys.length ||
+    keys.some(
+      (key) =>
+        !BUSINESS_ROW_DIMENSION_KEYS.includes(
+          key as keyof BusinessRowDimension,
+        ),
+    )
+  )
+    return false;
+  if (typeof row.category !== 'string' || !row.category.trim()) return false;
+  return keys.every(
+    (key) => typeof row[key] === 'string' && Boolean(String(row[key]).trim()),
+  );
+}
+
+export function businessRowDimensionsEqual(
+  left: BusinessRowDimension,
+  right: BusinessRowDimension,
+) {
+  return businessRowDimensionKey(left) === businessRowDimensionKey(right);
+}
+
+/** Worksheet 单元格 -> 后台业务维度。 */
 export function toBusinessCellDimension(
   row: ViewRow | undefined,
   col: number,
-  dataset: Exclude<DataMode, 'loading'>,
 ): BusinessCellDimension | null {
   const column = COLUMNS[col];
   const sourceNode = row?.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
   if (!row || !column || isHierarchyField(column.field) || !sourceNode)
     return null;
+  const columnDimension = getBusinessColumnDimension(column.field);
+  if (!columnDimension) return null;
   return {
-    label: [row.productLabel, row.regionLabel, column.label].join(' / '),
-    dataset,
-    recordId: sourceNode.id,
-    metricField: column.field,
+    row: { ...row.rowDimension },
+    column: [...columnDimension],
   };
 }
 
@@ -49,43 +82,70 @@ export function isBusinessCellDimension(
 ): value is BusinessCellDimension {
   if (!value || typeof value !== 'object') return false;
   const dimension = value as Partial<BusinessCellDimension>;
-  return (
-    typeof dimension.label === 'string' &&
-    (dimension.dataset === 'regular' || dimension.dataset === 'stress') &&
-    typeof dimension.recordId === 'string' &&
-    typeof dimension.metricField === 'string' &&
-    COLUMNS.some(
-      (column) =>
-        !isHierarchyField(column.field) &&
-        column.field === dimension.metricField,
+  if (
+    !isBusinessRowDimension(dimension.row) ||
+    !Array.isArray(dimension.column) ||
+    !dimension.column.length ||
+    !dimension.column.every(
+      (segment) => typeof segment === 'string' && Boolean(segment.trim()),
     )
-  );
+  )
+    return false;
+  const col = getBusinessColumnIndex(dimension.column);
+  return col >= 0 && !isHierarchyField(COLUMNS[col].field);
 }
 
-/** 后台把回调中的 dimension 原样传回，即可反向定位。 */
+function matchesCanonicalProjection(
+  row: ViewRow,
+  dimension: BusinessRowDimension,
+) {
+  const product = dimension.subcategory ?? dimension.category;
+  if (row.productLabel !== product) return false;
+  if (dimension.region && row.regionRootLabel !== dimension.region)
+    return false;
+  if (dimension.detail) return row.regionLabel === dimension.detail;
+  return !dimension.region || row.regionDepth === 0;
+}
+
+/** 后台行维、列维 -> 当前投影中的物理单元格。 */
 export function resolveBusinessCellDimension(
   rows: readonly ViewRow[],
   dimension: BusinessCellDimension,
 ): BusinessCellLocation | null {
   if (!isBusinessCellDimension(dimension)) return null;
-  const col = COLUMNS.findIndex(
-    (column) => column.field === dimension.metricField,
-  );
+  const col = getBusinessColumnIndex(dimension.column);
   if (col < 0 || isHierarchyField(COLUMNS[col].field)) return null;
-  const row = rows.findIndex(
-    (candidate) =>
-      candidate.sourceNodes.length === 1 &&
-      candidate.sourceNodes[0].id === dimension.recordId,
-  );
-  if (row < 0) return null;
-  const match = rows[row];
+
+  const candidates = rows
+    .map((candidate, row) => ({ candidate, row }))
+    .filter(({ candidate }) =>
+      businessRowDimensionsEqual(candidate.rowDimension, dimension.row),
+    );
+  const matched =
+    candidates.find(({ candidate }) =>
+      matchesCanonicalProjection(candidate, dimension.row),
+    ) ?? candidates[0];
+  if (!matched) return null;
+
   return {
-    row,
+    row: matched.row,
     col,
-    projectionRowId: match.id,
-    productId: match.productId,
-    productParentId: match.productParentId,
-    regionRootId: match.regionRootId,
-    regionDepth: match.regionDepth,
+    projectionRowId: matched.candidate.id,
+    productId: matched.candidate.productId,
+    productParentId: matched.candidate.productParentId,
+    regionRootId: matched.candidate.regionRootId,
+    regionDepth: matched.candidate.regionDepth,
   };
+}
+
+export function describeBusinessCellDimension(
+  dimension: BusinessCellDimension,
+) {
+  const col = getBusinessColumnIndex(dimension.column);
+  const rowPath = BUSINESS_ROW_DIMENSION_KEYS.flatMap((key) => {
+    const value = dimension.row[key];
+    return value ? [value] : [];
+  });
+  const columnLabel = col >= 0 ? COLUMNS[col].label : dimension.column.at(-1);
+  return [...rowPath, columnLabel].filter(Boolean).join(' / ');
 }

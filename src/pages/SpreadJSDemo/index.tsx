@@ -16,6 +16,7 @@ import {
   History,
   Info,
   LockKeyhole,
+  LocateFixed,
   MessageSquareText,
   Paperclip,
   Redo2,
@@ -33,6 +34,7 @@ import './index.less';
 import {
   ColumnVisibilityPopover,
   DemoHeader,
+  DimensionLocatorPopover,
   Drawer,
   SearchPopover,
   SheetStatusBar,
@@ -349,8 +351,10 @@ export default function SpreadJSDemoPage() {
     ? getCellEditability(selected.node, selected.col)
     : null;
   const lineageDetails = getLineageDetails(selected);
+  const [dimensionLocatorOpen, setDimensionLocatorOpen] = useState(false);
   const searchAnchorRef = useRef<HTMLDivElement>(null);
   const columnAnchorRef = useRef<HTMLDivElement>(null);
+  const dimensionAnchorRef = useRef<HTMLDivElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const {
     toolbarRef,
@@ -417,6 +421,7 @@ export default function SpreadJSDemoPage() {
                     return !open;
                   });
                   setColumnMenuOpen(false);
+                  setDimensionLocatorOpen(false);
                 }}
               >
                 <Search size={16} />
@@ -444,6 +449,35 @@ export default function SpreadJSDemoPage() {
               )}
             </div>
 
+            <div ref={dimensionAnchorRef} className="toolbar-popover-anchor">
+              <button
+                type="button"
+                disabled={tableBusy}
+                aria-label="按业务维度定位"
+                aria-expanded={dimensionLocatorOpen}
+                aria-controls="dimension-locator-popover"
+                className={dimensionLocatorOpen ? 'is-active' : ''}
+                onClick={() => {
+                  setDimensionLocatorOpen((open) => !open);
+                  if (searchOpen) actionsRef.current?.cancelSearch();
+                  setSearchOpen(false);
+                  setColumnMenuOpen(false);
+                }}
+              >
+                <LocateFixed size={16} />
+                <span>维度定位</span>
+              </button>
+              {dimensionLocatorOpen ? (
+                <DimensionLocatorPopover
+                  anchorRef={dimensionAnchorRef}
+                  onLocate={(dimension) =>
+                    actionsRef.current?.locateBusinessCell(dimension) ?? false
+                  }
+                  onClose={() => setDimensionLocatorOpen(false)}
+                />
+              ) : null}
+            </div>
+
             <div ref={columnAnchorRef} className="toolbar-popover-anchor">
               <button
                 type="button"
@@ -456,6 +490,7 @@ export default function SpreadJSDemoPage() {
                   setColumnMenuOpen((open) => !open);
                   if (searchOpen) actionsRef.current?.cancelSearch();
                   setSearchOpen(false);
+                  setDimensionLocatorOpen(false);
                 }}
               >
                 <Columns3 size={16} />
