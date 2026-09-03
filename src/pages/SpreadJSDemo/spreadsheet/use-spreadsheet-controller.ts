@@ -1,6 +1,10 @@
-'use client';
-
 import { useEffect, useRef, useState } from 'react';
+import {
+  MAX_ATTACHMENTS_PER_CELL,
+  MAX_ATTACHMENT_SIZE,
+  attachmentIconDataUrl,
+  isAcceptedAttachment,
+} from './attachments';
 import {
   CLIPBOARD_CALLBACKS,
   clipboardTextToMatrix,
@@ -67,7 +71,6 @@ import {
   type DataMode,
   type DrillView,
   type HistoryItem,
-  type NumericDisplay,
   type OutlineDimension,
   type OutlineSnapshot,
   type PanelName,
@@ -77,6 +80,7 @@ import {
   type ToastTone,
   type ViewRow,
 } from './model';
+import { calculateSelectionStatistics } from './selection-statistics';
 
 type GCModule = typeof import('@grapecity-software/spread-sheets');
 type Workbook =
@@ -174,7 +178,9 @@ function logCellChange(payload: BusinessCellChangePayload) {
 }
 
 export type SpreadsheetControllerOptions = {
-  onBusinessCellChange?: (payload: BusinessCellChangePayload) => void;
+  onBusinessCellChange?: (
+    payload: BusinessCellChangePayload,
+  ) => void | Promise<void>;
 };
 
 export type SpreadsheetActions = {
@@ -202,24 +208,6 @@ export type SpreadsheetActions = {
   locateBusinessCell: (dimension: BusinessCellDimension) => boolean;
 };
 
-export const ATTACHMENT_ACCEPT =
-  'image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.xls,.xlsx';
-export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
-const MAX_ATTACHMENTS_PER_CELL = 10;
-const ATTACHMENT_EXTENSION_PATTERN =
-  /\.(?:gif|jpe?g|png|webp|pdf|docx?|xlsx?)$/i;
-const ACCEPTED_ATTACHMENT_MIME_TYPES = new Set([
-  'image/gif',
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-]);
-
 type RegularSearchMatch = {
   nodeId: string;
   productId: string;
@@ -229,34 +217,6 @@ type RegularSearchMatch = {
   regionDepth: 0 | 1;
   col: number;
 };
-// A solid-color rounded badge with a white paperclip glyph (and an optional
-// count bubble) baked directly into the icon. A bare 13px outline icon on a
-// near-white button background had almost no contrast and just looked like
-// an empty little box, so the badge now carries its own color regardless of
-// the surrounding cell/theme colors.
-function attachmentIconDataUrl(count: number) {
-  const badge =
-    count > 1
-      ? `<circle cx="18.5" cy="5.5" r="5.5" fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
-         <text x="18.5" y="6.2" text-anchor="middle" dominant-baseline="middle" font-size="7.5" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${
-           count > 9 ? '9+' : count
-         }</text>`
-      : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-    <rect x="1" y="1" width="22" height="22" rx="6" fill="#6548c8"/>
-    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(3,3) scale(0.62)"/>
-    ${badge}
-  </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function isAcceptedAttachment(file: File) {
-  return (
-    ACCEPTED_ATTACHMENT_MIME_TYPES.has(file.type) ||
-    ATTACHMENT_EXTENSION_PATTERN.test(file.name)
-  );
-}
-
 export function useSpreadsheetController(
   options: SpreadsheetControllerOptions = {},
 ) {
@@ -273,6 +233,8 @@ export function useSpreadsheetController(
   const commentsRef = useRef<Map<string, string>>(new Map());
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
   const [ready, setReady] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
     null,
   );
@@ -334,39 +296,6 @@ export function useSpreadsheetController(
   );
 
   useEffect(() => {
-    if (!panel && !searchOpen && !columnMenuOpen) return;
-    const closeTransientUi = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (searchOpen) actionsRef.current?.cancelSearch();
-      setPanel(null);
-      setSearchOpen(false);
-      setColumnMenuOpen(false);
-    };
-    const closePopoversOnOutsidePress = (event: PointerEvent) => {
-      if (!searchOpen && !columnMenuOpen) return;
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        target.closest('.toolbar-popover-anchor')
-      )
-        return;
-      if (searchOpen) actionsRef.current?.cancelSearch();
-      setSearchOpen(false);
-      setColumnMenuOpen(false);
-    };
-    window.addEventListener('keydown', closeTransientUi);
-    document.addEventListener('pointerdown', closePopoversOnOutsidePress, true);
-    return () => {
-      window.removeEventListener('keydown', closeTransientUi);
-      document.removeEventListener(
-        'pointerdown',
-        closePopoversOnOutsidePress,
-        true,
-      );
-    };
-  }, [columnMenuOpen, panel, searchOpen]);
-
-  useEffect(() => {
     setReady(false);
     setInitializationError(null);
     let cancelled = false;
@@ -403,6 +332,7 @@ export function useSpreadsheetController(
     let stressSessionEpoch = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
+    let commandStateTimer = 0;
     let clipboardHistorySource: string | null = null;
     let clipboardHistorySnapshot: ClipboardHistoryCell[] | null = null;
     let commandHistorySource: '撤销' | '重做' | null = null;
@@ -416,7 +346,7 @@ export function useSpreadsheetController(
       backColor: string | null;
     } | null = null;
 
-    const extensionStateFor = (productId: string) => {
+    const subjectExpansionFor = (productId: string) => {
       let state = regionExpandedByProduct.get(productId);
       if (!state) {
         state = new Set<string>();
@@ -519,6 +449,14 @@ export function useSpreadsheetController(
         incrementalCalculation: true,
       });
       workbook = spread;
+      const syncCommandAvailability = () => {
+        setCanUndo(spread.undoManager().canUndo());
+        setCanRedo(spread.undoManager().canRedo());
+      };
+      const scheduleCommandAvailabilitySync = () => {
+        window.clearTimeout(commandStateTimer);
+        commandStateTimer = window.setTimeout(syncCommandAvailability);
+      };
       spread.options.highlightInvalidData = true;
       const sheet = spread.getActiveSheet();
       sheet.name('费用预算表');
@@ -684,55 +622,22 @@ export function useSpreadsheetController(
         worksheet: Worksheet,
         range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
       ) => {
-        const startRow = Math.max(range.row, 0);
-        const startCol = Math.max(range.col, 0);
-        const rowCount =
-          range.row < 0 ? worksheet.getRowCount() : range.rowCount;
-        const colCount =
-          range.col < 0 ? worksheet.getColumnCount() : range.colCount;
-        const total = Math.max(0, rowCount * colCount);
-        const inspectLimit = 200_000;
-        const inspectCount = Math.min(total, inspectLimit);
-        let numeric = 0;
-        let sum = 0;
-        let min = Number.POSITIVE_INFINITY;
-        let max = Number.NEGATIVE_INFINITY;
-        let numericDisplay: NumericDisplay | null = null;
-        for (let offset = 0; offset < inspectCount; offset += 1) {
-          const row = startRow + Math.floor(offset / colCount);
-          const col = startCol + (offset % colCount);
-          const stressDataLoaded =
-            loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-            loadedStressRows.has(row);
-          const value =
-            activeDataMode === 'stress' && !stressDataLoaded
-              ? viewRowCellValue(activeRows[row], col)
-              : worksheet.getValue(row, col);
-          if (typeof value === 'number' && Number.isFinite(value)) {
-            const cellDisplay = numericDisplayForColumn(col);
-            numericDisplay =
-              numericDisplay === null
-                ? cellDisplay
-                : numericDisplay === cellDisplay
-                ? numericDisplay
-                : 'mixed';
-            numeric += 1;
-            sum += value;
-            min = Math.min(min, value);
-            max = Math.max(max, value);
-          }
-        }
-        setSelectionStats({
-          cells: total,
-          numeric,
-          ignored: inspectCount - numeric,
-          sum,
-          average: numeric ? sum / numeric : 0,
-          min: numeric ? min : 0,
-          max: numeric ? max : 0,
-          truncated: total > inspectLimit,
-          numericDisplay: numericDisplay ?? 'number',
-        });
+        setSelectionStats(
+          calculateSelectionStatistics({
+            range,
+            worksheetRowCount: worksheet.getRowCount(),
+            worksheetColumnCount: worksheet.getColumnCount(),
+            valueAt: (row, col) => {
+              const stressDataLoaded =
+                loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
+                loadedStressRows.has(row);
+              return activeDataMode === 'stress' && !stressDataLoaded
+                ? viewRowCellValue(activeRows[row], col)
+                : worksheet.getValue(row, col);
+            },
+            displayAt: numericDisplayForColumn,
+          }),
+        );
       };
       const clearOutlinesAndComments = () => {
         const oldRows = Math.max(sheet.getRowCount(), 1);
@@ -1046,10 +951,33 @@ export function useSpreadsheetController(
               newValue: nextValue,
               dimension,
             };
-            onBusinessCellChangeRef.current?.(payload);
+            const callback = onBusinessCellChangeRef.current;
+            if (callback) {
+              try {
+                void Promise.resolve(callback(payload)).catch((error) => {
+                  console.error('[SpreadJS] 业务单元格保存失败', error);
+                  if (!cancelled)
+                    notify(
+                      `${columnName(request.col)}${
+                        request.row + 1
+                      } 的修改未保存，请重试`,
+                      'error',
+                    );
+                });
+              } catch (error) {
+                console.error('[SpreadJS] 业务单元格保存失败', error);
+                notify(
+                  `${columnName(request.col)}${
+                    request.row + 1
+                  } 的修改未保存，请重试`,
+                  'error',
+                );
+              }
+            }
             logCellChange(payload);
           },
         );
+        scheduleCommandAvailabilitySync();
         return Math.max(historyCount, changes.length);
       };
 
@@ -1246,10 +1174,9 @@ export function useSpreadsheetController(
             .textIndent(node.regionDepth);
           const isSummaryRow =
             node.sourceNodes.length !== 1 ||
-            node.sourceNodes.some(
-              (sourceNode) =>
-                sourceNode.hierarchyRole !== 'subjectDetail' ||
-                sourceNode.name.includes('合计'),
+            node.regionDepth === 0 ||
+            node.sourceNodes.some((sourceNode) =>
+              sourceNode.name.includes('合计'),
             );
           if (isSummaryRow) {
             sheet
@@ -1754,6 +1681,8 @@ export function useSpreadsheetController(
           scheduleStressViewportLoad(nextRow);
         }
         setReady(true);
+        spread.undoManager().clear();
+        syncCommandAvailability();
         if (!stress && !regularSourceLoggedRef.current) {
           regularSourceLoggedRef.current = true;
           logRegularBackendData();
@@ -1812,7 +1741,7 @@ export function useSpreadsheetController(
           });
         } else if (expanded) {
           currentProductIds().forEach((productId) => {
-            const state = extensionStateFor(productId);
+            const state = subjectExpansionFor(productId);
             currentRegionGroupIds(productId).forEach((regionId) =>
               state.add(regionId),
             );
@@ -1935,7 +1864,7 @@ export function useSpreadsheetController(
           return;
         }
         if (col === REGION_HIERARCHY_COLUMN && node.regionIsGroup) {
-          const state = extensionStateFor(node.productId);
+          const state = subjectExpansionFor(node.productId);
           const expanded = !state.has(node.regionId);
           if (expanded) state.add(node.regionId);
           else state.delete(node.regionId);
@@ -2056,7 +1985,7 @@ export function useSpreadsheetController(
           expandedHierarchy = true;
         }
         if (!source.productIsGroup && source.regionDepth > 0) {
-          const state = extensionStateFor(source.productId);
+          const state = subjectExpansionFor(source.productId);
           if (!state.has(source.regionRootId)) {
             state.add(source.regionRootId);
             expandedHierarchy = true;
@@ -2093,7 +2022,7 @@ export function useSpreadsheetController(
           expandedHierarchy = true;
         });
         if (match.regionDepth > 0) {
-          const state = extensionStateFor(match.productId);
+          const state = subjectExpansionFor(match.productId);
           if (!state.has(match.regionRootId)) {
             state.add(match.regionRootId);
             expandedHierarchy = true;
@@ -2171,7 +2100,7 @@ export function useSpreadsheetController(
           hierarchyExpanded = true;
         });
         if (target.subjectDepth > 0) {
-          const state = extensionStateFor(target.productId);
+          const state = subjectExpansionFor(target.productId);
           if (!state.has(target.subjectRootId)) {
             state.add(target.subjectRootId);
             hierarchyExpanded = true;
@@ -2410,6 +2339,7 @@ export function useSpreadsheetController(
         const succeeded = runHistoryCommand('撤销', () =>
           spread.undoManager().undo(),
         );
+        syncCommandAvailability();
         notify(
           succeeded ? '已撤销上一次单元格操作' : '撤销失败',
           succeeded ? 'success' : 'error',
@@ -2425,6 +2355,7 @@ export function useSpreadsheetController(
         const succeeded = runHistoryCommand('重做', () =>
           spread.undoManager().redo(),
         );
+        syncCommandAvailability();
         notify(
           succeeded ? '已重做上一次单元格操作' : '重做失败',
           succeeded ? 'success' : 'error',
@@ -2544,7 +2475,7 @@ export function useSpreadsheetController(
           if (collapse) regionExpandedByProduct.clear();
           else {
             currentProductIds().forEach((productId) => {
-              const state = extensionStateFor(productId);
+              const state = subjectExpansionFor(productId);
               currentRegionGroupIds(productId).forEach((regionId) =>
                 state.add(regionId),
               );
@@ -3158,6 +3089,7 @@ export function useSpreadsheetController(
                 : undefined,
             );
             updateSelected(args.row, args.col);
+            scheduleCommandAvailabilitySync();
             return;
           }
           commitBusinessCellValue(
@@ -3173,6 +3105,7 @@ export function useSpreadsheetController(
               : undefined,
           );
           updateSelected(args.row, args.col);
+          scheduleCommandAvailabilitySync();
         },
       );
       sheet.bind(
@@ -3309,6 +3242,7 @@ export function useSpreadsheetController(
       window.clearTimeout(stressViewportTimer);
       window.clearTimeout(validationFlashTimer);
       window.clearTimeout(clipboardHistoryTimer);
+      window.clearTimeout(commandStateTimer);
       clipboardHistorySnapshot = null;
       trackedHistoryCells.clear();
       cellFormulaState.clear();
@@ -3328,6 +3262,8 @@ export function useSpreadsheetController(
     hostRef,
     actionsRef,
     ready,
+    canUndo,
+    canRedo,
     initializationError,
     retryInitialization,
     view,

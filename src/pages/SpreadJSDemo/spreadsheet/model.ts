@@ -1,6 +1,5 @@
 import {
   COLUMNS,
-  PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
 } from './business-column-schema';
@@ -11,7 +10,6 @@ export {
   COLUMNS,
   COLUMN_GROUPS,
   COLUMN_HEADER_CELLS,
-  COLUMN_HEADER_GROUPS,
   COLUMN_HEADER_ROW_COUNT,
   COLUMN_HEADER_SECTIONS,
   HIERARCHY_COLUMN_COUNT,
@@ -24,7 +22,6 @@ export {
 } from './business-column-schema';
 export type {
   BusinessColumnDimension,
-  BusinessColumnDimensionItem,
   BusinessColumnGroup,
   BusinessColumnLeaf,
   BusinessColumnNode,
@@ -75,29 +72,13 @@ export const BUDGET_VALUE_FIELDS = [
 ] as const;
 export type BudgetValueField = (typeof BUDGET_VALUE_FIELDS)[number];
 
-export type OrganizationHierarchyRole = 'group' | 'businessUnit' | 'department';
-export type SubjectHierarchyRole = 'subjectSummary' | 'subjectDetail';
-export type HierarchyRole = OrganizationHierarchyRole | SubjectHierarchyRole;
-
-const ORGANIZATION_ROLE_BY_DEPTH = [
-  'group',
-  'businessUnit',
-  'department',
-] as const satisfies readonly OrganizationHierarchyRole[];
-
-function isOrganizationHierarchyRole(
-  role: HierarchyRole,
-): role is OrganizationHierarchyRole {
-  return ORGANIZATION_ROLE_BY_DEPTH.includes(role as OrganizationHierarchyRole);
-}
-
-export type BusinessNode = {
-  /** 后台记录 ID；组织、汇总和明细记录都全局唯一。 */
+type BusinessNodeBase = {
+  /** 后台记录 ID；组织、科目汇总和科目明细记录都全局唯一。 */
   id: string;
   name: string;
-  /** Excel“功能属性”列的后台字段。 */
-  functionalAttribute: string;
-  hierarchyRole: HierarchyRole;
+};
+
+export type BudgetValues = {
   annualTotal: number;
   january: number;
   february: number;
@@ -111,11 +92,24 @@ export type BusinessNode = {
   october: number;
   november: number;
   december: number;
-  /** 组织节点的下级组织，或科目节点的下级科目。 */
-  children?: BusinessNode[];
-  /** 当前组织对应的科目树，由后台直接返回。 */
-  subjects?: BusinessNode[];
 };
+
+/** 组织节点只负责组织树，不保存已删除“费用汇总”行的业务值。 */
+export type OrganizationNode = BusinessNodeBase & {
+  children?: OrganizationNode[];
+  /** 当前组织对应的科目树，由后台直接返回。 */
+  subjects?: SubjectNode[];
+};
+
+/** 科目汇总和科目明细才是 Worksheet 业务单元格的数据记录。 */
+export type SubjectNode = BusinessNodeBase &
+  BudgetValues & {
+    /** Excel“功能属性”列的后台字段。 */
+    functionalAttribute: string;
+    children?: SubjectNode[];
+  };
+
+export type BusinessNode = OrganizationNode | SubjectNode;
 
 export type CellAttachment = {
   id: string;
@@ -130,32 +124,22 @@ export type CellAttachment = {
 export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
-export type BusinessRowDimensionItem<Role extends HierarchyRole> = {
-  id: string;
-  name: string;
-  hierarchyRole: Role;
-};
-
-/** 前后台共用的稳定行维；名称只用于展示，定位只依赖两条路径中的 id。 */
+/** 前后台共用的稳定行维；组织 ID 与科目 ID 唯一确定一条业务记录。 */
 export type BusinessRowDimension = {
-  organization: readonly BusinessRowDimensionItem<OrganizationHierarchyRole>[];
-  subject: readonly BusinessRowDimensionItem<SubjectHierarchyRole>[];
+  organizationId: string;
+  subjectId: string;
 };
 export type HierarchyField = 'organizationHierarchy' | 'subjectHierarchy';
-export type BusinessField = Exclude<
-  keyof BusinessNode,
-  'id' | 'children' | 'subjects' | 'hierarchyRole'
->;
+export type BusinessField = 'name' | 'functionalAttribute' | BudgetValueField;
 export type ColumnField = BusinessField | HierarchyField;
 
-export type ViewRow = BusinessNode & {
+export type ViewRow = SubjectNode & {
   rowDimension: BusinessRowDimension;
-  sourceNodes: readonly BusinessNode[];
-  productSourceNode?: BusinessNode;
-  level: number;
-  hasChildren?: boolean;
+  sourceNodes: readonly SubjectNode[];
   productId: string;
   productParentId: string | null;
+  /** 压力模式生成组织树时使用；常规模式可从 BUSINESS_DATA 获取。 */
+  productParentLabel?: string;
   productAncestorIds: readonly string[];
   productLabel: string;
   productDepth: number;
@@ -186,7 +170,7 @@ export type OutlineSnapshot = {
 export type CellEditability = {
   editable: boolean;
   reason: string;
-  sourceNode: BusinessNode | null;
+  sourceNode: SubjectNode | null;
 };
 
 export type SelectedCell = {
@@ -271,7 +255,6 @@ export const EMPTY_STATS: SelectionStats = {
   numericDisplay: 'number',
 };
 
-type BudgetValues = Pick<BusinessNode, BudgetValueField>;
 type BudgetPair = readonly [annualTotal: number, monthly: number];
 
 function repeatedBudget(annualTotal: number, monthly: number): BudgetValues {
@@ -295,16 +278,14 @@ function repeatedBudget(annualTotal: number, monthly: number): BudgetValues {
 function makeBudgetNode(
   id: string,
   name: string,
-  hierarchyRole: HierarchyRole,
   functionalAttribute: string,
   annualTotal: number,
   monthly: number,
-  children?: BusinessNode[],
-): BusinessNode {
+  children?: SubjectNode[],
+): SubjectNode {
   return {
     id,
     name,
-    hierarchyRole,
     functionalAttribute,
     ...repeatedBudget(annualTotal, monthly),
     children,
@@ -322,36 +303,26 @@ function makeSubjectTree(
     water: BudgetPair;
   },
 ) {
-  return makeBudgetNode(
-    `${id}-subtotal`,
-    summaryName,
-    'subjectSummary',
-    '-',
-    ...values.summary,
-    [
-      makeBudgetNode(
-        `${id}-office`,
-        '费用-办公费',
-        'subjectDetail',
-        functionalAttribute,
-        ...values.office,
-      ),
-      makeBudgetNode(
-        `${id}-electricity`,
-        '费用-电费',
-        'subjectDetail',
-        functionalAttribute,
-        ...values.electricity,
-      ),
-      makeBudgetNode(
-        `${id}-water`,
-        '费用-水费',
-        'subjectDetail',
-        functionalAttribute,
-        ...values.water,
-      ),
-    ],
-  );
+  return makeBudgetNode(`${id}-subtotal`, summaryName, '-', ...values.summary, [
+    makeBudgetNode(
+      `${id}-office`,
+      '费用-办公费',
+      functionalAttribute,
+      ...values.office,
+    ),
+    makeBudgetNode(
+      `${id}-electricity`,
+      '费用-电费',
+      functionalAttribute,
+      ...values.electricity,
+    ),
+    makeBudgetNode(
+      `${id}-water`,
+      '费用-水费',
+      functionalAttribute,
+      ...values.water,
+    ),
+  ]);
 }
 
 const STANDARD_UNIT_VALUES = {
@@ -364,17 +335,12 @@ const STANDARD_UNIT_VALUES = {
 function makeOrganization(
   id: string,
   name: string,
-  hierarchyRole: OrganizationHierarchyRole,
-  values: BudgetPair,
-  subjectTree: BusinessNode,
-  children?: BusinessNode[],
-): BusinessNode {
+  subjectTree: SubjectNode,
+  children?: OrganizationNode[],
+): OrganizationNode {
   return {
     id,
     name,
-    hierarchyRole,
-    functionalAttribute: '-',
-    ...repeatedBudget(...values),
     children,
     subjects: [subjectTree],
   };
@@ -383,8 +349,6 @@ function makeOrganization(
 const huajingSales = makeOrganization(
   'huajing-sales',
   '华晶公司-销售部',
-  'department',
-  [7_200, 600],
   makeSubjectTree(
     'huajing-sales',
     '管理费用合计',
@@ -395,8 +359,6 @@ const huajingSales = makeOrganization(
 const huajingFinance = makeOrganization(
   'huajing-finance',
   '华晶公司-财务部',
-  'department',
-  [7_200, 600],
   // 源 Excel 的财务部功能属性确实为“销售”，按原始数据保留。
   makeSubjectTree(
     'huajing-finance',
@@ -408,8 +370,6 @@ const huajingFinance = makeOrganization(
 const huajingAdministration = makeOrganization(
   'huajing-administration',
   '华晶公司-行政部',
-  'department',
-  [7_200, 600],
   makeSubjectTree(
     'huajing-administration',
     '日常费用合计',
@@ -420,8 +380,6 @@ const huajingAdministration = makeOrganization(
 const huajingResearch = makeOrganization(
   'huajing-research',
   '华晶公司-研发部',
-  'department',
-  [7_200, 600],
   makeSubjectTree(
     'huajing-research',
     '日常费用合计',
@@ -432,8 +390,6 @@ const huajingResearch = makeOrganization(
 const huajing = makeOrganization(
   'huajing',
   '华晶公司',
-  'businessUnit',
-  [28_800, 2_400],
   makeSubjectTree('huajing', '日常费用合计', '管理', {
     summary: [28_800, 2_400],
     office: [4_800, 400],
@@ -446,8 +402,6 @@ const huajing = makeOrganization(
 const shanghuaSales = makeOrganization(
   'shanghua-sales',
   '上华公司-销售部',
-  'department',
-  [7_200, 600],
   makeSubjectTree(
     'shanghua-sales',
     '日常费用合计',
@@ -458,29 +412,23 @@ const shanghuaSales = makeOrganization(
 const shanghua = makeOrganization(
   'shanghua',
   '上华公司',
-  'businessUnit',
-  [7_200, 600],
   makeSubjectTree('shanghua', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
   [shanghuaSales],
 );
 const headquarters = makeOrganization(
   'headquarters',
   '华润微电子本部',
-  'businessUnit',
-  [7_200, 600],
   makeSubjectTree('headquarters', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
 );
 
 /**
- * 后台直接返回的完整费用预算树。每个组织、科目汇总和明细节点都携带
- * 独立的全年与月度值；前端编辑不会重算或覆盖任何其他节点。
+ * 后台直接返回的完整费用预算树。组织节点只描述组织结构；科目汇总和
+ * 科目明细节点携带后台给出的全年与月度值，前端不会重算其他记录。
  */
-export const BUSINESS_DATA: BusinessNode[] = [
+export const BUSINESS_DATA: OrganizationNode[] = [
   makeOrganization(
     'cr-micro-group',
     '华润微电子集团',
-    'group',
-    [43_200, 3_600],
     makeSubjectTree('cr-micro-group', '日常费用合计', '管理', {
       summary: [43_200, 3_600],
       office: [7_200, 600],
@@ -491,12 +439,21 @@ export const BUSINESS_DATA: BusinessNode[] = [
   ),
 ];
 
-function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
+function isOrganizationNode(node: BusinessNode): node is OrganizationNode {
+  return !('functionalAttribute' in node);
+}
+
+function assertBusinessDataMatchesColumns(
+  organizations: readonly OrganizationNode[],
+) {
   const recordIds = new Set<string>();
-  const visit = (node: BusinessNode) => {
+  const assertUniqueId = (node: BusinessNode) => {
     if (recordIds.has(node.id))
       throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
     recordIds.add(node.id);
+  };
+  const visitSubject = (node: SubjectNode) => {
+    assertUniqueId(node);
     COLUMNS.forEach((column) => {
       if (isHierarchyField(column.field)) return;
       if (!(column.field in node))
@@ -509,59 +466,46 @@ function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
           `BUSINESS_DATA 记录 ${node.id} 的 ${column.field} 应为 ${column.dataType}`,
         );
     });
-    node.children?.forEach(visit);
-    node.subjects?.forEach(visit);
+    node.children?.forEach(visitSubject);
   };
-  nodes.forEach(visit);
+  const visitOrganization = (node: OrganizationNode) => {
+    assertUniqueId(node);
+    COLUMNS.forEach((column) => {
+      if (isHierarchyField(column.field)) return;
+      if (column.field in node)
+        throw new Error(
+          `BUSINESS_DATA 组织 ${node.id} 不应保存业务字段：${column.field}`,
+        );
+    });
+    node.children?.forEach(visitOrganization);
+    node.subjects?.forEach(visitSubject);
+  };
+  organizations.forEach(visitOrganization);
 }
 
 assertBusinessDataMatchesColumns(BUSINESS_DATA);
 
 export function businessRowDimensionKey(dimension: BusinessRowDimension) {
-  return JSON.stringify({
-    organization: dimension.organization.map(({ id }) => id),
-    subject: dimension.subject.map(({ id }) => id),
-  });
+  return JSON.stringify([dimension.organizationId, dimension.subjectId]);
 }
 
 const BUSINESS_ROW_DIMENSION_BY_ID = new Map<string, BusinessRowDimension>();
-const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, BusinessNode>();
+const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, SubjectNode>();
 
 function cloneBusinessRowDimension(
   dimension: BusinessRowDimension,
 ): BusinessRowDimension {
-  return {
-    organization: dimension.organization.map((item) => ({ ...item })),
-    subject: dimension.subject.map((item) => ({ ...item })),
-  };
+  return { ...dimension };
 }
 
 function indexSubjectRowDimensions(
-  nodes: readonly BusinessNode[],
-  organization: BusinessRowDimension['organization'],
-  parentSubject: BusinessRowDimension['subject'] = [],
+  nodes: readonly SubjectNode[],
+  organizationId: string,
 ) {
   nodes.forEach((node) => {
-    const expectedRole: SubjectHierarchyRole = parentSubject.length
-      ? 'subjectDetail'
-      : 'subjectSummary';
-    if (node.hierarchyRole !== expectedRole)
-      throw new Error(
-        `BUSINESS_DATA 科目 ${node.id} 的 hierarchyRole 应为 ${expectedRole}，实际为 ${node.hierarchyRole}`,
-      );
-    if (node.subjects?.length)
-      throw new Error(`BUSINESS_DATA 科目节点不能包含 subjects：${node.id}`);
-    const subject = [
-      ...parentSubject,
-      {
-        id: node.id,
-        name: node.name,
-        hierarchyRole: expectedRole,
-      },
-    ];
     const dimension: BusinessRowDimension = {
-      organization,
-      subject,
+      organizationId,
+      subjectId: node.id,
     };
     const key = businessRowDimensionKey(dimension);
     const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
@@ -572,39 +516,15 @@ function indexSubjectRowDimensions(
     BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
     BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
     if (node.children?.length)
-      indexSubjectRowDimensions(node.children, organization, subject);
+      indexSubjectRowDimensions(node.children, organizationId);
   });
 }
 
-function indexBusinessRowDimensions(
-  nodes: readonly BusinessNode[],
-  parentOrganization: BusinessRowDimension['organization'] = [],
-  organizationDepth = 0,
-) {
+function indexBusinessRowDimensions(nodes: readonly OrganizationNode[]) {
   nodes.forEach((node) => {
-    const expectedRole = ORGANIZATION_ROLE_BY_DEPTH[organizationDepth];
-    if (!expectedRole || node.hierarchyRole !== expectedRole)
-      throw new Error(
-        `BUSINESS_DATA 组织 ${node.id} 的 hierarchyRole 应为 ${
-          expectedRole ?? '受支持的组织层级'
-        }，实际为 ${node.hierarchyRole}`,
-      );
-    const organization = [
-      ...parentOrganization,
-      {
-        id: node.id,
-        name: node.name,
-        hierarchyRole: expectedRole,
-      },
-    ];
     if (node.subjects?.length)
-      indexSubjectRowDimensions(node.subjects, organization);
-    if (node.children?.length)
-      indexBusinessRowDimensions(
-        node.children,
-        organization,
-        organizationDepth + 1,
-      );
+      indexSubjectRowDimensions(node.subjects, node.id);
+    if (node.children?.length) indexBusinessRowDimensions(node.children);
   });
 }
 
@@ -615,15 +535,6 @@ export function getBusinessRowDimension(recordId: string) {
   return dimension ? cloneBusinessRowDimension(dimension) : null;
 }
 
-export function findBusinessNodeByRowDimension(
-  dimension: BusinessRowDimension,
-) {
-  return (
-    BUSINESS_NODE_BY_ROW_DIMENSION.get(businessRowDimensionKey(dimension)) ??
-    null
-  );
-}
-
 export const INITIAL_PRODUCT_EXPANDED = [
   'cr-micro-group',
   'huajing',
@@ -631,7 +542,7 @@ export const INITIAL_PRODUCT_EXPANDED = [
 ] as const;
 
 type VisibleProductNode = {
-  node: BusinessNode;
+  node: OrganizationNode;
   id: string;
   parentId: string | null;
   ancestorIds: readonly string[];
@@ -650,7 +561,7 @@ type RegionProjectionNode = {
   depth: 0 | 1;
   isGroup: boolean;
   expanded: boolean;
-  sourceNodes: readonly BusinessNode[];
+  sourceNodes: readonly SubjectNode[];
 };
 
 export function findBusinessNode(
@@ -659,10 +570,10 @@ export function findBusinessNode(
 ): BusinessNode | undefined {
   for (const node of nodes) {
     if (node.id === nodeId) return node;
-    const child = findBusinessNode(
-      [...(node.children ?? []), ...(node.subjects ?? [])],
-      nodeId,
-    );
+    const descendants: readonly BusinessNode[] = isOrganizationNode(node)
+      ? [...(node.children ?? []), ...(node.subjects ?? [])]
+      : node.children ?? [];
+    const child = findBusinessNode(descendants, nodeId);
     if (child) return child;
   }
   return undefined;
@@ -670,7 +581,7 @@ export function findBusinessNode(
 
 export function rootsForView(
   view: DrillView,
-  roots: BusinessNode[] = BUSINESS_DATA,
+  roots: OrganizationNode[] = BUSINESS_DATA,
 ) {
   let currentRoots = roots;
   for (const pathItem of view) {
@@ -686,15 +597,11 @@ export function pathForView(view: DrillView) {
 }
 
 function productRootsForView(view: DrillView) {
-  return rootsForView(view).filter((node) =>
-    isOrganizationHierarchyRole(node.hierarchyRole),
-  );
+  return rootsForView(view);
 }
 
-function organizationChildren(node: BusinessNode) {
-  return (node.children ?? []).filter((child) =>
-    isOrganizationHierarchyRole(child.hierarchyRole),
-  );
+function organizationChildren(node: OrganizationNode) {
+  return node.children ?? [];
 }
 
 function getVisibleProducts(
@@ -702,7 +609,7 @@ function getVisibleProducts(
   expandedIds: ReadonlySet<string>,
 ): VisibleProductNode[] {
   const visit = (
-    node: BusinessNode,
+    node: OrganizationNode,
     parentId: string | null,
     ancestorIds: readonly string[],
     depth: number,
@@ -731,7 +638,7 @@ function getVisibleProducts(
   return productRootsForView(view).flatMap((root) => visit(root, null, [], 0));
 }
 
-function getRegionRoots(product: BusinessNode) {
+function getRegionRoots(product: OrganizationNode) {
   return (product.subjects ?? []).map((subject) => {
     const rootId = `subject:${subject.id}`;
     return {
@@ -750,7 +657,7 @@ function getRegionRoots(product: BusinessNode) {
 }
 
 function getVisibleRegions(
-  product: BusinessNode,
+  product: OrganizationNode,
   expandedIds: ReadonlySet<string>,
 ): RegionProjectionNode[] {
   return getRegionRoots(product).flatMap((root) => {
@@ -797,7 +704,9 @@ export function createBusinessProjectionRows(
       regionExpandedByProduct.get(product.id) ?? new Set<string>(),
     );
     return regions.map((region, index): ViewRow => {
-      const backendNode = region.sourceNodes[0] ?? product.node;
+      const backendNode = region.sourceNodes[0];
+      if (!backendNode)
+        throw new Error(`BUSINESS_DATA 组织缺少科目数据：${product.id}`);
       const rowDimension = getBusinessRowDimension(backendNode.id);
       if (!rowDimension)
         throw new Error(`BUSINESS_DATA 记录缺少行维度：${backendNode.id}`);
@@ -808,16 +717,9 @@ export function createBusinessProjectionRows(
             ? `${product.id}::${region.rootId}`
             : `${product.id}::${region.rootId}::${backendNode.id}`,
         name: `${product.label} / ${region.label}`,
-        hierarchyRole: region.depth === 0 ? 'subjectSummary' : 'subjectDetail',
-        children: product.isGroup
-          ? organizationChildren(product.node)
-          : undefined,
-        subjects: undefined,
+        children: undefined,
         rowDimension,
         sourceNodes: region.sourceNodes,
-        productSourceNode: product.node,
-        level: product.depth,
-        hasChildren: product.isGroup,
         productId: product.id,
         productParentId: product.parentId,
         productAncestorIds: product.ancestorIds,
@@ -840,8 +742,10 @@ export function createBusinessProjectionRows(
   });
 }
 
-function flattenOrganizations(nodes: readonly BusinessNode[]): BusinessNode[] {
-  return nodes.flatMap((node): BusinessNode[] => [
+function flattenOrganizations(
+  nodes: readonly OrganizationNode[],
+): OrganizationNode[] {
+  return nodes.flatMap((node): OrganizationNode[] => [
     node,
     ...flattenOrganizations(organizationChildren(node)),
   ]);
@@ -859,7 +763,7 @@ export function getAllProductIdsForView(view: DrillView): string[] {
 
 export function getProductAncestorIds(productId: string): readonly string[] {
   const find = (
-    nodes: readonly BusinessNode[],
+    nodes: readonly OrganizationNode[],
     ancestors: readonly string[],
   ): readonly string[] | null => {
     for (const node of nodes) {
@@ -874,7 +778,9 @@ export function getProductAncestorIds(productId: string): readonly string[] {
 
 export function getRegionGroupIdsForProduct(productId: string): string[] {
   const product = findBusinessNode(BUSINESS_DATA, productId);
-  return product ? getRegionRoots(product).map((region) => region.id) : [];
+  return product && isOrganizationNode(product)
+    ? getRegionRoots(product).map((region) => region.id)
+    : [];
 }
 
 export function createInitialRegionExpansion(
@@ -926,7 +832,7 @@ export const INITIAL_DATASET_LABEL = `${
 export function canDrillNode(node: BusinessNode | ViewRow | null | undefined) {
   if (!node) return false;
   if ('productIsGroup' in node) return node.productIsGroup;
-  return organizationChildren(node).length > 0;
+  return isOrganizationNode(node) && organizationChildren(node).length > 0;
 }
 
 export function viewForNode(
@@ -959,9 +865,9 @@ export function columnName(col: number) {
 }
 
 function aggregateBudgetNodes(
-  nodes: readonly BusinessNode[],
-  fallback: BusinessNode,
-): Pick<BusinessNode, 'functionalAttribute' | BudgetValueField> {
+  nodes: readonly SubjectNode[],
+  fallback: SubjectNode,
+): Pick<SubjectNode, 'functionalAttribute' | BudgetValueField> {
   const sourceNodes = nodes.length ? nodes : [fallback];
   const totals = Object.fromEntries(
     BUDGET_VALUE_FIELDS.map((field) => [
@@ -1012,47 +918,22 @@ function createStressRecord(index: number): ViewRow {
       months[month],
     ]),
   ]) as BudgetValues;
-  const businessNode: BusinessNode = {
+  const businessNode: SubjectNode = {
     id: `stress-record-${index}`,
     name: detailLabel,
-    hierarchyRole: 'subjectDetail',
     functionalAttribute: ['管理', '销售', '研发'][index % 3],
     ...values,
   };
   return {
     ...businessNode,
     rowDimension: {
-      organization: [
-        {
-          id: productParentId,
-          name: groupLabel,
-          hierarchyRole: 'group',
-        },
-        {
-          id: productId,
-          name: productLabel,
-          hierarchyRole: 'businessUnit',
-        },
-      ],
-      subject: [
-        {
-          id: regionRootId,
-          name: subjectLabel,
-          hierarchyRole: 'subjectSummary',
-        },
-        {
-          id: businessNode.id,
-          name: detailLabel,
-          hierarchyRole: 'subjectDetail',
-        },
-      ],
+      organizationId: productId,
+      subjectId: businessNode.id,
     },
     sourceNodes: [businessNode],
-    productSourceNode: businessNode,
-    level: 1,
-    hasChildren: false,
     productId,
     productParentId,
+    productParentLabel: groupLabel,
     productAncestorIds: [productParentId],
     productLabel,
     productDepth: 1,
@@ -1128,7 +1009,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressIndex {
         id: rootId,
         parentId: null,
         ancestorIds: [],
-        label: fact.rowDimension.organization[0].name,
+        label: fact.productParentLabel ?? rootId,
         depth: 0,
         isGroup: true,
         facts: [],
@@ -1178,49 +1059,24 @@ function projectStressProduct(
     regionExpandedByProduct.get(product.id) ?? new Set<string>();
   const rows = [...product.regions.values()].flatMap((region) => {
     const fallback = region.facts[0];
-    const summary: BusinessNode = {
+    const summary: SubjectNode = {
       ...fallback,
       id: `${product.id}:${region.id}:summary`,
       name: region.label,
-      hierarchyRole: 'subjectSummary',
       ...aggregateBudgetNodes(region.facts, fallback),
       children: undefined,
-      subjects: undefined,
     };
     const expanded = expandedRegions.has(region.id);
-    const rowDimension: BusinessRowDimension =
-      product.depth === 0
-        ? {
-            organization: [
-              {
-                id: product.id,
-                name: product.label,
-                hierarchyRole: 'group',
-              },
-            ],
-            subject: [
-              {
-                id: region.id,
-                name: region.label,
-                hierarchyRole: 'subjectSummary',
-              },
-            ],
-          }
-        : {
-            organization: fallback.rowDimension.organization.map((item) => ({
-              ...item,
-            })),
-            subject: [{ ...fallback.rowDimension.subject[0] }],
-          };
+    const rowDimension: BusinessRowDimension = {
+      organizationId: product.id,
+      subjectId: region.id,
+    };
     const rootRow: ViewRow = {
       ...summary,
       id: `${product.id}::${region.id}`,
       name: `${product.label} / ${region.label}`,
       rowDimension,
       sourceNodes: region.facts,
-      productSourceNode: summary,
-      level: product.depth,
-      hasChildren: product.isGroup,
       productId: product.id,
       productParentId: product.parentId,
       productAncestorIds: product.ancestorIds,
@@ -1246,11 +1102,10 @@ function projectStressProduct(
           const childRegion = child.regions.get(region.label);
           if (!childRegion?.facts.length) return [];
           const childFallback = childRegion.facts[0];
-          const childSummary: BusinessNode = {
+          const childSummary: SubjectNode = {
             ...childFallback,
             id: `${child.id}:${region.id}:summary`,
             name: child.label,
-            hierarchyRole: 'subjectDetail',
             ...aggregateBudgetNodes(childRegion.facts, childFallback),
           };
           return [
@@ -1258,15 +1113,10 @@ function projectStressProduct(
               ...childSummary,
               id: `${product.id}::${region.id}::${childSummary.id}`,
               rowDimension: {
-                organization: childFallback.rowDimension.organization.map(
-                  (item) => ({ ...item }),
-                ),
-                subject: [{ ...childFallback.rowDimension.subject[0] }],
+                organizationId: child.id,
+                subjectId: childFallback.regionRootId,
               },
               sourceNodes: childRegion.facts,
-              productSourceNode: summary,
-              level: product.depth,
-              hasChildren: false,
               productId: product.id,
               productParentId: product.parentId,
               productAncestorIds: product.ancestorIds,
@@ -1278,7 +1128,7 @@ function projectStressProduct(
               productRowSpan: 1,
               regionId: `${region.id}:detail:${childSummary.id}`,
               regionRootId: region.id,
-              regionBusinessId: childFallback.rowDimension.subject[0].id,
+              regionBusinessId: childFallback.regionRootId,
               regionRootLabel: region.label,
               regionLabel: child.label,
               regionDepth: 1,
@@ -1472,10 +1322,7 @@ export function getCellEditability(
   }
   return {
     editable: true,
-    reason:
-      sourceNode.hierarchyRole === 'subjectDetail'
-        ? '可编辑预算明细记录'
-        : '可编辑后台汇总记录',
+    reason: row.regionDepth > 0 ? '可编辑预算明细记录' : '可编辑后台汇总记录',
     sourceNode,
   };
 }
@@ -1514,7 +1361,7 @@ export function displayValue(value: unknown) {
 }
 
 export function updateBusinessNode(
-  node: BusinessNode,
+  node: SubjectNode,
   field: BusinessField,
   value: unknown,
 ) {
@@ -1537,10 +1384,6 @@ export function updateBusinessNode(
     node[field as BudgetValueField] = Math.max(0, parsedNumber);
 }
 
-export function roundToTwoDecimals(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
 export function numericDisplayForColumn(
   col: number,
 ): Exclude<NumericDisplay, 'mixed'> {
@@ -1560,10 +1403,6 @@ export function formatStatistic(value: number, display: NumericDisplay) {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-  return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
-}
-
-export function formatMoney(value: number) {
   return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
 

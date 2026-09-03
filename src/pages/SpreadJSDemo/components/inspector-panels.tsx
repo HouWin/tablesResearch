@@ -13,21 +13,21 @@ import {
 } from 'lucide-react';
 import { useRef } from 'react';
 import {
+  ATTACHMENT_ACCEPT,
+  MAX_ATTACHMENTS_PER_CELL,
+  MAX_ATTACHMENT_SIZE,
+  canPreviewAttachment,
+  formatFileSize,
+} from '../spreadsheet/attachments';
+import { MAX_SELECTION_INSPECTION_CELLS } from '../spreadsheet/constants';
+import {
   AGGREGATE_MODES,
   FEATURES,
   displayValue,
   formatStatistic,
 } from '../spreadsheet/model';
-import {
-  canPreviewAttachment,
-  formatFileSize,
-  getLineageDetails,
-} from '../spreadsheet/presentation';
-import {
-  ATTACHMENT_ACCEPT,
-  MAX_ATTACHMENT_SIZE,
-  type SpreadsheetController,
-} from '../spreadsheet/use-spreadsheet-controller';
+import { getLineageDetails } from '../spreadsheet/presentation';
+import type { SpreadsheetController } from '../spreadsheet/use-spreadsheet-controller';
 import { Drawer } from './spreadsheet-ui';
 
 const AGGREGATE_LABELS = {
@@ -291,7 +291,9 @@ export function InspectorPanels({
         <div className="attachment-list" aria-live="polite">
           <div className="attachment-list-heading">
             <b>已添加附件</b>
-            <span>{selectedAttachments.length}/10</span>
+            <span>
+              {selectedAttachments.length}/{MAX_ATTACHMENTS_PER_CELL}
+            </span>
           </div>
           {selectedAttachments.length ? (
             selectedAttachments.map((attachment) => (
@@ -435,7 +437,9 @@ export function InspectorPanels({
         </div>
         {selectionStats.truncated ? (
           <p className="warning-note">
-            超大选区仅计算前 200,000 个单元格，避免阻塞主线程。
+            超大选区仅计算前{' '}
+            {MAX_SELECTION_INSPECTION_CELLS.toLocaleString('zh-CN')}{' '}
+            个单元格，避免阻塞主线程。
           </p>
         ) : null}
       </Drawer>

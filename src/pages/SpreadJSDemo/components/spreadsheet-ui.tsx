@@ -1,10 +1,8 @@
 import {
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -38,59 +36,9 @@ import {
   type SelectionStats,
   type ToastState,
 } from '../spreadsheet/model';
+import { useAnchoredPopover } from './use-anchored-popover';
 
 type DemoStatus = 'loading' | 'ready' | 'error';
-
-function useAnchoredPopover(anchorRef: RefObject<HTMLElement>) {
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
-
-  useLayoutEffect(() => {
-    const anchor = anchorRef.current;
-    const popover = popoverRef.current;
-    if (!anchor || !popover) return;
-
-    let animationFrame = 0;
-    const updatePosition = () => {
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(() => {
-        const anchorRect = anchor.getBoundingClientRect();
-        const popoverRect = popover.getBoundingClientRect();
-        const margin = 12;
-        const gap = 6;
-        const maxLeft = Math.max(
-          margin,
-          window.innerWidth - popoverRect.width - margin,
-        );
-        const left = Math.min(Math.max(anchorRect.left, margin), maxLeft);
-        const spaceBelow = window.innerHeight - anchorRect.bottom - margin;
-        const top =
-          spaceBelow >= popoverRect.height
-            ? anchorRect.bottom + gap
-            : Math.max(margin, anchorRect.top - popoverRect.height - gap);
-        setStyle({ left, top, visibility: 'visible' });
-      });
-    };
-
-    updatePosition();
-    const resizeObserver =
-      typeof ResizeObserver === 'undefined'
-        ? null
-        : new ResizeObserver(updatePosition);
-    resizeObserver?.observe(anchor);
-    resizeObserver?.observe(popover);
-    window.addEventListener('resize', updatePosition);
-    document.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', updatePosition);
-      document.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [anchorRef]);
-
-  return { popoverRef, style };
-}
 
 export function DemoHeader({
   status,
@@ -194,11 +142,12 @@ export function SearchPopover({
   onSearch: (direction: 1 | -1) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const { popoverRef, style } = useAnchoredPopover(anchorRef);
+  const titleId = useId();
+  const { popoverRef, style, close } = useAnchoredPopover(anchorRef, onClose);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (style.visibility === 'visible') inputRef.current?.focus();
+  }, [style.visibility]);
 
   return (
     <div
@@ -207,18 +156,18 @@ export function SearchPopover({
       id="sheet-search-popover"
       className="toolbar-popover search-popover"
       role="search"
-      aria-label="搜索全部预算层级"
+      aria-labelledby={titleId}
       aria-busy={busy}
     >
       <div className="popover-title">
         <div>
           <Search size={15} />
-          <span>全表搜索</span>
+          <span id={titleId}>全表搜索</span>
         </div>
         <button
           className="popover-close-button"
           type="button"
-          onClick={onClose}
+          onClick={() => close()}
           aria-label="关闭搜索"
         >
           <X size={15} />
@@ -286,40 +235,10 @@ export function SearchPopover({
 const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
   {
     row: {
-      organization: [
-        {
-          id: 'cr-micro-group',
-          name: '华润微电子集团',
-          hierarchyRole: 'group',
-        },
-        {
-          id: 'huajing',
-          name: '华晶公司',
-          hierarchyRole: 'businessUnit',
-        },
-        {
-          id: 'huajing-sales',
-          name: '华晶公司-销售部',
-          hierarchyRole: 'department',
-        },
-      ],
-      subject: [
-        {
-          id: 'huajing-sales-subtotal',
-          name: '管理费用合计',
-          hierarchyRole: 'subjectSummary',
-        },
-        {
-          id: 'huajing-sales-office',
-          name: '费用-办公费',
-          hierarchyRole: 'subjectDetail',
-        },
-      ],
+      organizationId: 'huajing-sales',
+      subjectId: 'huajing-sales-office',
     },
-    column: [
-      { id: 'budget-2025', field: 'budget2025', label: '2025年' },
-      { id: 'january', field: 'january', label: '1月' },
-    ],
+    column: ['budget2025', 'january'],
   },
   null,
   2,
@@ -338,33 +257,11 @@ export function DimensionLocatorPopover({
   const [value, setValue] = useState(DIMENSION_LOCATOR_EXAMPLE);
   const [error, setError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { popoverRef, style } = useAnchoredPopover(anchorRef);
+  const { popoverRef, style, close } = useAnchoredPopover(anchorRef, onClose);
 
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    const closeOnOutsidePress = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (
-        anchorRef.current?.contains(target) ||
-        popoverRef.current?.contains(target)
-      )
-        return;
-      onClose();
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePress, true);
-    window.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePress, true);
-      window.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [anchorRef, onClose, popoverRef]);
 
   const locate = () => {
     let parsed: unknown;
@@ -404,7 +301,7 @@ export function DimensionLocatorPopover({
           <button
             className="popover-close-button"
             type="button"
-            onClick={onClose}
+            onClick={() => close()}
             aria-label="关闭精确定位"
           >
             <X size={15} />
@@ -458,7 +355,8 @@ export function ColumnVisibilityPopover({
   onToggle: (column: number, visible: boolean) => void;
   onShowAll: () => void;
 }) {
-  const { popoverRef, style } = useAnchoredPopover(anchorRef);
+  const titleId = useId();
+  const { popoverRef, style, close } = useAnchoredPopover(anchorRef, onClose);
   const visibleCount = visibility.filter(Boolean).length;
 
   return (
@@ -467,13 +365,13 @@ export function ColumnVisibilityPopover({
       style={style}
       id="column-visibility-popover"
       className="toolbar-popover column-popover"
-      role="region"
-      aria-label="显示或隐藏列"
+      role="dialog"
+      aria-labelledby={titleId}
     >
       <div className="popover-title">
         <div>
           <Eye size={14} />
-          <span>列管理</span>
+          <span id={titleId}>列管理</span>
         </div>
         <div>
           <small>
@@ -489,7 +387,7 @@ export function ColumnVisibilityPopover({
           <button
             className="popover-close-button"
             type="button"
-            onClick={onClose}
+            onClick={() => close()}
             aria-label="关闭列管理"
           >
             <X size={15} />
@@ -580,6 +478,7 @@ export function ToastMessage({ toast }: { toast: ToastState }) {
     <div
       className={`toast ${toast.tone === 'error' ? 'toast-error' : ''}`}
       role={toast.tone === 'error' ? 'alert' : 'status'}
+      aria-atomic="true"
     >
       {toast.tone === 'error' ? (
         <CircleAlert size={16} />
