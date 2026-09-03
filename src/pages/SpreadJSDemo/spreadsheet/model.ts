@@ -314,30 +314,22 @@ function makeBudgetNode(
 
 function makeSubjectTree(
   id: string,
-  subtotalName: string,
+  summaryName: string,
   functionalAttribute: string,
   values: {
     summary: BudgetPair;
-    subtotal: BudgetPair;
     office: BudgetPair;
     electricity: BudgetPair;
     water: BudgetPair;
   },
 ) {
   return makeBudgetNode(
-    `${id}-expense-summary`,
-    '费用汇总',
+    `${id}-subtotal`,
+    summaryName,
     'subjectSummary',
     '-',
     ...values.summary,
     [
-      makeBudgetNode(
-        `${id}-subtotal`,
-        subtotalName,
-        'subjectDetail',
-        '-',
-        ...values.subtotal,
-      ),
       makeBudgetNode(
         `${id}-office`,
         '费用-办公费',
@@ -365,7 +357,6 @@ function makeSubjectTree(
 
 const STANDARD_UNIT_VALUES = {
   summary: [7_200, 600],
-  subtotal: [7_200, 600],
   office: [1_200, 100],
   electricity: [2_400, 200],
   water: [3_600, 300],
@@ -446,7 +437,6 @@ const huajing = makeOrganization(
   [28_800, 2_400],
   makeSubjectTree('huajing', '日常费用合计', '管理', {
     summary: [28_800, 2_400],
-    subtotal: [28_800, 2_400],
     office: [4_800, 400],
     electricity: [9_600, 800],
     water: [14_400, 1_200],
@@ -494,7 +484,6 @@ export const BUSINESS_DATA: BusinessNode[] = [
     [43_200, 3_600],
     makeSubjectTree('cr-micro-group', '日常费用合计', '管理', {
       summary: [43_200, 3_600],
-      subtotal: [43_200, 3_600],
       office: [7_200, 600],
       electricity: [14_400, 1_200],
       water: [21_600, 1_800],

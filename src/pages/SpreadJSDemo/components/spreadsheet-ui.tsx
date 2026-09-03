@@ -288,7 +288,7 @@ const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
     row: {
       category: '华润微电子集团',
       subcategory: '华晶公司-销售部',
-      region: '费用汇总',
+      region: '管理费用合计',
       detail: '费用-办公费',
     },
     column: ['budget-2025', 'january'],
