@@ -214,11 +214,6 @@ export const AGGREGATE_MODES = [
   'CUSTOM',
 ] as const satisfies readonly AggregateMode[];
 
-export const STRESS_ROW_COUNT = 100_000;
-export const STRESS_PAGE_SIZE = 400;
-export const STRESS_FULL_PAGE_VISIBLE_ROWS = 8;
-export const STRESS_PAGE_FETCH_DELAY_MS = 220;
-
 export const FEATURES = [
   ['批注', '原生 + 稳定业务 ID'],
   ['组织下钻、上钻', '业务扩展'],
@@ -238,7 +233,7 @@ export const FEATURES = [
   ['快速搜索', '全层级计数 / 自动展开定位'],
   ['显示 / 隐藏列', '原生'],
   ['单元格附件', '稳定 ID 元数据 + CellButton'],
-  ['大数据', '10 万行 × 16 列'],
+  ['大数据', '10 万条真实化记录 + 视口分页'],
   ['列宽拖动', '原生'],
   ['自适应内容宽度', '双击边界 / 工具栏'],
 ] as const;
@@ -885,73 +880,6 @@ function aggregateBudgetNodes(
   };
 }
 
-const STRESS_GROUP_SIZE = 10_000;
-const STRESS_PRODUCT_SIZE = 1_000;
-const STRESS_SUBJECT_SIZE = 100;
-
-function createStressRecord(index: number): ViewRow {
-  const groupIndex = Math.floor(index / STRESS_GROUP_SIZE);
-  const productIndex = Math.floor(index / STRESS_PRODUCT_SIZE);
-  const subjectIndex = Math.floor(index / STRESS_SUBJECT_SIZE) % 10;
-  const detailIndex = index % STRESS_SUBJECT_SIZE;
-  const productId = `stress-unit-${productIndex}`;
-  const productParentId = `stress-group-${groupIndex}`;
-  const groupLabel = `预算组织群 ${String(groupIndex + 1).padStart(2, '0')}`;
-  const productLabel = `预算责任中心 ${String(productIndex + 1).padStart(
-    3,
-    '0',
-  )}`;
-  const subjectLabel = `费用科目组 ${String(subjectIndex + 1).padStart(
-    2,
-    '0',
-  )}`;
-  const detailLabel = `预算明细 ${String(detailIndex + 1).padStart(3, '0')}`;
-  const regionRootId = `stress-subject-${productIndex}-${subjectIndex}`;
-  const months = Array.from(
-    { length: 12 },
-    (_, month) => 80 + ((index * 17 + month * 13) % 920),
-  );
-  const values = Object.fromEntries([
-    ['annualTotal', months.reduce((sum, value) => sum + value, 0)],
-    ...BUDGET_VALUE_FIELDS.slice(1).map((field, month) => [
-      field,
-      months[month],
-    ]),
-  ]) as BudgetValues;
-  const businessNode: SubjectNode = {
-    id: `stress-record-${index}`,
-    name: detailLabel,
-    functionalAttribute: ['管理', '销售', '研发'][index % 3],
-    ...values,
-  };
-  return {
-    ...businessNode,
-    rowDimension: {
-      organizationId: productId,
-      subjectId: businessNode.id,
-    },
-    sourceNodes: [businessNode],
-    productId,
-    productParentId,
-    productParentLabel: groupLabel,
-    productAncestorIds: [productParentId],
-    productLabel,
-    productDepth: 1,
-    productIsGroup: false,
-    productExpanded: false,
-    productBlockStart: false,
-    productRowSpan: 1,
-    regionId: `${regionRootId}:detail:${businessNode.id}`,
-    regionRootId,
-    regionBusinessId: businessNode.id,
-    regionRootLabel: subjectLabel,
-    regionLabel: detailLabel,
-    regionDepth: 1,
-    regionIsGroup: false,
-    regionExpanded: false,
-  };
-}
-
 type StressRegion = {
   id: string;
   label: string;
@@ -1197,6 +1125,7 @@ export function getStressProjectionSummary(
   sourceRows: ViewRow[],
   productExpanded: ReadonlySet<string>,
   regionExpandedByProduct: ExtensionExpansionState,
+  projectedRowCount?: number,
 ): OutlineSnapshot {
   const index = buildStressProjectionIndex(sourceRows);
   const regionGroups = index.allProducts.flatMap((productId) =>
@@ -1215,55 +1144,16 @@ export function getStressProjectionSummary(
       regionExpandedByProduct.get(productId)?.has(regionId),
     ).length,
     regionTotal: regionGroups.length,
-    rowCount: createStressProjectionRows(
-      sourceRows,
-      productExpanded,
-      regionExpandedByProduct,
-    ).length,
+    // 控制器已持有刚刚生成的投影时直接复用其长度，避免在“全部展开”
+    // 后为了统计摘要再同步创建一次十万级 ViewRow 数组。
+    rowCount:
+      projectedRowCount ??
+      createStressProjectionRows(
+        sourceRows,
+        productExpanded,
+        regionExpandedByProduct,
+      ).length,
   };
-}
-
-let stressRecordsCache: ViewRow[] | null = null;
-let stressRecordsPromise: Promise<ViewRow[]> | null = null;
-let stressRecordsCacheEpoch = 0;
-
-export async function getStressRecordsAsync() {
-  if (stressRecordsCache) return stressRecordsCache;
-  stressRecordsPromise ??= (async () => {
-    const cacheEpoch = stressRecordsCacheEpoch;
-    const rows = new Array<ViewRow>(STRESS_ROW_COUNT);
-    const chunkSize = 5_000;
-    for (let start = 0; start < rows.length; start += chunkSize) {
-      const end = Math.min(start + chunkSize, rows.length);
-      for (let index = start; index < end; index += 1)
-        rows[index] = createStressRecord(index);
-      if (end < rows.length) {
-        await new Promise<void>((resolve) => {
-          if (typeof requestAnimationFrame === 'function')
-            requestAnimationFrame(() => resolve());
-          else setTimeout(resolve, 0);
-        });
-      }
-    }
-    if (cacheEpoch === stressRecordsCacheEpoch) stressRecordsCache = rows;
-    return rows;
-  })();
-  try {
-    return await stressRecordsPromise;
-  } finally {
-    stressRecordsPromise = null;
-  }
-}
-
-export function releaseStressRecords() {
-  stressRecordsCacheEpoch += 1;
-  stressRecordsCache = null;
-}
-
-export async function simulateStressBackendDelay() {
-  await new Promise<void>((resolve) =>
-    setTimeout(resolve, STRESS_PAGE_FETCH_DELAY_MS),
-  );
 }
 
 export function productHierarchyText(row: ViewRow) {

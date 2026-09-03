@@ -33,8 +33,6 @@ import {
   PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
-  STRESS_FULL_PAGE_VISIBLE_ROWS,
-  STRESS_PAGE_SIZE,
   STRESS_TEXT_SEARCH_COLUMNS,
   canDrillNode,
   columnName,
@@ -51,13 +49,10 @@ import {
   getStressAllProductIds,
   getStressProductGroupIds,
   getStressProjectionSummary,
-  getStressRecordsAsync,
   getStressRegionGroupIdsForProduct,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
-  releaseStressRecords,
-  simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
   updateBusinessNode,
@@ -81,6 +76,13 @@ import {
   type ViewRow,
 } from './model';
 import { calculateSelectionStatistics } from './selection-statistics';
+import {
+  createLocalStressProjectionPageSource,
+  getStressRecordsAsync,
+  releaseStressRecords,
+  STRESS_PAGE_SIZE,
+  type StressProjectionPage,
+} from './stress-data-source';
 
 type GCModule = typeof import('@grapecity-software/spread-sheets');
 type Workbook =
@@ -323,13 +325,14 @@ export function useSpreadsheetController(
     let toastTimer = 0;
     let stressLoadTimer = 0;
     let stressViewportTimer = 0;
+    let stressIndexWarmupTimer = 0;
     let pendingStressTopRow = 0;
     let groupChangeBatching = false;
     const loadedStressPages = new Set<number>();
-    const loadedStressRows = new Set<number>();
     const pendingStressPages = new Set<number>();
-    const pendingStressRows = new Set<number>();
+    const stressPageSource = createLocalStressProjectionPageSource();
     let stressSessionEpoch = 0;
+    let activeStressProjectionVersion = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
     let commandStateTimer = 0;
@@ -628,9 +631,9 @@ export function useSpreadsheetController(
             worksheetRowCount: worksheet.getRowCount(),
             worksheetColumnCount: worksheet.getColumnCount(),
             valueAt: (row, col) => {
-              const stressDataLoaded =
-                loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-                loadedStressRows.has(row);
+              const stressDataLoaded = loadedStressPages.has(
+                Math.floor(row / STRESS_PAGE_SIZE),
+              );
               return activeDataMode === 'stress' && !stressDataLoaded
                 ? viewRowCellValue(activeRows[row], col)
                 : worksheet.getValue(row, col);
@@ -663,15 +666,20 @@ export function useSpreadsheetController(
         renderedAttachmentCells.clear();
       };
 
-      const applyStableComments = () => {
-        activeRows.forEach((row, rowIndex) => {
+      const applyStableComments = (
+        startRow = 0,
+        rowCount = activeRows.length,
+      ) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+          const row = activeRows[rowIndex];
           COLUMNS.forEach((column, colIndex) => {
             const text = commentsRef.current.get(
               stableCellKey(row.id, column.field),
             );
             if (text) sheet.comments.add(rowIndex, colIndex, text);
           });
-        });
+        }
       };
 
       const refreshAttachmentIndicator = (row: number, col: number) => {
@@ -718,13 +726,18 @@ export function useSpreadsheetController(
         cell.cellButtons(buttons);
       };
 
-      const applyStableAttachmentIndicators = () => {
-        activeRows.forEach((row, rowIndex) => {
+      const applyStableAttachmentIndicators = (
+        startRow = 0,
+        rowCount = activeRows.length,
+      ) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+          const row = activeRows[rowIndex];
           COLUMNS.forEach((column, colIndex) => {
             if (attachmentsRef.current.has(stableCellKey(row.id, column.field)))
               refreshAttachmentIndicator(rowIndex, colIndex);
           });
-        });
+        }
       };
 
       const applyCellEditability = (startRow: number, rowCount: number) => {
@@ -887,8 +900,7 @@ export function useSpreadsheetController(
                 activeDataMode !== 'stress' ||
                 loadedStressPages.has(
                   Math.floor(change.row / STRESS_PAGE_SIZE),
-                ) ||
-                loadedStressRows.has(change.row);
+                );
               if (!stressRowLoaded) return;
               if (
                 change.kind === '直接修改' &&
@@ -1205,60 +1217,30 @@ export function useSpreadsheetController(
         }
       };
 
-      const writeStressPage = (pageIndex: number) => {
-        if (activeDataMode !== 'stress' || loadedStressPages.has(pageIndex))
-          return;
-        const startRow = pageIndex * STRESS_PAGE_SIZE;
-        if (startRow < 0 || startRow >= activeRows.length) return;
-        const rowCount = Math.min(
-          STRESS_PAGE_SIZE,
-          activeRows.length - startRow,
-        );
-        let segmentStart = 0;
-        for (let localRow = 0; localRow <= rowCount; localRow += 1) {
-          const preserveExistingRow =
-            localRow === rowCount || loadedStressRows.has(startRow + localRow);
-          if (!preserveExistingRow) continue;
-          if (localRow > segmentStart) {
-            const segmentValues = activeRows
-              .slice(startRow + segmentStart, startRow + localRow)
-              .map((row) => viewRowValues(row, sheet.getColumnCount()));
-            sheet.setArray(startRow + segmentStart, 0, segmentValues);
-          }
-          segmentStart = localRow + 1;
-        }
-        styleDataRows(startRow, rowCount, sheet.getColumnCount());
-        configureCellTypes(startRow, rowCount);
-        applyCellEditability(startRow, rowCount);
-        loadedStressPages.add(pageIndex);
-        for (let row = startRow; row < startRow + rowCount; row += 1)
-          loadedStressRows.delete(row);
-      };
-
-      const writeStressRow = (row: number) => {
-        const page = Math.floor(row / STRESS_PAGE_SIZE);
+      const writeStressPage = (page: StressProjectionPage) => {
         if (
-          row < 0 ||
-          row >= activeRows.length ||
-          loadedStressPages.has(page) ||
-          loadedStressRows.has(row)
+          activeDataMode !== 'stress' ||
+          page.projectionVersion !== activeStressProjectionVersion ||
+          loadedStressPages.has(page.pageIndex) ||
+          !page.rows.length
         )
           return;
-        sheet.setArray(row, 0, [
-          viewRowValues(activeRows[row], sheet.getColumnCount()),
-        ]);
-        styleDataRows(row, 1, sheet.getColumnCount());
-        configureCellTypes(row, 1);
-        applyCellEditability(row, 1);
-        loadedStressRows.add(row);
+        sheet.setArray(
+          page.startRow,
+          0,
+          page.rows.map((row) => viewRowValues(row, sheet.getColumnCount())),
+        );
+        styleDataRows(page.startRow, page.rows.length, sheet.getColumnCount());
+        configureCellTypes(page.startRow, page.rows.length);
+        applyCellEditability(page.startRow, page.rows.length);
+        applyStableComments(page.startRow, page.rows.length);
+        applyStableAttachmentIndicators(page.startRow, page.rows.length);
+        loadedStressPages.add(page.pageIndex);
       };
 
       // 滚动到已加载数据边界时，先在这批行里打一个“正在加载…”占位提示，
       // 让用户能感知到这是一次异步的分批请求，而不是瞬间完成。
-      const writeStressLoadingPlaceholder = (
-        pageIndices: number[],
-        rowIndices: number[],
-      ) => {
+      const writeStressLoadingPlaceholder = (pageIndices: number[]) => {
         const rows = new Set<number>();
         pageIndices.forEach((page) => {
           const startRow = page * STRESS_PAGE_SIZE;
@@ -1269,7 +1251,6 @@ export function useSpreadsheetController(
           for (let row = startRow; row < startRow + rowCount; row += 1)
             rows.add(row);
         });
-        rowIndices.forEach((row) => rows.add(row));
         if (!rows.size) return;
         sheet.suspendPaint();
         spread.suspendEvent();
@@ -1284,10 +1265,23 @@ export function useSpreadsheetController(
         spread.repaint();
       };
 
-      const loadStressData = (
-        pageIndices: Iterable<number>,
-        rowIndices: Iterable<number> = [],
-      ) => {
+      const updateStressLoadProgress = () => {
+        const loadedRows = [...loadedStressPages].reduce((total, page) => {
+          const startRow = page * STRESS_PAGE_SIZE;
+          return (
+            total + Math.min(STRESS_PAGE_SIZE, activeRows.length - startRow)
+          );
+        }, 0);
+        setDatasetLabel(
+          `${stressSourceRows.length.toLocaleString(
+            'zh-CN',
+          )} 条底层记录 · 当前投影 ${activeRows.length.toLocaleString(
+            'zh-CN',
+          )} 行 · 已按需载入 ${loadedRows.toLocaleString('zh-CN')} 行`,
+        );
+      };
+
+      const loadStressData = (pageIndices: Iterable<number>) => {
         if (activeDataMode !== 'stress') return;
         const maxPage = Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1;
         const unloadedPages = [...new Set(pageIndices)].filter(
@@ -1297,45 +1291,41 @@ export function useSpreadsheetController(
             !loadedStressPages.has(page) &&
             !pendingStressPages.has(page),
         );
-        const pagesBeingLoaded = new Set([
-          ...unloadedPages,
-          ...pendingStressPages,
-        ]);
-        const unloadedRows = [...new Set(rowIndices)].filter(
-          (row) =>
-            row >= 0 &&
-            row < activeRows.length &&
-            !pagesBeingLoaded.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressRows.has(row) &&
-            !pendingStressRows.has(row),
-        );
-        if (!unloadedPages.length && !unloadedRows.length) return;
+        if (!unloadedPages.length) return;
 
         unloadedPages.forEach((page) => pendingStressPages.add(page));
-        unloadedRows.forEach((row) => pendingStressRows.add(row));
-        writeStressLoadingPlaceholder(unloadedPages, unloadedRows);
+        writeStressLoadingPlaceholder(unloadedPages);
 
-        // 模拟一次真实的分批后端请求：数据早已在内存中就绪，
-        // 但要等这段延迟结束才把结果写进表格，制造滚动到底部
-        // 触发下一批加载的真实观感。
+        // 本地页源与生产接口使用相同的异步边界。真实接入只需把
+        // fetchPage 换成带游标、取消信号和版本号的后端分页请求。
         const epoch = stressSessionEpoch;
-        void simulateStressBackendDelay().then(() => {
-          unloadedPages.forEach((page) => pendingStressPages.delete(page));
-          unloadedRows.forEach((row) => pendingStressRows.delete(row));
+        void Promise.allSettled(
+          unloadedPages.map((page) => stressPageSource.fetchPage(page)),
+        ).then((results) => {
           if (
             cancelled ||
             activeDataMode !== 'stress' ||
             epoch !== stressSessionEpoch
           )
             return;
+          unloadedPages.forEach((page) => pendingStressPages.delete(page));
+          const pages = results.flatMap((result) =>
+            result.status === 'fulfilled' ? [result.value] : [],
+          );
+          const failed = results.some(
+            (result) =>
+              result.status === 'rejected' &&
+              !(
+                result.reason instanceof DOMException &&
+                result.reason.name === 'AbortError'
+              ),
+          );
           sheet.suspendPaint();
           sheet.suspendCalcService(false);
           sheet.suspendDirty();
           spread.suspendEvent();
           try {
-            unloadedPages.forEach(writeStressPage);
-            unloadedRows.forEach(writeStressRow);
+            pages.forEach(writeStressPage);
           } finally {
             spread.resumeEvent();
             sheet.resumeDirty();
@@ -1343,6 +1333,22 @@ export function useSpreadsheetController(
             sheet.resumePaint();
           }
           spread.repaint();
+          const activeRow = sheet.getActiveRowIndex();
+          const activeCol = sheet.getActiveColumnIndex();
+          if (
+            pages.some(
+              (page) =>
+                activeRow >= page.startRow &&
+                activeRow < page.startRow + page.rows.length,
+            )
+          ) {
+            updateSelected(activeRow, activeCol);
+            const selection = sheet.getSelections().at(-1);
+            if (selection) calculateSelection(sheet, selection);
+          }
+          updateStressLoadProgress();
+          if (failed)
+            notify('部分数据加载失败，滚动到该区域时将自动重试', 'error');
         });
       };
 
@@ -1356,45 +1362,30 @@ export function useSpreadsheetController(
           activeRows.length - 1,
           viewportBottom >= topRow ? viewportBottom : topRow + STRESS_PAGE_SIZE,
         );
-        const visibleRowsByPage = new Map<number, number[]>();
+        const visiblePages = new Set<number>();
         for (let row = topRow; row <= bottomRow; row += 1) {
-          const page = Math.floor(row / STRESS_PAGE_SIZE);
-          const rows = visibleRowsByPage.get(page) ?? [];
-          rows.push(row);
-          visibleRowsByPage.set(page, rows);
+          visiblePages.add(Math.floor(row / STRESS_PAGE_SIZE));
         }
-        if (!visibleRowsByPage.size) {
-          visibleRowsByPage.set(Math.floor(topRow / STRESS_PAGE_SIZE), [
-            topRow,
-          ]);
-        }
-
-        const fullPages: number[] = [];
-        const sparseRows: number[] = [];
-        visibleRowsByPage.forEach((rows, page) => {
-          if (rows.length >= STRESS_FULL_PAGE_VISIBLE_ROWS)
-            fullPages.push(page);
-          else sparseRows.push(...rows);
-        });
+        if (!visiblePages.size)
+          visiblePages.add(Math.floor(topRow / STRESS_PAGE_SIZE));
 
         // Prefetch the next physical page for continuous scrolling. The visible
         // projection has no hidden Outline ranges, so page adjacency is stable.
-        const nextRow = bottomRow + 1;
+        const lastVisiblePage = Math.floor(bottomRow / STRESS_PAGE_SIZE);
+        const nextPage = lastVisiblePage + 1;
         if (
           bottomRow - topRow < STRESS_PAGE_SIZE * 2 &&
-          nextRow < activeRows.length &&
-          sheet.getRowVisible(nextRow, GC.Spread.Sheets.SheetArea.viewport)
-        ) {
-          fullPages.push(Math.floor(nextRow / STRESS_PAGE_SIZE));
-        }
-        loadStressData(fullPages, sparseRows);
+          nextPage <= Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1
+        )
+          visiblePages.add(nextPage);
+        loadStressData(visiblePages);
       };
 
       const ensureStressRowLoaded = (row: number) => {
         if (activeDataMode !== 'stress') return;
         const page = Math.floor(row / STRESS_PAGE_SIZE);
-        if (loadedStressPages.has(page) || loadedStressRows.has(row)) return;
-        loadStressData([], [row]);
+        if (loadedStressPages.has(page)) return;
+        loadStressData([page]);
       };
 
       const scheduleStressViewportLoad = (topRow: number) => {
@@ -1486,6 +1477,9 @@ export function useSpreadsheetController(
       ) => {
         activeRows = rows;
         activeDataMode = stress ? 'stress' : 'regular';
+        activeStressProjectionVersion = stressPageSource.replaceProjection(
+          stress ? rows : [],
+        );
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
         sheet.suspendPaint();
@@ -1507,9 +1501,7 @@ export function useSpreadsheetController(
               ),
             );
           loadedStressPages.clear();
-          loadedStressRows.clear();
           pendingStressPages.clear();
-          pendingStressRows.clear();
           stressSessionEpoch += 1;
           if (!stress) {
             sheet.setArray(
@@ -1672,9 +1664,9 @@ export function useSpreadsheetController(
           stress
             ? `${stressSourceRows.length.toLocaleString(
                 'zh-CN',
-              )} 条底层记录（当前显示 ${rowCount.toLocaleString(
+              )} 条底层记录 · 当前投影 ${rowCount.toLocaleString(
                 'zh-CN',
-              )} 行） × ${colCount} 列`
+              )} 行 · 等待按视口载入`
             : `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
         );
         if (stress) {
@@ -1706,6 +1698,7 @@ export function useSpreadsheetController(
                 stressSourceRows,
                 productExpanded,
                 regionExpandedByProduct,
+                activeRows.length,
               )
             : getBusinessProjectionSummary(
                 activeView,
@@ -2515,6 +2508,8 @@ export function useSpreadsheetController(
           setSearchQuery('');
           window.clearTimeout(stressLoadTimer);
           stressLoadTimer = 0;
+          window.clearTimeout(stressIndexWarmupTimer);
+          stressIndexWarmupTimer = 0;
           if (mode === 'regular') {
             setDataMode('regular');
             activeView = [];
@@ -2527,17 +2522,24 @@ export function useSpreadsheetController(
             return;
           }
           setDataMode('loading');
+          setDatasetLabel('正在构建真实化预算数据… 0%');
           setPanel(null);
           stressLoadTimer = window.setTimeout(() => {
             stressLoadTimer = 0;
             if (cancelled) return;
             const startedAt = performance.now();
-            void getStressRecordsAsync()
+            void getStressRecordsAsync((loaded, total) => {
+              if (cancelled) return;
+              setDatasetLabel(
+                `正在构建真实化预算数据… ${Math.round(
+                  (loaded / total) * 100,
+                )}%`,
+              );
+            })
               .then((rows) => {
                 if (cancelled) return;
                 activeView = [];
                 stressSourceRows = rows;
-                prepareBusinessCellLocationIndex(rows);
                 getStressProductGroupIds(rows).forEach((id) =>
                   productExpanded.delete(id),
                 );
@@ -2549,8 +2551,18 @@ export function useSpreadsheetController(
                 renderRows(buildStressRows(), true);
                 syncProjectionSnapshot();
                 setDataMode('stress');
+                stressIndexWarmupTimer = window.setTimeout(() => {
+                  stressIndexWarmupTimer = 0;
+                  if (
+                    cancelled ||
+                    activeDataMode !== 'stress' ||
+                    stressSourceRows !== rows
+                  )
+                    return;
+                  prepareBusinessCellLocationIndex(rows);
+                });
                 notify(
-                  `10 万行已载入，用时 ${Math.round(
+                  `10 万条业务记录已准备完成，表格将按视口载入 · ${Math.round(
                     performance.now() - startedAt,
                   )} ms`,
                 );
@@ -2559,6 +2571,7 @@ export function useSpreadsheetController(
                 console.error('[SpreadJS] 压力数据生成失败', error);
                 if (cancelled) return;
                 setDataMode('regular');
+                setDatasetLabel(INITIAL_DATASET_LABEL);
                 notify('压力数据生成失败，请重试', 'error');
               });
           }, 40);
@@ -3240,6 +3253,7 @@ export function useSpreadsheetController(
       window.clearTimeout(toastTimer);
       window.clearTimeout(stressLoadTimer);
       window.clearTimeout(stressViewportTimer);
+      window.clearTimeout(stressIndexWarmupTimer);
       window.clearTimeout(validationFlashTimer);
       window.clearTimeout(clipboardHistoryTimer);
       window.clearTimeout(commandStateTimer);
@@ -3247,6 +3261,7 @@ export function useSpreadsheetController(
       trackedHistoryCells.clear();
       cellFormulaState.clear();
       actionsRef.current = null;
+      stressPageSource.dispose();
       workbook?.destroy();
       releaseStressRecords();
     };

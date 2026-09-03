@@ -156,8 +156,8 @@ export function SpreadsheetWorkspace({
           {ready && dataMode === 'loading' ? (
             <div className="table-state-overlay" role="status">
               <i />
-              <strong>正在生成 10 万行压力数据</strong>
-              <span>表格会分批渲染，页面仍会保持响应</span>
+              <strong>正在构建 10 万条真实化预算记录</strong>
+              <span>完成后仅加载当前视口及下一页，操作期间页面保持响应</span>
             </div>
           ) : null}
           {initializationError ? (

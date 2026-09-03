@@ -466,7 +466,13 @@ export function SheetStatusBar({
         </span>
       </div>
       <div className="dataset-summary">
-        <span>{dataMode === 'stress' ? '压力数据' : '预算样例'}</span>
+        <span>
+          {dataMode === 'regular'
+            ? '预算样例'
+            : dataMode === 'loading'
+            ? '正在准备'
+            : '分页数据'}
+        </span>
         <b>{datasetLabel}</b>
       </div>
     </footer>
