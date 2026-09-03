@@ -1,7 +1,10 @@
 import {
+  BUDGET_VALUE_FIELDS,
   BUSINESS_DATA,
+  stressSummaryRecordKey,
   type BudgetValues,
   type OrganizationNode,
+  type StressSummaryRecords,
   type SubjectNode,
   type ViewRow,
 } from './model';
@@ -75,6 +78,13 @@ export interface StressProjectionPageSource {
   ): Promise<StressProjectionPage>;
   dispose(): void;
 }
+
+export type StressBackendDataset = {
+  /** 后台明细记录；10 万行模式的规模口径。 */
+  detailRows: ViewRow[];
+  /** 后台汇总记录；每个组织、每个科目一条，可独立编辑。 */
+  summaryRecords: StressSummaryRecords;
+};
 
 const REGION_NAMES = [
   '华东',
@@ -390,9 +400,57 @@ function createStressRecord(index: number): ViewRow {
     regionExpanded: false,
   };
   // 压力模式明细行本身就是后台记录。保持同一对象引用，编辑后重建
-  // 投影时才能同步汇总值，而不会回退到生成时的旧数值。
+  // 投影时仍然使用修改后的明细值，而不会回退到生成时的旧数值。
   record.sourceNodes = [record];
   return record;
+}
+
+function createEmptyBudgetValues(): BudgetValues {
+  return Object.fromEntries(
+    BUDGET_VALUE_FIELDS.map((field) => [field, 0]),
+  ) as BudgetValues;
+}
+
+async function createStressSummaryRecords(rows: readonly ViewRow[]) {
+  const records = new Map<string, SubjectNode>();
+  const accumulate = (
+    organizationId: string,
+    subjectLabel: string,
+    source: ViewRow,
+  ) => {
+    const key = stressSummaryRecordKey(organizationId, subjectLabel);
+    let summary = records.get(key);
+    if (!summary) {
+      const subjectIndex = STRESS_SUBJECTS.findIndex(
+        (template) => template.summary === subjectLabel,
+      );
+      summary = {
+        id: `stress-summary:${organizationId}:${Math.max(subjectIndex, 0)}`,
+        name: subjectLabel,
+        functionalAttribute: source.functionalAttribute,
+        ...createEmptyBudgetValues(),
+      };
+      records.set(key, summary);
+    }
+    if (summary.functionalAttribute !== source.functionalAttribute)
+      summary.functionalAttribute = '-';
+    BUDGET_VALUE_FIELDS.forEach((field) => {
+      summary[field] += source[field];
+    });
+  };
+
+  const chunkSize = 5_000;
+  for (let start = 0; start < rows.length; start += chunkSize) {
+    const end = Math.min(start + chunkSize, rows.length);
+    for (let index = start; index < end; index += 1) {
+      const row = rows[index];
+      accumulate(row.productId, row.regionRootLabel, row);
+      if (row.productParentId)
+        accumulate(row.productParentId, row.regionRootLabel, row);
+    }
+    if (end < rows.length) await yieldToBrowser();
+  }
+  return records;
 }
 
 function yieldToBrowser() {
@@ -403,23 +461,26 @@ function yieldToBrowser() {
   });
 }
 
-let stressRecordsCache: ViewRow[] | null = null;
-let stressRecordsPromise: Promise<ViewRow[]> | null = null;
-let stressRecordsCacheEpoch = 0;
+let stressDatasetCache: StressBackendDataset | null = null;
+let stressDatasetPromise: Promise<StressBackendDataset> | null = null;
+let stressDatasetCacheEpoch = 0;
 
 /**
  * 独立 Demo 在浏览器中确定性生成后台样例。每批主动让出主线程；生产环境
  * 应以 BudgetPageGateway 的 manifest/page/search/locate 接口替代。
  */
-export async function getStressRecordsAsync(
+export async function getStressDatasetAsync(
   onProgress?: (loaded: number, total: number) => void,
 ) {
-  if (stressRecordsCache) {
-    onProgress?.(stressRecordsCache.length, stressRecordsCache.length);
-    return stressRecordsCache;
+  if (stressDatasetCache) {
+    onProgress?.(
+      stressDatasetCache.detailRows.length,
+      stressDatasetCache.detailRows.length,
+    );
+    return stressDatasetCache;
   }
-  stressRecordsPromise ??= (async () => {
-    const cacheEpoch = stressRecordsCacheEpoch;
+  stressDatasetPromise ??= (async () => {
+    const cacheEpoch = stressDatasetCacheEpoch;
     const rows = new Array<ViewRow>(STRESS_ROW_COUNT);
     const chunkSize = 5_000;
     for (let start = 0; start < rows.length; start += chunkSize) {
@@ -429,19 +490,23 @@ export async function getStressRecordsAsync(
       onProgress?.(end, rows.length);
       if (end < rows.length) await yieldToBrowser();
     }
-    if (cacheEpoch === stressRecordsCacheEpoch) stressRecordsCache = rows;
-    return rows;
+    const dataset = {
+      detailRows: rows,
+      summaryRecords: await createStressSummaryRecords(rows),
+    } satisfies StressBackendDataset;
+    if (cacheEpoch === stressDatasetCacheEpoch) stressDatasetCache = dataset;
+    return dataset;
   })();
   try {
-    return await stressRecordsPromise;
+    return await stressDatasetPromise;
   } finally {
-    stressRecordsPromise = null;
+    stressDatasetPromise = null;
   }
 }
 
-export function releaseStressRecords() {
-  stressRecordsCacheEpoch += 1;
-  stressRecordsCache = null;
+export function releaseStressDataset() {
+  stressDatasetCacheEpoch += 1;
+  stressDatasetCache = null;
 }
 
 function abortError() {

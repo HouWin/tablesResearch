@@ -97,7 +97,7 @@ export function SpreadsheetWorkspace({
           </div>
           <small>
             {dataMode === 'stress'
-              ? '单击层级单元格展开或收起；搜索会自动展开命中路径'
+              ? '汇总与明细均为后台记录；数值和功能属性可编辑，层级名称保持只读'
               : '单击层级单元格展开或收起；选中汇总行可下钻；右键查看更多操作'}
           </small>
         </div>

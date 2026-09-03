@@ -157,6 +157,16 @@ export type ViewRow = SubjectNode & {
   regionExpanded: boolean;
 };
 
+/** 10 万行模式中由后台返回、可独立编辑的“组织 × 科目”汇总记录。 */
+export type StressSummaryRecords = ReadonlyMap<string, SubjectNode>;
+
+export function stressSummaryRecordKey(
+  organizationId: string,
+  subjectLabel: string,
+) {
+  return `${organizationId}\u0000${subjectLabel}`;
+}
+
 export type OutlineDimension = 'product' | 'region';
 export type ExtensionExpansionState = ReadonlyMap<string, ReadonlySet<string>>;
 export type OutlineSnapshot = {
@@ -982,29 +992,35 @@ function projectStressProduct(
   product: StressProduct,
   productExpanded: ReadonlySet<string>,
   regionExpandedByProduct: ExtensionExpansionState,
+  summaryRecords?: StressSummaryRecords,
 ) {
   const expandedRegions =
     regionExpandedByProduct.get(product.id) ?? new Set<string>();
   const rows = [...product.regions.values()].flatMap((region) => {
     const fallback = region.facts[0];
-    const summary: SubjectNode = {
-      ...fallback,
-      id: `${product.id}:${region.id}:summary`,
-      name: region.label,
-      ...aggregateBudgetNodes(region.facts, fallback),
-      children: undefined,
-    };
+    const backendSummary = summaryRecords?.get(
+      stressSummaryRecordKey(product.id, region.label),
+    );
+    const summary: SubjectNode =
+      backendSummary ??
+      ({
+        ...fallback,
+        id: `${product.id}:${region.id}:summary`,
+        name: region.label,
+        ...aggregateBudgetNodes(region.facts, fallback),
+        children: undefined,
+      } satisfies SubjectNode);
     const expanded = expandedRegions.has(region.id);
     const rowDimension: BusinessRowDimension = {
       organizationId: product.id,
-      subjectId: region.id,
+      subjectId: summary.id,
     };
     const rootRow: ViewRow = {
       ...summary,
       id: `${product.id}::${region.id}`,
       name: `${product.label} / ${region.label}`,
       rowDimension,
-      sourceNodes: region.facts,
+      sourceNodes: backendSummary ? [backendSummary] : region.facts,
       productId: product.id,
       productParentId: product.parentId,
       productAncestorIds: product.ancestorIds,
@@ -1016,7 +1032,7 @@ function projectStressProduct(
       productRowSpan: 1,
       regionId: region.id,
       regionRootId: region.id,
-      regionBusinessId: region.id,
+      regionBusinessId: summary.id,
       regionRootLabel: region.label,
       regionLabel: region.label,
       regionDepth: 0,
@@ -1030,21 +1046,28 @@ function projectStressProduct(
           const childRegion = child.regions.get(region.label);
           if (!childRegion?.facts.length) return [];
           const childFallback = childRegion.facts[0];
-          const childSummary: SubjectNode = {
-            ...childFallback,
-            id: `${child.id}:${region.id}:summary`,
-            name: child.label,
-            ...aggregateBudgetNodes(childRegion.facts, childFallback),
-          };
+          const childBackendSummary = summaryRecords?.get(
+            stressSummaryRecordKey(child.id, region.label),
+          );
+          const childSummary: SubjectNode =
+            childBackendSummary ??
+            ({
+              ...childFallback,
+              id: `${child.id}:${region.id}:summary`,
+              name: child.label,
+              ...aggregateBudgetNodes(childRegion.facts, childFallback),
+            } satisfies SubjectNode);
           return [
             {
               ...childSummary,
               id: `${product.id}::${region.id}::${childSummary.id}`,
               rowDimension: {
                 organizationId: child.id,
-                subjectId: childFallback.regionRootId,
+                subjectId: childSummary.id,
               },
-              sourceNodes: childRegion.facts,
+              sourceNodes: childBackendSummary
+                ? [childBackendSummary]
+                : childRegion.facts,
               productId: product.id,
               productParentId: product.parentId,
               productAncestorIds: product.ancestorIds,
@@ -1056,7 +1079,7 @@ function projectStressProduct(
               productRowSpan: 1,
               regionId: `${region.id}:detail:${childSummary.id}`,
               regionRootId: region.id,
-              regionBusinessId: childFallback.regionRootId,
+              regionBusinessId: childSummary.id,
               regionRootLabel: region.label,
               regionLabel: child.label,
               regionDepth: 1,
@@ -1090,6 +1113,7 @@ export function createStressProjectionRows(
   sourceRows: ViewRow[],
   productExpanded: ReadonlySet<string>,
   regionExpandedByProduct: ExtensionExpansionState,
+  summaryRecords?: StressSummaryRecords,
 ) {
   const index = buildStressProjectionIndex(sourceRows);
   return index.roots.flatMap((root) => {
@@ -1097,7 +1121,12 @@ export function createStressProjectionRows(
       ? [root, ...root.children]
       : [root];
     return products.flatMap((product) =>
-      projectStressProduct(product, productExpanded, regionExpandedByProduct),
+      projectStressProduct(
+        product,
+        productExpanded,
+        regionExpandedByProduct,
+        summaryRecords,
+      ),
     );
   });
 }
@@ -1126,6 +1155,7 @@ export function getStressProjectionSummary(
   productExpanded: ReadonlySet<string>,
   regionExpandedByProduct: ExtensionExpansionState,
   projectedRowCount?: number,
+  summaryRecords?: StressSummaryRecords,
 ): OutlineSnapshot {
   const index = buildStressProjectionIndex(sourceRows);
   const regionGroups = index.allProducts.flatMap((productId) =>
@@ -1152,6 +1182,7 @@ export function getStressProjectionSummary(
         sourceRows,
         productExpanded,
         regionExpandedByProduct,
+        summaryRecords,
       ).length,
   };
 }

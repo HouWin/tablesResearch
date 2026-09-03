@@ -71,6 +71,7 @@ import {
   type PanelName,
   type SelectedCell,
   type SelectionStats,
+  type StressSummaryRecords,
   type ToastState,
   type ToastTone,
   type ViewRow,
@@ -78,8 +79,8 @@ import {
 import { calculateSelectionStatistics } from './selection-statistics';
 import {
   createLocalStressProjectionPageSource,
-  getStressRecordsAsync,
-  releaseStressRecords,
+  getStressDatasetAsync,
+  releaseStressDataset,
   STRESS_PAGE_SIZE,
   type StressProjectionPage,
 } from './stress-data-source';
@@ -311,6 +312,7 @@ export function useSpreadsheetController(
       regionExpandedByProduct,
     );
     let stressSourceRows: ViewRow[] = [];
+    let stressSummaryRecords: StressSummaryRecords = new Map();
     let activeDataMode: 'regular' | 'stress' = 'regular';
     let activeSearch = {
       query: '',
@@ -370,7 +372,15 @@ export function useSpreadsheetController(
         stressSourceRows,
         productExpanded,
         regionExpandedByProduct,
+        stressSummaryRecords,
       );
+
+    const stressDatasetSummary = () =>
+      `${stressSourceRows.length.toLocaleString(
+        'zh-CN',
+      )} 条明细 + ${stressSummaryRecords.size.toLocaleString(
+        'zh-CN',
+      )} 条后台汇总`;
 
     const currentProductGroupIds = () =>
       activeDataMode === 'stress'
@@ -1273,9 +1283,7 @@ export function useSpreadsheetController(
           );
         }, 0);
         setDatasetLabel(
-          `${stressSourceRows.length.toLocaleString(
-            'zh-CN',
-          )} 条底层记录 · 当前投影 ${activeRows.length.toLocaleString(
+          `${stressDatasetSummary()} · 当前投影 ${activeRows.length.toLocaleString(
             'zh-CN',
           )} 行 · 已按需载入 ${loadedRows.toLocaleString('zh-CN')} 行`,
         );
@@ -1662,9 +1670,7 @@ export function useSpreadsheetController(
         );
         setDatasetLabel(
           stress
-            ? `${stressSourceRows.length.toLocaleString(
-                'zh-CN',
-              )} 条底层记录 · 当前投影 ${rowCount.toLocaleString(
+            ? `${stressDatasetSummary()} · 当前投影 ${rowCount.toLocaleString(
                 'zh-CN',
               )} 行 · 等待按视口载入`
             : `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
@@ -1699,6 +1705,7 @@ export function useSpreadsheetController(
                 productExpanded,
                 regionExpandedByProduct,
                 activeRows.length,
+                stressSummaryRecords,
               )
             : getBusinessProjectionSummary(
                 activeView,
@@ -2517,7 +2524,8 @@ export function useSpreadsheetController(
             setView([]);
             renderProjectionRows();
             stressSourceRows = [];
-            releaseStressRecords();
+            stressSummaryRecords = new Map();
+            releaseStressDataset();
             notify('已恢复常规业务数据');
             return;
           }
@@ -2528,7 +2536,7 @@ export function useSpreadsheetController(
             stressLoadTimer = 0;
             if (cancelled) return;
             const startedAt = performance.now();
-            void getStressRecordsAsync((loaded, total) => {
+            void getStressDatasetAsync((loaded, total) => {
               if (cancelled) return;
               setDatasetLabel(
                 `正在构建真实化预算数据… ${Math.round(
@@ -2536,10 +2544,12 @@ export function useSpreadsheetController(
                 )}%`,
               );
             })
-              .then((rows) => {
+              .then((dataset) => {
                 if (cancelled) return;
+                const rows = dataset.detailRows;
                 activeView = [];
                 stressSourceRows = rows;
+                stressSummaryRecords = dataset.summaryRecords;
                 getStressProductGroupIds(rows).forEach((id) =>
                   productExpanded.delete(id),
                 );
@@ -2562,7 +2572,9 @@ export function useSpreadsheetController(
                   prepareBusinessCellLocationIndex(rows);
                 });
                 notify(
-                  `10 万条业务记录已准备完成，表格将按视口载入 · ${Math.round(
+                  `10 万条明细与 ${stressSummaryRecords.size.toLocaleString(
+                    'zh-CN',
+                  )} 条后台汇总已就绪，均可编辑 · ${Math.round(
                     performance.now() - startedAt,
                   )} ms`,
                 );
@@ -3263,7 +3275,7 @@ export function useSpreadsheetController(
       actionsRef.current = null;
       stressPageSource.dispose();
       workbook?.destroy();
-      releaseStressRecords();
+      releaseStressDataset();
     };
   }, [initializationAttempt]);
 
