@@ -14,8 +14,19 @@ export type ColumnEditor =
   | { type: 'checkbox' }
   | { type: 'date' };
 
-/** 顶层节点到叶子列的稳定 ID 路径。 */
-export type BusinessColumnDimension = readonly string[];
+/** 前后台共用的列维成员；定位只依赖稳定 id/field，label 用于展示。 */
+export type BusinessColumnDimensionItem = {
+  id: string;
+  field: string;
+  label: string;
+};
+
+/** 顶层节点到叶子列的完整稳定路径。 */
+export type BusinessColumnDimension = readonly BusinessColumnDimensionItem[];
+
+export function businessColumnDimensionKey(dimension: BusinessColumnDimension) {
+  return JSON.stringify(dimension.map(({ id, field }) => [id, field] as const));
+}
 
 /** 后台列树中的叶子节点，对应 Worksheet 中的一列。 */
 export type BusinessColumnLeaf = {
@@ -174,7 +185,10 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
     if (nodeFields.has(node.field))
       throw new Error(`后台列配置存在重复 field：${node.field}`);
     nodeFields.add(node.field);
-    const path = [...parentPath, node.id];
+    const path = [
+      ...parentPath,
+      { id: node.id, field: node.field, label: node.label },
+    ];
     if (isColumnLeaf(node)) {
       if (leafFields.has(node.field))
         throw new Error(`后台叶子列存在重复数据 field：${node.field}`);
@@ -199,7 +213,7 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   columns.forEach((column, index) => {
     const path = pathByField.get(column.field);
     if (!path) throw new Error(`后台叶子列缺少维度路径：${column.id}`);
-    indexByDimension.set(JSON.stringify(path), index);
+    indexByDimension.set(businessColumnDimensionKey(path), index);
   });
 
   const spanOf = (group: BusinessColumnGroup): ColumnHeaderSpan => {
@@ -339,11 +353,14 @@ export function getBusinessColumnDimension(
   field: ColumnField,
 ): BusinessColumnDimension | null {
   const path = COLUMN_MODEL.pathByField.get(field);
-  return path ? [...path] : null;
+  return path ? path.map((item) => ({ ...item })) : null;
 }
 
 export function getBusinessColumnIndex(dimension: BusinessColumnDimension) {
-  return COLUMN_MODEL.indexByDimension.get(JSON.stringify(dimension)) ?? -1;
+  return (
+    COLUMN_MODEL.indexByDimension.get(businessColumnDimensionKey(dimension)) ??
+    -1
+  );
 }
 
 function requiredColumnIndex(field: ColumnField) {

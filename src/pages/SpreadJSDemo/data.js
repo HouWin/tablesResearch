@@ -235,7 +235,7 @@ const BUSINESS_DATA = [
         october: 600,
         november: 600,
         december: 600,
-        regionSummaries: [
+        subjects: [
           {
             id: 'headquarters-subtotal',
             name: '日常费用合计',
@@ -353,7 +353,7 @@ const BUSINESS_DATA = [
             october: 600,
             november: 600,
             december: 600,
-            regionSummaries: [
+            subjects: [
               {
                 id: 'huajing-sales-subtotal',
                 name: '管理费用合计',
@@ -452,7 +452,7 @@ const BUSINESS_DATA = [
             october: 600,
             november: 600,
             december: 600,
-            regionSummaries: [
+            subjects: [
               {
                 id: 'huajing-finance-subtotal',
                 name: '管理费用合计',
@@ -551,7 +551,7 @@ const BUSINESS_DATA = [
             october: 600,
             november: 600,
             december: 600,
-            regionSummaries: [
+            subjects: [
               {
                 id: 'huajing-administration-subtotal',
                 name: '日常费用合计',
@@ -650,7 +650,7 @@ const BUSINESS_DATA = [
             october: 600,
             november: 600,
             december: 600,
-            regionSummaries: [
+            subjects: [
               {
                 id: 'huajing-research-subtotal',
                 name: '日常费用合计',
@@ -732,7 +732,7 @@ const BUSINESS_DATA = [
             ],
           },
         ],
-        regionSummaries: [
+        subjects: [
           {
             id: 'huajing-subtotal',
             name: '日常费用合计',
@@ -850,7 +850,7 @@ const BUSINESS_DATA = [
             october: 600,
             november: 600,
             december: 600,
-            regionSummaries: [
+            subjects: [
               {
                 id: 'shanghua-sales-subtotal',
                 name: '日常费用合计',
@@ -932,7 +932,7 @@ const BUSINESS_DATA = [
             ],
           },
         ],
-        regionSummaries: [
+        subjects: [
           {
             id: 'shanghua-subtotal',
             name: '日常费用合计',
@@ -1014,7 +1014,7 @@ const BUSINESS_DATA = [
         ],
       },
     ],
-    regionSummaries: [
+    subjects: [
       {
         id: 'cr-micro-group-subtotal',
         name: '日常费用合计',

@@ -24,6 +24,7 @@ export {
 } from './business-column-schema';
 export type {
   BusinessColumnDimension,
+  BusinessColumnDimensionItem,
   BusinessColumnGroup,
   BusinessColumnLeaf,
   BusinessColumnNode,
@@ -75,10 +76,8 @@ export const BUDGET_VALUE_FIELDS = [
 export type BudgetValueField = (typeof BUDGET_VALUE_FIELDS)[number];
 
 export type OrganizationHierarchyRole = 'group' | 'businessUnit' | 'department';
-export type HierarchyRole =
-  | OrganizationHierarchyRole
-  | 'subjectSummary'
-  | 'subjectDetail';
+export type SubjectHierarchyRole = 'subjectSummary' | 'subjectDetail';
+export type HierarchyRole = OrganizationHierarchyRole | SubjectHierarchyRole;
 
 const ORGANIZATION_ROLE_BY_DEPTH = [
   'group',
@@ -112,10 +111,10 @@ export type BusinessNode = {
   october: number;
   november: number;
   december: number;
-  /** 组织的下一级。 */
+  /** 组织节点的下级组织，或科目节点的下级科目。 */
   children?: BusinessNode[];
-  /** 当前组织对应的科目汇总树，由后台直接返回。 */
-  regionSummaries?: BusinessNode[];
+  /** 当前组织对应的科目树，由后台直接返回。 */
+  subjects?: BusinessNode[];
 };
 
 export type CellAttachment = {
@@ -131,21 +130,21 @@ export type CellAttachment = {
 export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
-/**
- * 为兼容既有前后台单元格坐标，行维仍沿用四段键名；它们只属于坐标协议，
- * 不再作为 BUSINESS_DATA 的 hierarchyRole。组织第三级使用完整组织名覆盖
- * subcategory，因而维度仍然唯一且不依赖 Worksheet 行号。
- */
+export type BusinessRowDimensionItem<Role extends HierarchyRole> = {
+  id: string;
+  name: string;
+  hierarchyRole: Role;
+};
+
+/** 前后台共用的稳定行维；名称只用于展示，定位只依赖两条路径中的 id。 */
 export type BusinessRowDimension = {
-  category: string;
-  subcategory?: string;
-  region?: string;
-  detail?: string;
+  organization: readonly BusinessRowDimensionItem<OrganizationHierarchyRole>[];
+  subject: readonly BusinessRowDimensionItem<SubjectHierarchyRole>[];
 };
 export type HierarchyField = 'organizationHierarchy' | 'subjectHierarchy';
 export type BusinessField = Exclude<
   keyof BusinessNode,
-  'id' | 'children' | 'regionSummaries' | 'hierarchyRole'
+  'id' | 'children' | 'subjects' | 'hierarchyRole'
 >;
 export type ColumnField = BusinessField | HierarchyField;
 
@@ -377,7 +376,7 @@ function makeOrganization(
     functionalAttribute: '-',
     ...repeatedBudget(...values),
     children,
-    regionSummaries: [subjectTree],
+    subjects: [subjectTree],
   };
 }
 
@@ -511,57 +510,59 @@ function assertBusinessDataMatchesColumns(nodes: readonly BusinessNode[]) {
         );
     });
     node.children?.forEach(visit);
-    node.regionSummaries?.forEach(visit);
+    node.subjects?.forEach(visit);
   };
   nodes.forEach(visit);
 }
 
 assertBusinessDataMatchesColumns(BUSINESS_DATA);
 
-export const BUSINESS_ROW_DIMENSION_KEYS = [
-  'category',
-  'subcategory',
-  'region',
-  'detail',
-] as const satisfies readonly (keyof BusinessRowDimension)[];
-
 export function businessRowDimensionKey(dimension: BusinessRowDimension) {
-  return JSON.stringify(
-    BUSINESS_ROW_DIMENSION_KEYS.map((key) => dimension[key] ?? null),
-  );
+  return JSON.stringify({
+    organization: dimension.organization.map(({ id }) => id),
+    subject: dimension.subject.map(({ id }) => id),
+  });
 }
 
 const BUSINESS_ROW_DIMENSION_BY_ID = new Map<string, BusinessRowDimension>();
 const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, BusinessNode>();
 
-function indexBusinessRowDimensions(
+function cloneBusinessRowDimension(
+  dimension: BusinessRowDimension,
+): BusinessRowDimension {
+  return {
+    organization: dimension.organization.map((item) => ({ ...item })),
+    subject: dimension.subject.map((item) => ({ ...item })),
+  };
+}
+
+function indexSubjectRowDimensions(
   nodes: readonly BusinessNode[],
-  parent?: BusinessRowDimension,
-  organizationDepth = 0,
+  organization: BusinessRowDimension['organization'],
+  parentSubject: BusinessRowDimension['subject'] = [],
 ) {
   nodes.forEach((node) => {
-    const organizationRole = isOrganizationHierarchyRole(node.hierarchyRole);
-    if (!parent && node.hierarchyRole !== 'group')
-      throw new Error(`BUSINESS_DATA 根节点必须是 group：${node.id}`);
-    if (organizationRole) {
-      const expectedRole = ORGANIZATION_ROLE_BY_DEPTH[organizationDepth];
-      if (!expectedRole || node.hierarchyRole !== expectedRole)
-        throw new Error(
-          `BUSINESS_DATA 组织 ${node.id} 的 hierarchyRole 应为 ${
-            expectedRole ?? '受支持的组织层级'
-          }，实际为 ${node.hierarchyRole}`,
-        );
-    }
-    const dimensionKey: keyof BusinessRowDimension = organizationRole
-      ? parent
-        ? 'subcategory'
-        : 'category'
-      : node.hierarchyRole === 'subjectSummary'
-      ? 'region'
-      : 'detail';
-    const dimension: BusinessRowDimension = parent
-      ? { ...parent, [dimensionKey]: node.name }
-      : { category: node.name };
+    const expectedRole: SubjectHierarchyRole = parentSubject.length
+      ? 'subjectDetail'
+      : 'subjectSummary';
+    if (node.hierarchyRole !== expectedRole)
+      throw new Error(
+        `BUSINESS_DATA 科目 ${node.id} 的 hierarchyRole 应为 ${expectedRole}，实际为 ${node.hierarchyRole}`,
+      );
+    if (node.subjects?.length)
+      throw new Error(`BUSINESS_DATA 科目节点不能包含 subjects：${node.id}`);
+    const subject = [
+      ...parentSubject,
+      {
+        id: node.id,
+        name: node.name,
+        hierarchyRole: expectedRole,
+      },
+    ];
+    const dimension: BusinessRowDimension = {
+      organization,
+      subject,
+    };
     const key = businessRowDimensionKey(dimension);
     const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
     if (duplicate)
@@ -571,16 +572,38 @@ function indexBusinessRowDimensions(
     BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
     BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
     if (node.children?.length)
+      indexSubjectRowDimensions(node.children, organization, subject);
+  });
+}
+
+function indexBusinessRowDimensions(
+  nodes: readonly BusinessNode[],
+  parentOrganization: BusinessRowDimension['organization'] = [],
+  organizationDepth = 0,
+) {
+  nodes.forEach((node) => {
+    const expectedRole = ORGANIZATION_ROLE_BY_DEPTH[organizationDepth];
+    if (!expectedRole || node.hierarchyRole !== expectedRole)
+      throw new Error(
+        `BUSINESS_DATA 组织 ${node.id} 的 hierarchyRole 应为 ${
+          expectedRole ?? '受支持的组织层级'
+        }，实际为 ${node.hierarchyRole}`,
+      );
+    const organization = [
+      ...parentOrganization,
+      {
+        id: node.id,
+        name: node.name,
+        hierarchyRole: expectedRole,
+      },
+    ];
+    if (node.subjects?.length)
+      indexSubjectRowDimensions(node.subjects, organization);
+    if (node.children?.length)
       indexBusinessRowDimensions(
         node.children,
-        dimension,
-        organizationRole ? organizationDepth + 1 : organizationDepth,
-      );
-    if (node.regionSummaries?.length)
-      indexBusinessRowDimensions(
-        node.regionSummaries,
-        dimension,
-        organizationDepth,
+        organization,
+        organizationDepth + 1,
       );
   });
 }
@@ -589,7 +612,7 @@ indexBusinessRowDimensions(BUSINESS_DATA);
 
 export function getBusinessRowDimension(recordId: string) {
   const dimension = BUSINESS_ROW_DIMENSION_BY_ID.get(recordId);
-  return dimension ? { ...dimension } : null;
+  return dimension ? cloneBusinessRowDimension(dimension) : null;
 }
 
 export function findBusinessNodeByRowDimension(
@@ -637,7 +660,7 @@ export function findBusinessNode(
   for (const node of nodes) {
     if (node.id === nodeId) return node;
     const child = findBusinessNode(
-      [...(node.children ?? []), ...(node.regionSummaries ?? [])],
+      [...(node.children ?? []), ...(node.subjects ?? [])],
       nodeId,
     );
     if (child) return child;
@@ -709,7 +732,7 @@ function getVisibleProducts(
 }
 
 function getRegionRoots(product: BusinessNode) {
-  return (product.regionSummaries ?? []).map((subject) => {
+  return (product.subjects ?? []).map((subject) => {
     const rootId = `subject:${subject.id}`;
     return {
       id: rootId,
@@ -789,7 +812,7 @@ export function createBusinessProjectionRows(
         children: product.isGroup
           ? organizationChildren(product.node)
           : undefined,
-        regionSummaries: undefined,
+        subjects: undefined,
         rowDimension,
         sourceNodes: region.sourceNodes,
         productSourceNode: product.node,
@@ -999,10 +1022,30 @@ function createStressRecord(index: number): ViewRow {
   return {
     ...businessNode,
     rowDimension: {
-      category: groupLabel,
-      subcategory: productLabel,
-      region: subjectLabel,
-      detail: detailLabel,
+      organization: [
+        {
+          id: productParentId,
+          name: groupLabel,
+          hierarchyRole: 'group',
+        },
+        {
+          id: productId,
+          name: productLabel,
+          hierarchyRole: 'businessUnit',
+        },
+      ],
+      subject: [
+        {
+          id: regionRootId,
+          name: subjectLabel,
+          hierarchyRole: 'subjectSummary',
+        },
+        {
+          id: businessNode.id,
+          name: detailLabel,
+          hierarchyRole: 'subjectDetail',
+        },
+      ],
     },
     sourceNodes: [businessNode],
     productSourceNode: businessNode,
@@ -1019,7 +1062,7 @@ function createStressRecord(index: number): ViewRow {
     productRowSpan: 1,
     regionId: `${regionRootId}:detail:${businessNode.id}`,
     regionRootId,
-    regionBusinessId: regionRootId,
+    regionBusinessId: businessNode.id,
     regionRootLabel: subjectLabel,
     regionLabel: detailLabel,
     regionDepth: 1,
@@ -1085,7 +1128,7 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressIndex {
         id: rootId,
         parentId: null,
         ancestorIds: [],
-        label: fact.rowDimension.category,
+        label: fact.rowDimension.organization[0].name,
         depth: 0,
         isGroup: true,
         facts: [],
@@ -1142,21 +1185,38 @@ function projectStressProduct(
       hierarchyRole: 'subjectSummary',
       ...aggregateBudgetNodes(region.facts, fallback),
       children: undefined,
-      regionSummaries: undefined,
+      subjects: undefined,
     };
     const expanded = expandedRegions.has(region.id);
+    const rowDimension: BusinessRowDimension =
+      product.depth === 0
+        ? {
+            organization: [
+              {
+                id: product.id,
+                name: product.label,
+                hierarchyRole: 'group',
+              },
+            ],
+            subject: [
+              {
+                id: region.id,
+                name: region.label,
+                hierarchyRole: 'subjectSummary',
+              },
+            ],
+          }
+        : {
+            organization: fallback.rowDimension.organization.map((item) => ({
+              ...item,
+            })),
+            subject: [{ ...fallback.rowDimension.subject[0] }],
+          };
     const rootRow: ViewRow = {
       ...summary,
       id: `${product.id}::${region.id}`,
       name: `${product.label} / ${region.label}`,
-      rowDimension:
-        product.depth === 0
-          ? { category: product.label, region: region.label }
-          : {
-              category: fallback.rowDimension.category,
-              subcategory: product.label,
-              region: region.label,
-            },
+      rowDimension,
       sourceNodes: region.facts,
       productSourceNode: summary,
       level: product.depth,
@@ -1198,9 +1258,10 @@ function projectStressProduct(
               ...childSummary,
               id: `${product.id}::${region.id}::${childSummary.id}`,
               rowDimension: {
-                category: product.label,
-                subcategory: child.label,
-                region: region.label,
+                organization: childFallback.rowDimension.organization.map(
+                  (item) => ({ ...item }),
+                ),
+                subject: [{ ...childFallback.rowDimension.subject[0] }],
               },
               sourceNodes: childRegion.facts,
               productSourceNode: summary,
@@ -1217,7 +1278,7 @@ function projectStressProduct(
               productRowSpan: 1,
               regionId: `${region.id}:detail:${childSummary.id}`,
               regionRootId: region.id,
-              regionBusinessId: region.id,
+              regionBusinessId: childFallback.rowDimension.subject[0].id,
               regionRootLabel: region.label,
               regionLabel: child.label,
               regionDepth: 1,
@@ -1382,7 +1443,7 @@ export function getCellSourceRowDimension(
 ) {
   const sourceNode = getCellSourceNode(row, col);
   if (!row || !sourceNode) return null;
-  return { ...row.rowDimension };
+  return cloneBusinessRowDimension(row.rowDimension);
 }
 
 export function getCellEditability(

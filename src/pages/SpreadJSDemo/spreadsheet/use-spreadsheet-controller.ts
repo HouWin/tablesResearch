@@ -9,6 +9,7 @@ import {
 import {
   describeBusinessCellDimension,
   isBusinessCellDimension,
+  prepareBusinessCellLocationIndex,
   resolveBusinessCellDimension,
   toBusinessCellDimension,
   type BusinessCellDimension,
@@ -141,8 +142,13 @@ type VisibleCellChange = {
 };
 
 export type BusinessCellChangePayload = {
+  /** 后台 BUSINESS_DATA 中被修改的唯一记录。 */
+  recordId: string;
+  /** 被修改的叶子列 field。 */
+  field: BusinessField;
   oldValue: unknown;
   newValue: unknown;
+  /** 完整行维和列维，可原样回传给 locateBusinessCell。 */
   dimension: BusinessCellDimension;
 };
 
@@ -843,6 +849,7 @@ export function useSpreadsheetController(
         const accepted: Array<{
           request: CellEditRequest;
           projectionRowId: string;
+          recordId: string;
           field: BusinessField;
           dimension: BusinessCellDimension;
         }> = [];
@@ -878,6 +885,7 @@ export function useSpreadsheetController(
           accepted.push({
             request: { ...request, requestedValue: nextValue },
             projectionRowId: row.id,
+            recordId: editability.sourceNode.id,
             field: column.field,
             dimension,
           });
@@ -1019,25 +1027,29 @@ export function useSpreadsheetController(
         });
         syncProjectionSnapshot();
 
-        accepted.forEach(({ request, projectionRowId, dimension }) => {
-          const nextRowIndex = nextRowIndexById.get(projectionRowId);
-          const nextValue =
-            nextRowIndex === undefined
-              ? request.requestedValue
-              : viewRowCellValue(nextRows[nextRowIndex], request.col);
-          const oldValue = viewRowCellValue(
-            beforeById.get(projectionRowId) ?? beforeRows[request.row],
-            request.col,
-          );
-          if (historyValuesEqual(oldValue, nextValue)) return;
-          const payload: BusinessCellChangePayload = {
-            oldValue,
-            newValue: nextValue,
-            dimension,
-          };
-          onBusinessCellChangeRef.current?.(payload);
-          logCellChange(payload);
-        });
+        accepted.forEach(
+          ({ request, projectionRowId, recordId, field, dimension }) => {
+            const nextRowIndex = nextRowIndexById.get(projectionRowId);
+            const nextValue =
+              nextRowIndex === undefined
+                ? request.requestedValue
+                : viewRowCellValue(nextRows[nextRowIndex], request.col);
+            const oldValue = viewRowCellValue(
+              beforeById.get(projectionRowId) ?? beforeRows[request.row],
+              request.col,
+            );
+            if (historyValuesEqual(oldValue, nextValue)) return;
+            const payload: BusinessCellChangePayload = {
+              recordId,
+              field,
+              oldValue,
+              newValue: nextValue,
+              dimension,
+            };
+            onBusinessCellChangeRef.current?.(payload);
+            logCellChange(payload);
+          },
+        );
         return Math.max(historyCount, changes.length);
       };
 
@@ -2158,10 +2170,10 @@ export function useSpreadsheetController(
           productExpanded.add(ancestorId);
           hierarchyExpanded = true;
         });
-        if (target.regionDepth > 0) {
+        if (target.subjectDepth > 0) {
           const state = extensionStateFor(target.productId);
-          if (!state.has(target.regionRootId)) {
-            state.add(target.regionRootId);
+          if (!state.has(target.subjectRootId)) {
+            state.add(target.subjectRootId);
             hierarchyExpanded = true;
           }
         }
@@ -2594,6 +2606,7 @@ export function useSpreadsheetController(
                 if (cancelled) return;
                 activeView = [];
                 stressSourceRows = rows;
+                prepareBusinessCellLocationIndex(rows);
                 getStressProductGroupIds(rows).forEach((id) =>
                   productExpanded.delete(id),
                 );

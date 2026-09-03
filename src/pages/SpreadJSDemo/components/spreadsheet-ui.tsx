@@ -286,12 +286,40 @@ export function SearchPopover({
 const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
   {
     row: {
-      category: '华润微电子集团',
-      subcategory: '华晶公司-销售部',
-      region: '管理费用合计',
-      detail: '费用-办公费',
+      organization: [
+        {
+          id: 'cr-micro-group',
+          name: '华润微电子集团',
+          hierarchyRole: 'group',
+        },
+        {
+          id: 'huajing',
+          name: '华晶公司',
+          hierarchyRole: 'businessUnit',
+        },
+        {
+          id: 'huajing-sales',
+          name: '华晶公司-销售部',
+          hierarchyRole: 'department',
+        },
+      ],
+      subject: [
+        {
+          id: 'huajing-sales-subtotal',
+          name: '管理费用合计',
+          hierarchyRole: 'subjectSummary',
+        },
+        {
+          id: 'huajing-sales-office',
+          name: '费用-办公费',
+          hierarchyRole: 'subjectDetail',
+        },
+      ],
     },
-    column: ['budget-2025', 'january'],
+    column: [
+      { id: 'budget-2025', field: 'budget2025', label: '2025年' },
+      { id: 'january', field: 'january', label: '1月' },
+    ],
   },
   null,
   2,
@@ -347,7 +375,7 @@ export function DimensionLocatorPopover({
       return;
     }
     if (!isBusinessCellDimension(parsed)) {
-      setError('必须包含有效的 row 行维对象和 column 列维路径。');
+      setError('必须包含有效的 row 行维和 column 列维路径。');
       return;
     }
     if (!onLocate(parsed)) {
