@@ -201,7 +201,7 @@ const BUSINESS_DATA = [
   {
     id: 'cr-micro-group',
     name: '华润微电子集团',
-    hierarchyRole: 'organization',
+    hierarchyRole: 'group',
     functionalAttribute: '-',
     annualTotal: 43200,
     january: 3600,
@@ -220,7 +220,7 @@ const BUSINESS_DATA = [
       {
         id: 'headquarters',
         name: '华润微电子本部',
-        hierarchyRole: 'organization',
+        hierarchyRole: 'businessUnit',
         functionalAttribute: '-',
         annualTotal: 7200,
         january: 600,
@@ -338,7 +338,7 @@ const BUSINESS_DATA = [
       {
         id: 'huajing',
         name: '华晶公司',
-        hierarchyRole: 'organization',
+        hierarchyRole: 'businessUnit',
         functionalAttribute: '-',
         annualTotal: 28800,
         january: 2400,
@@ -357,7 +357,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-sales',
             name: '华晶公司-销售部',
-            hierarchyRole: 'organization',
+            hierarchyRole: 'department',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -475,7 +475,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-finance',
             name: '华晶公司-财务部',
-            hierarchyRole: 'organization',
+            hierarchyRole: 'department',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -593,7 +593,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-administration',
             name: '华晶公司-行政部',
-            hierarchyRole: 'organization',
+            hierarchyRole: 'department',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -711,7 +711,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-research',
             name: '华晶公司-研发部',
-            hierarchyRole: 'organization',
+            hierarchyRole: 'department',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -930,7 +930,7 @@ const BUSINESS_DATA = [
       {
         id: 'shanghua',
         name: '上华公司',
-        hierarchyRole: 'organization',
+        hierarchyRole: 'businessUnit',
         functionalAttribute: '-',
         annualTotal: 7200,
         january: 600,
@@ -949,7 +949,7 @@ const BUSINESS_DATA = [
           {
             id: 'shanghua-sales',
             name: '上华公司-销售部',
-            hierarchyRole: 'organization',
+            hierarchyRole: 'department',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,

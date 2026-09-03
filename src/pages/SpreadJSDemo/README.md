@@ -13,7 +13,7 @@
 
 `BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。费用汇总、日常费用合计、管理费用合计等记录均视为后台独立返回的数据，前端编辑明细时不会重新计算或覆盖这些汇总记录。
 
-`hierarchyRole` 只描述节点所属的业务层级：组织节点使用 `organization`，科目汇总节点使用 `subjectSummary`，科目明细节点使用 `subjectDetail`。集团、公司、部门等组织深度由 `children` 结构决定。
+`hierarchyRole` 直接表达节点的业务身份，并与实际树层级保持一致：集团层使用 `group`；本部和公司处于同一层，统一使用 `businessUnit`；部门层使用 `department`；科目汇总和科目明细分别使用 `subjectSummary`、`subjectDetail`。模型初始化时会校验组织节点的角色与树深度，防止同层级出现不同角色。
 
 ## 层级投影
 

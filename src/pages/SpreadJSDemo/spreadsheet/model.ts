@@ -74,7 +74,23 @@ export const BUDGET_VALUE_FIELDS = [
 ] as const;
 export type BudgetValueField = (typeof BUDGET_VALUE_FIELDS)[number];
 
-export type HierarchyRole = 'organization' | 'subjectSummary' | 'subjectDetail';
+export type OrganizationHierarchyRole = 'group' | 'businessUnit' | 'department';
+export type HierarchyRole =
+  | OrganizationHierarchyRole
+  | 'subjectSummary'
+  | 'subjectDetail';
+
+const ORGANIZATION_ROLE_BY_DEPTH = [
+  'group',
+  'businessUnit',
+  'department',
+] as const satisfies readonly OrganizationHierarchyRole[];
+
+function isOrganizationHierarchyRole(
+  role: HierarchyRole,
+): role is OrganizationHierarchyRole {
+  return ORGANIZATION_ROLE_BY_DEPTH.includes(role as OrganizationHierarchyRole);
+}
 
 export type BusinessNode = {
   /** 后台记录 ID；组织、汇总和明细记录都全局唯一。 */
@@ -358,7 +374,7 @@ const STANDARD_UNIT_VALUES = {
 function makeOrganization(
   id: string,
   name: string,
-  hierarchyRole: Extract<HierarchyRole, 'organization'>,
+  hierarchyRole: OrganizationHierarchyRole,
   values: BudgetPair,
   subjectTree: BusinessNode,
   children?: BusinessNode[],
@@ -377,7 +393,7 @@ function makeOrganization(
 const huajingSales = makeOrganization(
   'huajing-sales',
   '华晶公司-销售部',
-  'organization',
+  'department',
   [7_200, 600],
   makeSubjectTree(
     'huajing-sales',
@@ -389,7 +405,7 @@ const huajingSales = makeOrganization(
 const huajingFinance = makeOrganization(
   'huajing-finance',
   '华晶公司-财务部',
-  'organization',
+  'department',
   [7_200, 600],
   // 源 Excel 的财务部功能属性确实为“销售”，按原始数据保留。
   makeSubjectTree(
@@ -402,7 +418,7 @@ const huajingFinance = makeOrganization(
 const huajingAdministration = makeOrganization(
   'huajing-administration',
   '华晶公司-行政部',
-  'organization',
+  'department',
   [7_200, 600],
   makeSubjectTree(
     'huajing-administration',
@@ -414,7 +430,7 @@ const huajingAdministration = makeOrganization(
 const huajingResearch = makeOrganization(
   'huajing-research',
   '华晶公司-研发部',
-  'organization',
+  'department',
   [7_200, 600],
   makeSubjectTree(
     'huajing-research',
@@ -426,7 +442,7 @@ const huajingResearch = makeOrganization(
 const huajing = makeOrganization(
   'huajing',
   '华晶公司',
-  'organization',
+  'businessUnit',
   [28_800, 2_400],
   makeSubjectTree('huajing', '日常费用合计', '管理', {
     summary: [28_800, 2_400],
@@ -441,7 +457,7 @@ const huajing = makeOrganization(
 const shanghuaSales = makeOrganization(
   'shanghua-sales',
   '上华公司-销售部',
-  'organization',
+  'department',
   [7_200, 600],
   makeSubjectTree(
     'shanghua-sales',
@@ -453,7 +469,7 @@ const shanghuaSales = makeOrganization(
 const shanghua = makeOrganization(
   'shanghua',
   '上华公司',
-  'organization',
+  'businessUnit',
   [7_200, 600],
   makeSubjectTree('shanghua', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
   [shanghuaSales],
@@ -461,7 +477,7 @@ const shanghua = makeOrganization(
 const headquarters = makeOrganization(
   'headquarters',
   '华润微电子本部',
-  'organization',
+  'businessUnit',
   [7_200, 600],
   makeSubjectTree('headquarters', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
 );
@@ -474,7 +490,7 @@ export const BUSINESS_DATA: BusinessNode[] = [
   makeOrganization(
     'cr-micro-group',
     '华润微电子集团',
-    'organization',
+    'group',
     [43_200, 3_600],
     makeSubjectTree('cr-micro-group', '日常费用合计', '管理', {
       summary: [43_200, 3_600],
@@ -532,18 +548,28 @@ const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, BusinessNode>();
 function indexBusinessRowDimensions(
   nodes: readonly BusinessNode[],
   parent?: BusinessRowDimension,
+  organizationDepth = 0,
 ) {
   nodes.forEach((node) => {
-    if (!parent && node.hierarchyRole !== 'organization')
-      throw new Error(`BUSINESS_DATA 根节点必须是 organization：${node.id}`);
-    const dimensionKey: keyof BusinessRowDimension =
-      node.hierarchyRole === 'organization'
-        ? parent
-          ? 'subcategory'
-          : 'category'
-        : node.hierarchyRole === 'subjectSummary'
-        ? 'region'
-        : 'detail';
+    const organizationRole = isOrganizationHierarchyRole(node.hierarchyRole);
+    if (!parent && node.hierarchyRole !== 'group')
+      throw new Error(`BUSINESS_DATA 根节点必须是 group：${node.id}`);
+    if (organizationRole) {
+      const expectedRole = ORGANIZATION_ROLE_BY_DEPTH[organizationDepth];
+      if (!expectedRole || node.hierarchyRole !== expectedRole)
+        throw new Error(
+          `BUSINESS_DATA 组织 ${node.id} 的 hierarchyRole 应为 ${
+            expectedRole ?? '受支持的组织层级'
+          }，实际为 ${node.hierarchyRole}`,
+        );
+    }
+    const dimensionKey: keyof BusinessRowDimension = organizationRole
+      ? parent
+        ? 'subcategory'
+        : 'category'
+      : node.hierarchyRole === 'subjectSummary'
+      ? 'region'
+      : 'detail';
     const dimension: BusinessRowDimension = parent
       ? { ...parent, [dimensionKey]: node.name }
       : { category: node.name };
@@ -556,9 +582,17 @@ function indexBusinessRowDimensions(
     BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
     BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
     if (node.children?.length)
-      indexBusinessRowDimensions(node.children, dimension);
+      indexBusinessRowDimensions(
+        node.children,
+        dimension,
+        organizationRole ? organizationDepth + 1 : organizationDepth,
+      );
     if (node.regionSummaries?.length)
-      indexBusinessRowDimensions(node.regionSummaries, dimension);
+      indexBusinessRowDimensions(
+        node.regionSummaries,
+        dimension,
+        organizationDepth,
+      );
   });
 }
 
@@ -640,14 +674,14 @@ export function pathForView(view: DrillView) {
 }
 
 function productRootsForView(view: DrillView) {
-  return rootsForView(view).filter(
-    (node) => node.hierarchyRole === 'organization',
+  return rootsForView(view).filter((node) =>
+    isOrganizationHierarchyRole(node.hierarchyRole),
   );
 }
 
 function organizationChildren(node: BusinessNode) {
-  return (node.children ?? []).filter(
-    (child) => child.hierarchyRole === 'organization',
+  return (node.children ?? []).filter((child) =>
+    isOrganizationHierarchyRole(child.hierarchyRole),
   );
 }
 
