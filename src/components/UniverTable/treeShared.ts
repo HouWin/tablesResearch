@@ -122,60 +122,48 @@ export const buildRegionIndex = (
     end: number;
   }>;
 
-  categoryBounds.sort((a, b) => a.toggleRow - b.toggleRow);
   categoryBounds.forEach((bound) => {
     regionTogglesByCategoryId.set(bound.categoryId, []);
   });
 
   const regionToggles = toggles.filter((toggle) => toggle.kind === 'region');
-  regionToggles.sort((a, b) => a.row - b.row);
 
+  /**
+   * 挂到「最内层」品类：嵌套时外层 body 也包含子品类汇总行，
+   * 若取外层会导致展开父级时误露出孙节点、漏掉部分兄弟节点。
+   */
   const resolveCategoryId = (
     toggle: ETableTreeToggleBinding,
     groupStart: number | undefined,
     groupEnd: number,
   ): string | null => {
-    if (!categoryBounds.length) {
-      return null;
-    }
-    let lo = 0;
-    let hi = categoryBounds.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (categoryBounds[mid].toggleRow <= toggle.row) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    if (idx < 0) {
-      return null;
-    }
+    let bestId: string | null = null;
+    let bestSpan = Number.POSITIVE_INFINITY;
+    let bestToggleRow = -1;
 
-    const candidates: number[] = [idx];
-    if (idx > 0) {
-      candidates.unshift(idx - 1);
-    }
-    if (idx + 1 < categoryBounds.length) {
-      candidates.push(idx + 1);
-    }
-
-    for (let i = 0; i < candidates.length; i += 1) {
-      const bound = categoryBounds[candidates[i]];
+    for (let i = 0; i < categoryBounds.length; i += 1) {
+      const bound = categoryBounds[i];
       if (toggle.groupId === bound.categoryId) {
         continue;
       }
       const onSummaryRow = toggle.row === bound.toggleRow;
       const headerInCategory = toggle.row >= bound.start && toggle.row < bound.end;
       const bodyInCategory =
-        groupStart !== undefined && groupStart >= bound.start && groupEnd <= bound.end;
-      if (onSummaryRow || headerInCategory || bodyInCategory) {
-        return bound.categoryId;
+        groupStart !== undefined &&
+        groupStart >= bound.start &&
+        groupEnd <= bound.end;
+      if (!onSummaryRow && !headerInCategory && !bodyInCategory) {
+        continue;
+      }
+      const span = bound.end - bound.start;
+      // 更小 span = 更内层；同 span 取 toggleRow 更大者
+      if (span < bestSpan || (span === bestSpan && bound.toggleRow > bestToggleRow)) {
+        bestSpan = span;
+        bestToggleRow = bound.toggleRow;
+        bestId = bound.categoryId;
       }
     }
-    return null;
+    return bestId;
   };
 
   for (let i = 0; i < regionToggles.length; i += 1) {

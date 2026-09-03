@@ -7,12 +7,23 @@
  * - renderMerges：单元格合并（含视口模式下的逻辑锚点合并）
  * - ensureSheetCapacity：写入前扩容行列，避免 Range out of bounds
  */
-import { VerticalAlign } from '@univerjs/core';
+import { HorizontalAlign, VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
 import { ASYNC_RENDER_ROW_THRESHOLD } from './treeDataGenerator';
 import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
 import type { ETableCellToneContext } from './cellTone';
-import { buildRowSheetValues } from './cellTone';
+import { buildRowSheetValues, mergeCellStyle } from './cellTone';
+
+/** 内容区：仅垂直居中（水平保持默认/按列） */
+export const VERTICAL_MIDDLE_STYLE = {
+  vt: VerticalAlign.MIDDLE,
+} as const;
+
+/** 表头：水平 + 垂直居中 */
+export const HEADER_CENTER_STYLE = {
+  ht: HorizontalAlign.CENTER,
+  vt: VerticalAlign.MIDDLE,
+} as const;
 
 /**
  * =========================================================
@@ -177,10 +188,10 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
     }
     // 获取当前表头区域。
     const range = worksheet.getRange(item.startRow, item.startColumn, item.rowSpan, item.columnSpan);
-    // 写入标题（Univer 默认顶对齐，表头统一垂直居中）
+    // 写入标题（表头上下左右居中）
     range.setValue({
       v: item.title,
-      s: { vt: VerticalAlign.MIDDLE },
+      s: { ...HEADER_CENTER_STYLE },
     });
 
     /**
@@ -609,10 +620,195 @@ export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, c
 };
 
 /**
- * =========================================================
- * 自定义合并
- * =========================================================
+ * 去掉水平对齐，只保留/写入垂直居中（避免上次强制水平居中残留到数据区）。
  */
+const withVerticalMiddleOnly = (style?: Record<string, unknown>) => {
+  const next = { ...(style || {}) };
+  delete next.ht;
+  return mergeCellStyle({
+    ...next,
+    ...VERTICAL_MIDDLE_STYLE,
+  });
+};
+
+const withHeaderCenter = (style?: Record<string, unknown>) =>
+  mergeCellStyle({
+    ...(style || {}),
+    ...HEADER_CENTER_STYLE,
+  });
+
+/**
+ * 表头区域强制上下左右居中（merge / 数字格式之后调用）。
+ */
+export const applyHeaderCenterAlign = (
+  worksheet: UniverWorksheet,
+  headerRowCount: number,
+  columnCount: number,
+) => {
+  if (!worksheet || headerRowCount <= 0 || columnCount <= 0) {
+    return;
+  }
+
+  const range = worksheet.getRange(0, 0, headerRowCount, columnCount);
+  if (!range) {
+    return;
+  }
+
+  try {
+    const rawMatrix =
+      typeof range.getCellDatas === 'function'
+        ? range.getCellDatas()
+        : typeof range.getValues === 'function'
+          ? range.getValues()
+          : null;
+
+    if (Array.isArray(rawMatrix) && rawMatrix.length) {
+      const matrix = rawMatrix.map((row: unknown) => {
+        const cells = Array.isArray(row) ? row : [];
+        const out = new Array(columnCount);
+        for (let c = 0; c < columnCount; c += 1) {
+          const cell = cells[c];
+          if (cell !== null && typeof cell === 'object' && !Array.isArray(cell)) {
+            const data = cell as { v?: unknown; s?: Record<string, unknown> };
+            out[c] = {
+              ...data,
+              v: data.v ?? null,
+              s: withHeaderCenter(
+                typeof data.s === 'object' && data.s ? data.s : {},
+              ),
+            };
+          } else {
+            out[c] = {
+              v: cell ?? null,
+              s: { ...HEADER_CENTER_STYLE },
+            };
+          }
+        }
+        return out;
+      });
+      range.setValues(matrix);
+      return;
+    }
+  } catch (error) {
+    console.warn('[ETable] applyHeaderCenterAlign batch failed', error);
+  }
+
+  for (let r = 0; r < headerRowCount; r += 1) {
+    for (let c = 0; c < columnCount; c += 1) {
+      try {
+        const cellRange = worksheet.getRange(r, c);
+        const raw =
+          typeof cellRange.getCellData === 'function'
+            ? cellRange.getCellData()
+            : null;
+        const prevStyle =
+          raw && typeof raw === 'object' && raw.s && typeof raw.s === 'object'
+            ? (raw.s as Record<string, unknown>)
+            : {};
+        const value =
+          raw && typeof raw === 'object' && 'v' in raw
+            ? (raw as { v?: unknown }).v
+            : typeof cellRange.getValue === 'function'
+              ? cellRange.getValue()
+              : null;
+        cellRange.setValue({
+          v: value ?? null,
+          s: withHeaderCenter(prevStyle),
+        });
+      } catch {
+        // ignore single cell
+      }
+    }
+  }
+};
+
+/**
+ * 对指定区域强制垂直居中（不改水平对齐）。
+ * 在 setNumberFormat / merge 之后调用，避免格式化冲掉对齐。
+ */
+export const applyVerticalMiddleAlign = (
+  worksheet: UniverWorksheet,
+  startRow: number,
+  rowCount: number,
+  columnCount: number,
+) => {
+  if (!worksheet || rowCount <= 0 || columnCount <= 0) {
+    return;
+  }
+
+  const range = worksheet.getRange(startRow, 0, rowCount, columnCount);
+  if (!range) {
+    return;
+  }
+
+  try {
+    const rawMatrix =
+      typeof range.getCellDatas === 'function'
+        ? range.getCellDatas()
+        : typeof range.getValues === 'function'
+          ? range.getValues()
+          : null;
+
+    if (Array.isArray(rawMatrix) && rawMatrix.length) {
+      const matrix = rawMatrix.map((row: unknown) => {
+        const cells = Array.isArray(row) ? row : [];
+        const out = new Array(columnCount);
+        for (let c = 0; c < columnCount; c += 1) {
+          const cell = cells[c];
+          if (cell !== null && typeof cell === 'object' && !Array.isArray(cell)) {
+            const data = cell as { v?: unknown; s?: Record<string, unknown> };
+            out[c] = {
+              ...data,
+              v: data.v ?? null,
+              s: withVerticalMiddleOnly(
+                typeof data.s === 'object' && data.s ? data.s : {},
+              ),
+            };
+          } else {
+            out[c] = {
+              v: cell ?? null,
+              s: { ...VERTICAL_MIDDLE_STYLE },
+            };
+          }
+        }
+        return out;
+      });
+      range.setValues(matrix);
+      return;
+    }
+  } catch (error) {
+    console.warn('[ETable] applyVerticalMiddleAlign batch failed', error);
+  }
+
+  // 兜底：逐格补齐（费用预算等小表足够）
+  for (let r = 0; r < rowCount; r += 1) {
+    for (let c = 0; c < columnCount; c += 1) {
+      try {
+        const cellRange = worksheet.getRange(startRow + r, c);
+        const raw =
+          typeof cellRange.getCellData === 'function'
+            ? cellRange.getCellData()
+            : null;
+        const prevStyle =
+          raw && typeof raw === 'object' && raw.s && typeof raw.s === 'object'
+            ? (raw.s as Record<string, unknown>)
+            : {};
+        const value =
+          raw && typeof raw === 'object' && 'v' in raw
+            ? (raw as { v?: unknown }).v
+            : typeof cellRange.getValue === 'function'
+              ? cellRange.getValue()
+              : null;
+        cellRange.setValue({
+          v: value ?? null,
+          s: withVerticalMiddleOnly(prevStyle),
+        });
+      } catch {
+        // ignore single cell failure
+      }
+    }
+  }
+};
 
 /**
  * 纵向合并单元格写入值，并强制垂直居中（Univer 默认 vt=0 会顶对齐）。
@@ -627,7 +823,7 @@ const toMergedCellPayload = (value: unknown) => {
       v: cell.value ?? null,
       s: {
         ...(cell.style || {}),
-        vt: VerticalAlign.MIDDLE,
+        ...VERTICAL_MIDDLE_STYLE,
       },
     };
   }
@@ -636,7 +832,7 @@ const toMergedCellPayload = (value: unknown) => {
     // 设置值
     v: value ?? null,
     // 设置样式
-    s: { vt: VerticalAlign.MIDDLE },
+    s: { ...VERTICAL_MIDDLE_STYLE },
   };
 };
 

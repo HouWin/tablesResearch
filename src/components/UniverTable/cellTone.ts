@@ -4,8 +4,10 @@ import type { ETableCell, ETableColumn, ETableRow, ETableTreeConfig } from './ty
 export const DEFAULT_READONLY_CELL_BG = '#F5F5F5';
 export const DEFAULT_EDITABLE_CELL_BG = '#FFFFFF';
 
-/** Univer 默认 vt=0 顶对齐，写入数据区时统一垂直居中 */
-export const DEFAULT_CELL_STYLE = { vt: VerticalAlign.MIDDLE };
+/** 数据区默认：仅垂直居中（水平保持默认/左对齐） */
+export const DEFAULT_CELL_STYLE = {
+  vt: VerticalAlign.MIDDLE,
+};
 
 export const mergeCellStyle = (style?: Record<string, unknown>) => ({
   ...DEFAULT_CELL_STYLE,
@@ -119,7 +121,19 @@ export const isReadonlyDataCell = (
   columnIndex: number,
   row: ETableRow,
   cellTone: ETableCellToneContext,
+  columnId?: string,
 ): boolean => {
+  const fieldId = columnId;
+  if (fieldId) {
+    const cell = row.data?.[fieldId];
+    if (
+      cell !== null &&
+      typeof cell === 'object' &&
+      (cell as ETableCell).editable === false
+    ) {
+      return true;
+    }
+  }
   if (cellTone.editableOnReadonlyRowColumns.has(columnIndex)) {
     return false;
   }
@@ -144,7 +158,7 @@ export const buildRowSheetValues = (
     const cell = row.data?.[column.id];
     const toneStyle = cellTone
       ? toRgbStyle(
-          isReadonlyDataCell(dataRow, columnIndex, row, cellTone)
+          isReadonlyDataCell(dataRow, columnIndex, row, cellTone, column.id)
             ? cellTone.readonlyBg
             : cellTone.editableBg,
         )
@@ -152,14 +166,20 @@ export const buildRowSheetValues = (
         ? toRgbStyle(row.style.bg)
         : null;
 
+    const numberStyle =
+      column.type === 'number' && column.numberFormat
+        ? { n: { pattern: column.numberFormat } }
+        : null;
+
     if (cell !== null && typeof cell === 'object') {
       const styledCell = cell as ETableCell;
       const cellStyle = styledCell.style as Record<string, unknown> | undefined;
-      if (cellStyle || toneStyle) {
+      if (cellStyle || toneStyle || numberStyle) {
         return {
           v: styledCell.value ?? null,
           s: mergeCellStyle({
             ...(toneStyle || {}),
+            ...(numberStyle || {}),
             ...(cellStyle || {}),
             bg: (cellStyle as { bg?: unknown })?.bg || toneStyle?.bg,
           }),
@@ -171,10 +191,13 @@ export const buildRowSheetValues = (
       };
     }
 
-    if (toneStyle) {
+    if (toneStyle || numberStyle) {
       return {
         v: cell ?? null,
-        s: mergeCellStyle(toneStyle),
+        s: mergeCellStyle({
+          ...(toneStyle || {}),
+          ...(numberStyle || {}),
+        }),
       };
     }
     return {

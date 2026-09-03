@@ -189,6 +189,15 @@ export interface ETableOptions {
   /** 是否自定义 Univer 原生列头 */
   customizeColumnHeader?: boolean;
   /**
+   * 是否显示 Univer 原生列标（A/B/C…），默认 true。
+   * 业务多级表头已写在工作表单元格中时，常可关闭以免重复。
+   */
+  showColumnHeader?: boolean;
+  /**
+   * 是否显示 Univer 原生行号（1/2/3…），默认 true。
+   */
+  showRowHeader?: boolean;
+  /**
    * 开启虚拟滚动渲染（默认 true）。
    * - Canvas 仅绘制可视区
    * - 小数据：分片 setValues
@@ -201,6 +210,10 @@ export interface ETableOptions {
    * - 对象：自定义 readonlyBackground / editableBackground
    */
   cellTone?: boolean | ETableCellToneOptions;
+  /**
+   * 编辑后在单元格上显示修改标记（浅橙底 + 左侧色条），默认 true。
+   */
+  markEditedCells?: boolean;
 }
 
 /**
@@ -281,6 +294,11 @@ export interface ETableTreeAttributeDetail {
   id: string;
   label: string;
   values?: Record<string, ETablePrimitive | ETableCell>;
+  /**
+   * 科目缩进深度（treeUI），默认 1。
+   * 例：日常费用合计=1，费用-办公费=2，表达「汇总 → 小计 → 明细」。
+   */
+  depth?: number;
 }
 
 /**
@@ -527,11 +545,20 @@ export interface ETableGroupConfig {
   collapsedPaths?: Array<Partial<Record<string, ETablePrimitive>>>;
 }
 
-/** 行/列维度节点（field + title，行维度可带 value）。 */
+/** 行/列维度节点（field + title，行维度可带 value / id）。 */
 export interface ETableDimensionInfo {
+  /** 维度字段（如 organization / subject / yearTotal） */
   field: string;
+  /** 维度标题（表头名） */
   title: string;
+  /** 维度展示值（如组织名、科目名） */
   value?: ETablePrimitive;
+  /**
+   * 业务实体 id：
+   * - 行维：组织节点 id / 科目（属性或明细）id
+   * - 列维：叶子列 id（与 field 相同）
+   */
+  id?: string;
 }
 
 /** getCellDimensions() 返回的单元格维度信息 */
@@ -539,6 +566,8 @@ export type ETableCellDimensionsResult = {
   success: boolean;
   cell?: string;
   field?: string;
+  /** 列维路径 id 拼接（与 onCellChange.columnId 一致） */
+  columnId?: string;
   sheetRow?: number;
   column?: number;
   dataRow?: number;
@@ -546,6 +575,8 @@ export type ETableCellDimensionsResult = {
   rowDimensions?: ETableDimensionInfo[];
   columnDimensions?: ETableDimensionInfo[];
   rowPath?: string[];
+  /** 行维路径 id 拼接（与 onCellChange.rowId 一致） */
+  rowId?: string;
 };
 
 /**
@@ -560,18 +591,28 @@ export interface ETableCellChangeRecord {
   to: string;
   time: string;
   source?: 'edit' | 'paste' | 'api';
-  /** 叶子列 field */
+  /** 叶子列 field（写入用，如 m1；不等于拼接后的 columnId） */
   field?: string;
+  /**
+   * 列维路径 id 拼接（如 year/m1）。
+   * 由 columnDimensions[].id 按 `/` 连接；回写定位仍用 field 或 columnDimensions。
+   */
+  columnId?: string;
   /** 数据区相对行（0-based，视口模式下为投影行） */
   dataRow?: number;
   /** 逻辑行下标（反查 rows[]） */
   logicalRow?: number;
-  /** 当前行的维度值（如品类 / 子品类 / 区域） */
+  /** 当前行的维度值（如品类 / 子品类 / 区域），含业务 id */
   rowDimensions?: ETableDimensionInfo[];
-  /** 当前列的多级表头路径（列维度） */
+  /** 当前列的多级表头路径（列维度），含列 id */
   columnDimensions?: ETableDimensionInfo[];
   /** 行分组面包屑（树折叠路径，展示用） */
   rowPath?: string[];
+  /**
+   * 行维路径 id 拼接（如 hj-sales/hj-sales-summary/hj-sales-office）。
+   * 由 rowDimensions[].id 按 `/` 连接；无维度时回退为 ETableRow.id。
+   */
+  rowId?: string;
 }
 
 /**
@@ -609,11 +650,60 @@ export type ETableSetCellValueResult = {
   field?: string;
 };
 
-/** 单元格定位：A1 / 工作表行列 / 数据区行 + 字段 */
+/**
+ * 批量更新单条：维度定位 + value。
+ * 与 onCellChange 回传的 rowId / columnId / dimensions 对齐。
+ */
+export type ETableCellValuePatch = {
+  value: ETablePrimitive | ETableCell;
+  /** 显式定位（优先）；也可用下方维度字段 */
+  locator?: ETableCellLocator;
+  /** A1，等同 locator: 'D7' */
+  cell?: string;
+  rowId?: string;
+  columnId?: string;
+  field?: string;
+  rowDimensions?: ETableDimensionMatch[];
+  columnDimensions?: ETableDimensionMatch[];
+  dataRow?: number;
+};
+
+export type ETableSetCellValuesResult = {
+  /** 是否全部成功 */
+  success: boolean;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  results: Array<ETableSetCellValueResult & { index: number }>;
+};
+
+/** 按维度匹配单元格时的单个维度条件（与 onCellChange 的维度结构对齐） */
+export type ETableDimensionMatch = {
+  field?: string;
+  id?: string;
+  value?: ETablePrimitive;
+};
+
+/**
+ * 按行维 / 列维定位单元格（后端回写推荐）。
+ * 优先级：rowId > rowDimensions；field/columnId > columnDimensions 叶子。
+ */
+export type ETableDimensionCellLocator = {
+  rowId?: string;
+  rowDimensions?: ETableDimensionMatch[];
+  columnDimensions?: ETableDimensionMatch[];
+  /** 叶子列 field，或列维路径拼接 id（如 year/m1） */
+  field?: string;
+  /** 与 field 同义：列维路径拼接 id */
+  columnId?: string;
+};
+
+/** 单元格定位：A1 / 工作表行列 / 数据区行 + 字段 / 行列维度 */
 export type ETableCellLocator =
   | string
   | { sheetRow: number; column: number }
-  | { dataRow: number; field: string };
+  | { dataRow: number; field: string }
+  | ETableDimensionCellLocator;
 
 /** 行定位：数据区行号 / 工作表绝对行号 */
 export type ETableRowLocator = number | { dataRow: number } | { sheetRow: number };
@@ -834,12 +924,28 @@ export interface ETableRef {
   /**
    * 程序化更新单个单元格。
    * - 支持 'D7'、{ sheetRow, column }、{ dataRow, field }
+   * - 支持按维度：{ rowId, field } 或 { rowDimensions, columnDimensions }
    * - 视口模式下逻辑行不在当前窗口时仅更新内存（appliedToSheet: false）
    */
   setCellValue(
     locator: ETableCellLocator,
     value: ETablePrimitive | ETableCell,
     options?: ETableSetCellValueOptions,
+  ): ETableSetCellValueResult;
+  /**
+   * 按多组维度批量更新多个单元格。
+   * patches 每项含 value + rowId/columnId（或 rowDimensions/columnDimensions）。
+   */
+  setCellValues(
+    patches: ETableCellValuePatch[],
+    options?: ETableSetCellValueOptions,
+  ): ETableSetCellValuesResult;
+  /**
+   * 按行列维度定位单元格（不写值）。
+   * 成功时返回 dataRow / field / cell，可再交给 setCellValue。
+   */
+  locateCellByDimensions(
+    locator: ETableDimensionCellLocator,
   ): ETableSetCellValueResult;
   /**
    * 程序化更新一行（按字段合并到 row.data，再批量写入 Worksheet 一行）。

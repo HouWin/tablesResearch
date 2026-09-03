@@ -21,11 +21,6 @@ export default defineConfig({
       component: './Home',
     },
     {
-      name: 'UniverTable',
-      path: '/univerTable',
-      component: './UniverTable',
-    },
-    {
       name: 'Vtable',
       path: '/vtable',
       component: './Vtable',
@@ -39,6 +34,11 @@ export default defineConfig({
       name: 'AntV S2',
       path: '/antv-s2',
       component: './AntvS2',
+    },
+    {
+      name: 'UniverTable',
+      path: '/univerTable',
+      component: './UniverTable',
     },
     {
       name: 'Handsontable',

@@ -14,6 +14,33 @@ import { resolveCellLocator } from './cellValue';
 
 export type { ETableDimensionInfo } from './types';
 
+/** 行列维路径 id 拼接分隔符（如 year/m1、org/subject/detail） */
+export const DIMENSION_ID_SEPARATOR = '/';
+
+/**
+ * 将维度路径上的 id（缺省则 field）按 `/` 拼成业务定位 id。
+ * 例：[{ id: 'year' }, { id: 'm1' }] → `year/m1`
+ */
+export const joinDimensionPathIds = (
+  dims: Array<{ id?: string; field?: string }> | undefined,
+  separator: string = DIMENSION_ID_SEPARATOR,
+): string | undefined => {
+  if (!dims?.length) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  dims.forEach((item) => {
+    const part =
+      item.id !== undefined && item.id !== null && String(item.id) !== ''
+        ? String(item.id)
+        : item.field;
+    if (part) {
+      parts.push(part);
+    }
+  });
+  return parts.length ? parts.join(separator) : undefined;
+};
+
 export interface ETableEnrichCellChangeContext {
   headerDepth: number;
   columns: ETableColumn[];
@@ -78,7 +105,11 @@ export const resolveColumnDimensionPath = (
 
   const walk = (nodes: ETableColumn[], ancestors: ETableDimensionInfo[]): boolean => {
     for (const column of nodes) {
-      const node: ETableDimensionInfo = { field: column.id, title: column.title };
+      const node: ETableDimensionInfo = {
+        field: column.id,
+        title: column.title,
+        id: column.id,
+      };
       const nextPath = [...ancestors, node];
       if (!column.children?.length) {
         if (leafCounter === targetLeafIndex) {
@@ -99,6 +130,17 @@ export const resolveColumnDimensionPath = (
   return path;
 };
 
+const readContextId = (
+  context: Record<string, ETablePrimitive>,
+  field: string,
+): string | undefined => {
+  const raw = context[`${field}Id`];
+  if (raw === undefined || raw === null || raw === '') {
+    return undefined;
+  }
+  return String(raw);
+};
+
 const resolveFromDimensionContext = (
   row: ETableRow,
   defs: Array<{ field: string; title: string }>,
@@ -115,7 +157,11 @@ const resolveFromDimensionContext = (
   defs.forEach((def) => {
     const value = context[def.field];
     if (value !== undefined && value !== null && value !== '') {
-      result.push({ ...def, value: stripTreeLabel(value) });
+      result.push({
+        ...def,
+        value: stripTreeLabel(value),
+        id: readContextId(context, def.field),
+      });
     }
   });
 
@@ -126,6 +172,7 @@ const resolveFromDimensionContext = (
         field: `${attributeField}Detail`,
         title: treeConfig?.attribute?.title ?? '明细',
         value: stripTreeLabel(detailValue),
+        id: readContextId(context, `${attributeField}Detail`),
       });
     }
   }
@@ -240,11 +287,15 @@ export const resolveCellDimensions = (
     rowPath.length ? rowPath : undefined,
   );
   const columnDimensions = resolveColumnDimensionPath(columns, target.column);
+  const columnId =
+    joinDimensionPathIds(columnDimensions) ?? target.field;
+  const rowId = joinDimensionPathIds(rowDimensions) ?? row?.id;
 
   return {
     success: true,
     cell: target.cell,
     field: target.field,
+    columnId,
     sheetRow: target.sheetRow,
     column: target.column,
     dataRow: target.dataRow,
@@ -252,6 +303,7 @@ export const resolveCellDimensions = (
     rowDimensions: rowDimensions.length ? rowDimensions : undefined,
     columnDimensions: columnDimensions.length ? columnDimensions : undefined,
     rowPath: rowPath.length ? rowPath : undefined,
+    rowId,
   };
 };
 
@@ -289,14 +341,20 @@ export const enrichCellChangeRecord = (
     rowPath.length ? rowPath : undefined,
   );
   const columnDimensions = resolveColumnDimensionPath(columns, record.column);
+  const columnId =
+    joinDimensionPathIds(columnDimensions) ?? leaf?.id;
+  const rowId = joinDimensionPathIds(rowDimensions) ?? row?.id;
 
   return {
     ...record,
     field: leaf?.id,
+    columnId,
     dataRow: dataRow >= 0 ? dataRow : undefined,
     logicalRow: logicalRow !== null && logicalRow >= 0 ? logicalRow : undefined,
     rowDimensions: rowDimensions.length ? rowDimensions : undefined,
     columnDimensions: columnDimensions.length ? columnDimensions : undefined,
     rowPath: rowPath.length ? rowPath : undefined,
+    rowId,
   };
 };
+
