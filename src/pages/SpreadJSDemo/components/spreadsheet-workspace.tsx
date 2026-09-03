@@ -42,7 +42,7 @@ export function SpreadsheetWorkspace({
     <section
       id="spreadsheet-workspace"
       className="work-area"
-      aria-label="经营数据工作区"
+      aria-label="费用预算工作区"
       tabIndex={-1}
     >
       <div className="sheet-card">
@@ -144,7 +144,7 @@ export function SpreadsheetWorkspace({
             ref={hostRef}
             className="spread-host"
             role="application"
-            aria-label="经营数据电子表格"
+            aria-label="费用预算电子表格"
           />
           {!ready && !initializationError ? (
             <div className="table-state-overlay" role="status">

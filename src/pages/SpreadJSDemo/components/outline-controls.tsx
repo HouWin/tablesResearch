@@ -72,15 +72,15 @@ export function OutlineControls({
     <div
       className={`integrated-outline-controls${disabled ? ' is-disabled' : ''}`}
       role="group"
-      aria-label="产品与区域层级控制"
+      aria-label="组织与科目层级控制"
     >
       <OutlineControlCard
         dimension="product"
-        title="产品层级"
+        title="组织层级"
         description={
           dataMode === 'stress'
-            ? '10 个事业群 / 100 条产品线；产品线与首个区域同行展示'
-            : '家具 / 办公用品 / 技术产品；属性列跟随产品'
+            ? '10 个组织群 / 100 个责任中心'
+            : '集团 / 公司 / 部门三级组织结构'
         }
         expanded={snapshot.productExpanded}
         total={snapshot.productTotal}
@@ -89,11 +89,11 @@ export function OutlineControls({
       />
       <OutlineControlCard
         dimension="region"
-        title="区域层级"
+        title="科目层级"
         description={
           dataMode === 'stress'
-            ? '每个事业群 / 产品线独立维护区域状态'
-            : '每个产品分别维护区域展开状态'
+            ? '每个责任中心独立维护科目状态'
+            : '每个组织分别维护费用科目展开状态'
         }
         expanded={snapshot.regionExpanded}
         total={snapshot.regionTotal}
@@ -107,8 +107,8 @@ export function OutlineControls({
         onClick={onReset}
         title={
           dataMode === 'stress'
-            ? '恢复产品树与区域树全部收起'
-            : '恢复产品树默认展开、区域树全部收起'
+            ? '恢复组织树与科目树全部收起'
+            : '恢复 Excel 对应的默认展开状态'
         }
       >
         <RotateCcw size={14} />

@@ -14,7 +14,7 @@ export type ColumnEditor =
   | { type: 'checkbox' }
   | { type: 'date' };
 
-/** 根分组到叶子列的稳定 ID 路径，例如 core-metrics/income-metrics/revenue。 */
+/** 根分组到叶子列的稳定 ID 路径。 */
 export type BusinessColumnDimension = readonly string[];
 
 /** 后台列树中的叶子节点，对应 Worksheet 中的一列。 */
@@ -39,6 +39,8 @@ export type BusinessColumnGroup = {
   summaryField?: ColumnField;
   /** 冻结该根分组下的所有叶子列。 */
   frozen?: boolean;
+  /** 叶子标题纵向贯穿全部表头行，用于 Excel 式行维标题。 */
+  leafHeadersSpanAllRows?: boolean;
 };
 
 export type BusinessColumnNode = BusinessColumnGroup | BusinessColumnLeaf;
@@ -65,226 +67,88 @@ export type ColumnOutlineGroup = {
 };
 
 /**
- * 模拟后台返回的树形列配置。
+ * “费用预算表-行维度展开示例.xlsx”对应的后台列树。
  *
- * 数组顺序就是最终列顺序；children 表达表头层级；summaryField 同时
- * 描述列组折叠语义。前端不再另外维护平铺列、表头分组和 Outline 配置。
+ * 前三列来自 Excel 的行维度，后十三列严格对应 2025 年全年合计与
+ * 1—12 月。全年合计是列组折叠时保留的汇总列。
  */
 export const BUSINESS_COLUMN_DATA = [
   {
-    id: 'business-dimensions',
-    label: '业务维度',
+    id: 'budget-dimensions',
+    label: '',
     frozen: true,
+    leafHeadersSpanAllRows: true,
     children: [
       {
-        id: 'product-hierarchy',
-        field: 'productHierarchy',
-        label: '产品层级',
-        width: 178,
+        id: 'organization-hierarchy',
+        field: 'organizationHierarchy',
+        label: '组织',
+        width: 216,
         dataType: 'string',
         editable: false,
         searchable: true,
       },
       {
-        id: 'product-attribute',
-        field: 'productAttribute',
-        label: '产品属性',
-        width: 144,
+        id: 'subject-hierarchy',
+        field: 'subjectHierarchy',
+        label: '科目',
+        width: 194,
+        dataType: 'string',
+        editable: false,
+        searchable: true,
+      },
+      {
+        id: 'functional-attribute',
+        field: 'functionalAttribute',
+        label: '功能属性',
+        width: 154,
         dataType: 'string',
         editor: { type: 'text' },
         editable: true,
         searchable: true,
       },
-      {
-        id: 'region-hierarchy',
-        field: 'regionHierarchy',
-        label: '区域层级',
-        width: 168,
-        dataType: 'string',
-        editable: false,
-        searchable: true,
-      },
     ],
   },
   {
-    id: 'core-metrics',
-    label: '核心经营指标',
-    summaryField: 'revenue',
+    id: 'budget-2025',
+    label: '2025年',
+    summaryField: 'annualTotal',
     children: [
       {
-        id: 'income-metrics',
-        label: '收入指标',
-        summaryField: 'revenue',
-        children: [
-          {
-            id: 'revenue',
-            field: 'revenue',
-            label: '净收入',
-            width: 112,
-            dataType: 'number',
-            format: 'currency',
-            editor: { type: 'number' },
-            editable: true,
-          },
-          {
-            id: 'product-revenue',
-            field: 'productRevenue',
-            label: '商品收入',
-            width: 108,
-            dataType: 'number',
-            format: 'currency',
-            editor: { type: 'number' },
-            editable: true,
-          },
-          {
-            id: 'service-revenue',
-            field: 'serviceRevenue',
-            label: '服务收入',
-            width: 108,
-            dataType: 'number',
-            format: 'currency',
-            editor: { type: 'number' },
-            editable: true,
-          },
-        ],
+        id: 'annual-total',
+        field: 'annualTotal',
+        label: '全年合计',
+        width: 114,
+        dataType: 'number',
+        format: 'decimal',
+        editor: { type: 'number' },
+        editable: true,
       },
-      {
-        id: 'order-metrics',
-        label: '订单指标',
-        summaryField: 'orders',
-        children: [
-          {
-            id: 'orders',
-            field: 'orders',
-            label: '订单数',
-            width: 92,
-            dataType: 'number',
-            format: 'integer',
-            editor: { type: 'number' },
-            editable: true,
-          },
-          {
-            id: 'online-orders',
-            field: 'onlineOrders',
-            label: '线上订单',
-            width: 92,
-            dataType: 'number',
-            format: 'integer',
-            editor: { type: 'number' },
-            editable: true,
-          },
-          {
-            id: 'offline-orders',
-            field: 'offlineOrders',
-            label: '线下订单',
-            width: 92,
-            dataType: 'number',
-            format: 'integer',
-            editor: { type: 'number' },
-            editable: true,
-          },
-          {
-            id: 'average-order',
-            field: 'avgOrder',
-            label: '客单价',
-            width: 98,
-            dataType: 'number',
-            format: 'currency',
-            editor: { type: 'number' },
-            editable: true,
-          },
-        ],
-      },
-      {
-        id: 'target-management',
-        label: '目标管理',
-        children: [
-          {
-            id: 'completion',
-            field: 'completion',
-            label: '目标达成',
-            width: 96,
-            dataType: 'number',
-            format: 'percent',
-            editor: { type: 'number' },
-            editable: true,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'business-governance',
-    label: '业务治理',
-    summaryField: 'owner',
-    children: [
-      {
-        id: 'responsibility-verification',
-        label: '责任与核验',
-        summaryField: 'owner',
-        children: [
-          {
-            id: 'owner',
-            field: 'owner',
-            label: '负责人',
-            width: 84,
-            dataType: 'string',
-            editor: { type: 'text' },
-            editable: true,
-            searchable: true,
-          },
-          {
-            id: 'status',
-            field: 'status',
-            label: '核验状态',
-            width: 96,
-            dataType: 'string',
-            editor: {
-              type: 'select',
-              options: ['已核验', '待复核', '异常'],
-            },
-            editable: true,
-            searchable: true,
-          },
-          {
-            id: 'verified',
-            field: 'verified',
-            label: '已核验',
-            width: 82,
-            dataType: 'boolean',
-            editor: { type: 'checkbox' },
-            editable: true,
-            searchable: true,
-          },
-        ],
-      },
-      {
-        id: 'record-information',
-        label: '记录信息',
-        children: [
-          {
-            id: 'updated-at',
-            field: 'updatedAt',
-            label: '更新日期',
-            width: 104,
-            dataType: 'date',
-            format: 'date',
-            editor: { type: 'date' },
-            editable: true,
-            searchable: true,
-          },
-          {
-            id: 'adjustment-factor',
-            field: 'adjustmentFactor',
-            label: '调整系数',
-            width: 96,
-            dataType: 'number',
-            format: 'decimal',
-            editor: { type: 'number' },
-            editable: true,
-          },
-        ],
-      },
+      ...(
+        [
+          ['january', '1月'],
+          ['february', '2月'],
+          ['march', '3月'],
+          ['april', '4月'],
+          ['may', '5月'],
+          ['june', '6月'],
+          ['july', '7月'],
+          ['august', '8月'],
+          ['september', '9月'],
+          ['october', '10月'],
+          ['november', '11月'],
+          ['december', '12月'],
+        ] as const
+      ).map(([field, label]) => ({
+        id: field,
+        field,
+        label,
+        width: 92,
+        dataType: 'number' as const,
+        format: 'decimal' as const,
+        editor: { type: 'number' as const },
+        editable: true,
+      })),
     ],
   },
 ] as const satisfies readonly BusinessColumnGroup[];
@@ -340,6 +204,7 @@ export function buildBusinessColumnModel(
     if (!path) throw new Error(`后台叶子列缺少维度路径：${column.id}`);
     indexByDimension.set(JSON.stringify(path), index);
   });
+
   const spanOf = (group: BusinessColumnGroup): ColumnHeaderSpan => {
     const leaves = leavesOf(group.children);
     const startCol = indexByField.get(leaves[0].field);
@@ -369,6 +234,23 @@ export function buildBusinessColumnModel(
   const visitHeader = (group: BusinessColumnGroup, row: number) => {
     const span = spanOf(group);
     const directLeaves = group.children.every(isColumnLeaf);
+    if (directLeaves && group.leafHeadersSpanAllRows) {
+      group.children.filter(isColumnLeaf).forEach((column) => {
+        const startCol = indexByField.get(column.field);
+        if (startCol === undefined)
+          throw new Error(`后台叶子列无法定位：${column.id}`);
+        headerCells.push({
+          id: column.id,
+          label: column.label,
+          startCol,
+          colCount: 1,
+          row: 0,
+          rowCount: lastHeaderRow + 1,
+          kind: 'column',
+        });
+      });
+      return;
+    }
     headerCells.push({
       ...span,
       row,
@@ -453,7 +335,6 @@ export const COLUMN_HEADER_ROW_COUNT = COLUMN_MODEL.headerRowCount;
 export const COLUMN_GROUPS = COLUMN_MODEL.outlineGroups;
 export const HIERARCHY_COLUMN_COUNT = COLUMN_MODEL.frozenColumnCount;
 
-/** 根据业务字段得到后台列树中的完整路径。 */
 export function getBusinessColumnDimension(
   field: ColumnField,
 ): BusinessColumnDimension | null {
@@ -461,7 +342,6 @@ export function getBusinessColumnDimension(
   return path ? [...path] : null;
 }
 
-/** 根据后台给出的完整列路径得到物理列号；路径不完整或不匹配时返回 -1。 */
 export function getBusinessColumnIndex(dimension: BusinessColumnDimension) {
   return COLUMN_MODEL.indexByDimension.get(JSON.stringify(dimension)) ?? -1;
 }
@@ -472,18 +352,15 @@ function requiredColumnIndex(field: ColumnField) {
   return index;
 }
 
-export const PRODUCT_HIERARCHY_COLUMN = requiredColumnIndex('productHierarchy');
-export const PRODUCT_ATTRIBUTE_COLUMN = requiredColumnIndex('productAttribute');
-export const REGION_HIERARCHY_COLUMN = requiredColumnIndex('regionHierarchy');
-export const REVENUE_COLUMN = requiredColumnIndex('revenue');
-export const SERVICE_REVENUE_COLUMN = requiredColumnIndex('serviceRevenue');
-export const ORDERS_COLUMN = requiredColumnIndex('orders');
-export const AVG_ORDER_COLUMN = requiredColumnIndex('avgOrder');
-export const COMPLETION_COLUMN = requiredColumnIndex('completion');
-export const STATUS_COLUMN = requiredColumnIndex('status');
-export const VERIFIED_COLUMN = requiredColumnIndex('verified');
-export const UPDATED_AT_COLUMN = requiredColumnIndex('updatedAt');
-export const DECIMAL_COLUMN = requiredColumnIndex('adjustmentFactor');
+// 保留控制器使用的常量名，值已对应新的组织 / 功能属性 / 科目列。
+export const PRODUCT_HIERARCHY_COLUMN = requiredColumnIndex(
+  'organizationHierarchy',
+);
+export const REGION_HIERARCHY_COLUMN = requiredColumnIndex('subjectHierarchy');
+export const PRODUCT_ATTRIBUTE_COLUMN = requiredColumnIndex(
+  'functionalAttribute',
+);
+export const ANNUAL_TOTAL_COLUMN = requiredColumnIndex('annualTotal');
 export const STRESS_TEXT_SEARCH_COLUMNS = new Set(
   COLUMNS.flatMap((column, index) => (column.searchable ? [index] : [])),
 );

@@ -84,7 +84,7 @@ export default defineConfig({
           redirect: '/spreadjs-demo/business',
         },
         {
-          name: '经营数据表',
+          name: '费用预算表',
           path: '/spreadjs-demo/business',
           component: './SpreadJSDemo',
         },

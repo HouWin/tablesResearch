@@ -118,17 +118,17 @@ export function DemoHeader({
     <header className="demo-header">
       <div className="title-lockup">
         <div className="logo-mark" aria-hidden="true">
-          经
+          费
         </div>
         <div>
-          <div className="eyebrow">经营分析工作台 · SpreadJS 19.1</div>
-          <h1>经营数据表</h1>
+          <div className="eyebrow">预算管理工作台 · SpreadJS 19.1</div>
+          <h1>费用预算表</h1>
         </div>
       </div>
       <div className="header-meta">
         <span className="meta-pill period">
           <CalendarDays size={14} />
-          2026 年 8 月 · CNY
+          2025 年 · 费用预算
         </span>
         {licenseConfigured ? (
           <span className="meta-pill licensed">
@@ -154,7 +154,7 @@ export function DemoHeader({
         <button
           className="fullscreen-toggle"
           type="button"
-          aria-label={isFullscreen ? '退出全屏' : '全屏显示经营数据表'}
+          aria-label={isFullscreen ? '退出全屏' : '全屏显示费用预算表'}
           aria-pressed={isFullscreen}
           disabled={!fullscreenAvailable}
           title={fullscreenAvailable ? undefined : '当前浏览器不支持全屏'}
@@ -207,7 +207,7 @@ export function SearchPopover({
       id="sheet-search-popover"
       className="toolbar-popover search-popover"
       role="search"
-      aria-label="搜索全部业务层级"
+      aria-label="搜索全部预算层级"
       aria-busy={busy}
     >
       <div className="popover-title">
@@ -240,7 +240,7 @@ export function SearchPopover({
             if (busy) return;
             onSearch(event.shiftKey ? -1 : 1);
           }}
-          placeholder="输入产品、区域、负责人或数值…"
+          placeholder="输入组织、科目、功能属性或数值…"
         />
         {query ? (
           <button
@@ -286,12 +286,12 @@ export function SearchPopover({
 const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
   {
     row: {
-      category: '家具',
-      subcategory: '书柜',
-      region: '华中',
-      detail: '湖北',
+      category: '华润微电子集团',
+      subcategory: '华晶公司-销售部',
+      region: '费用汇总',
+      detail: '费用-办公费',
     },
-    column: ['core-metrics', 'income-metrics', 'revenue'],
+    column: ['budget-2025', 'january'],
   },
   null,
   2,
@@ -540,7 +540,7 @@ export function SheetStatusBar({
         </span>
       </div>
       <div className="dataset-summary">
-        <span>{dataMode === 'stress' ? '压力数据' : '业务样例'}</span>
+        <span>{dataMode === 'stress' ? '压力数据' : '预算样例'}</span>
         <b>{datasetLabel}</b>
       </div>
     </footer>

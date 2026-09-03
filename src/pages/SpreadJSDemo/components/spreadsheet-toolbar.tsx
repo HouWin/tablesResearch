@@ -252,11 +252,11 @@ export function SpreadsheetToolbar({
           title={
             rowGroupsCollapsed
               ? dataMode === 'stress'
-                ? '展开全部事业群、产品线与区域层级'
-                : '展开全部产品与区域层级'
+                ? '展开全部组织群、责任中心与科目层级'
+                : '展开全部组织与科目层级'
               : dataMode === 'stress'
-              ? '收起全部事业群、产品线与区域层级'
-              : '收起全部产品与区域层级'
+              ? '收起全部组织群、责任中心与科目层级'
+              : '收起全部组织与科目层级'
           }
           onClick={() => actionsRef.current?.toggleRowGroups()}
           className={rowGroupsCollapsed ? 'is-active' : ''}
@@ -342,7 +342,7 @@ export function SpreadsheetToolbar({
         <button
           type="button"
           title={
-            dataMode === 'stress' ? '恢复常规业务样例' : '载入 10 万行压力数据'
+            dataMode === 'stress' ? '恢复费用预算样例' : '载入 10 万行压力数据'
           }
           className={dataMode === 'stress' ? 'stress-active' : ''}
           disabled={tableBusy}

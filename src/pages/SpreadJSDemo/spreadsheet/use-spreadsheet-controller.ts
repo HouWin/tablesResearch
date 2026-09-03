@@ -24,22 +24,24 @@ import {
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
   INITIAL_DATASET_LABEL,
+  ANNUAL_TOTAL_COLUMN,
   PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
-  STATUS_COLUMN,
   STRESS_FULL_PAGE_VISIBLE_ROWS,
   STRESS_PAGE_SIZE,
   STRESS_TEXT_SEARCH_COLUMNS,
   canDrillNode,
   columnName,
   createBusinessProjectionRows,
+  createInitialRegionExpansion,
   createStressProjectionRows,
   getAllProductIdsForView,
   getAggregateValue,
   getBusinessProjectionSummary,
   getCellEditability,
   getProductGroupIdsForView,
+  getProductAncestorIds,
   getRegionGroupIdsForProduct,
   getStressAllProductIds,
   getStressProductGroupIds,
@@ -50,7 +52,6 @@ import {
   numericDisplayForColumn,
   pathForView,
   releaseStressRecords,
-  roundToTwoDecimals,
   simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
@@ -217,6 +218,7 @@ type RegularSearchMatch = {
   nodeId: string;
   productId: string;
   productParentId: string | null;
+  productAncestorIds: readonly string[];
   regionRootId: string;
   regionDepth: 0 | 1;
   col: number;
@@ -261,44 +263,8 @@ export function useSpreadsheetController(
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
   const rowGroupsCollapsedRef = useRef(false);
   const columnGroupsCollapsedRef = useRef(false);
-  const historyRef = useRef<Map<string, HistoryItem[]>>(
-    new Map([
-      [
-        stableCellKey('furniture-bookcases::region:east', 'revenue'),
-        [
-          {
-            id: 'history-3',
-            oldValue: 3_700_400,
-            newValue: 3_724_800,
-            source: '日报回写',
-            createdAt: new Date('2026-08-21T16:34:00+08:00').getTime(),
-          },
-          {
-            id: 'history-2',
-            oldValue: 3_686_800,
-            newValue: 3_700_400,
-            source: '批量粘贴',
-            createdAt: new Date('2026-08-21T14:18:00+08:00').getTime(),
-          },
-          {
-            id: 'history-1',
-            oldValue: null,
-            newValue: 3_686_800,
-            source: '数据导入',
-            createdAt: new Date('2026-08-21T09:02:00+08:00').getTime(),
-          },
-        ],
-      ],
-    ]),
-  );
-  const commentsRef = useRef<Map<string, string>>(
-    new Map([
-      [
-        stableCellKey('furniture-bookcases::region:east', 'revenue'),
-        '待复核：净收入与城市日报存在 2,400 元差异。',
-      ],
-    ]),
-  );
+  const historyRef = useRef<Map<string, HistoryItem[]>>(new Map());
+  const commentsRef = useRef<Map<string, string>>(new Map());
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
   const [ready, setReady] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
@@ -335,7 +301,7 @@ export function useSpreadsheetController(
     getBusinessProjectionSummary(
       [],
       new Set<string>(INITIAL_PRODUCT_EXPANDED),
-      new Map<string, Set<string>>(),
+      createInitialRegionExpansion(),
     ),
   );
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -400,7 +366,7 @@ export function useSpreadsheetController(
     let cancelled = false;
     let workbook: Workbook | null = null;
     const productExpanded = new Set<string>(INITIAL_PRODUCT_EXPANDED);
-    const regionExpandedByProduct = new Map<string, Set<string>>();
+    const regionExpandedByProduct = createInitialRegionExpansion();
     let activeView: DrillView = [];
     let activeRows = createBusinessProjectionRows(
       activeView,
@@ -549,7 +515,7 @@ export function useSpreadsheetController(
       workbook = spread;
       spread.options.highlightInvalidData = true;
       const sheet = spread.getActiveSheet();
-      sheet.name('经营明细');
+      sheet.name('费用预算表');
       sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
       sheet.options.protectionOptions = {
         allowSelectLockedCells: true,
@@ -850,22 +816,6 @@ export function useSpreadsheetController(
         });
       };
 
-      const styleStatusCells = (
-        startRow = 0,
-        rowCount = Math.min(activeRows.length, STRESS_PAGE_SIZE),
-      ) => {
-        const endRow = Math.min(activeRows.length, startRow + rowCount);
-        for (let row = startRow; row < endRow; row += 1) {
-          const status = activeRows[row].status;
-          const cell = sheet.getCell(row, STATUS_COLUMN);
-          if (status === '已核验')
-            cell.backColor('#e6f5ef').foreColor('#19715d');
-          else if (status === '异常')
-            cell.backColor('#fee9e8').foreColor('#b13b3b');
-          else cell.backColor('#fff4da').foreColor('#8a5a16');
-        }
-      };
-
       const applyCellEditability = (startRow: number, rowCount: number) => {
         const endRow = Math.min(activeRows.length, startRow + rowCount);
         for (let row = startRow; row < endRow; row += 1) {
@@ -875,14 +825,12 @@ export function useSpreadsheetController(
             cell.locked(!editability.editable);
             if (
               isHierarchyField(COLUMNS[col].field) ||
-              COLUMNS[col].field === 'productAttribute' ||
+              COLUMNS[col].field === 'functionalAttribute' ||
               COLUMNS[col].editor?.type === 'select' ||
               COLUMNS[col].editor?.type === 'checkbox'
             )
               continue;
-            if (editability.editable) {
-              cell.backColor('#fff').foreColor('#1f2937');
-            } else {
+            if (!editability.editable) {
               cell.backColor('#f5f6f8').foreColor('#667085');
             }
           }
@@ -925,12 +873,7 @@ export function useSpreadsheetController(
             });
             return;
           }
-          let nextValue = request.requestedValue;
-          if (
-            column.field === 'adjustmentFactor' &&
-            typeof nextValue === 'number'
-          )
-            nextValue = roundToTwoDecimals(nextValue);
+          const nextValue = request.requestedValue;
           updateBusinessNode(editability.sourceNode, column.field, nextValue);
           accepted.push({
             request: { ...request, requestedValue: nextValue },
@@ -1043,7 +986,6 @@ export function useSpreadsheetController(
               changedRows.add(change.row);
             });
             changedRows.forEach((row) => {
-              styleStatusCells(row, 1);
               applyCellEditability(row, 1);
             });
           } finally {
@@ -1264,16 +1206,20 @@ export function useSpreadsheetController(
           .font('400 12px Arial, PingFang SC');
         sheet
           .getRange(startRow, PRODUCT_HIERARCHY_COLUMN, rowCount, 1)
-          .backColor('#edf8f2')
-          .foreColor('#19704f');
-        sheet
-          .getRange(startRow, PRODUCT_ATTRIBUTE_COLUMN, rowCount, 1)
-          .backColor('#fff8e9')
-          .foreColor('#875c18');
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
         sheet
           .getRange(startRow, REGION_HIERARCHY_COLUMN, rowCount, 1)
-          .backColor('#f1effd')
-          .foreColor('#6045b8');
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
+        sheet
+          .getRange(startRow, PRODUCT_ATTRIBUTE_COLUMN, rowCount, 1)
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
+        sheet
+          .getRange(startRow, ANNUAL_TOTAL_COLUMN, rowCount, 1)
+          .backColor('#fff2cc')
+          .foreColor('#2f2f2f');
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
           .vAlign(GC.Spread.Sheets.VerticalAlign.center);
@@ -1289,20 +1235,30 @@ export function useSpreadsheetController(
           const isSummaryRow =
             node.sourceNodes.length !== 1 ||
             node.sourceNodes.some(
-              (sourceNode) => sourceNode.hierarchyRole !== 'detail',
+              (sourceNode) =>
+                sourceNode.hierarchyRole !== 'detail' ||
+                sourceNode.name.includes('合计'),
             );
           if (isSummaryRow) {
             sheet
               .getRange(row, 0, 1, columnCount)
               .font('600 12px Arial, PingFang SC');
+            sheet
+              .getRange(
+                row,
+                ANNUAL_TOTAL_COLUMN,
+                1,
+                columnCount - ANNUAL_TOTAL_COLUMN,
+              )
+              .backColor('#fff2cc');
           }
           if (
             activeDataMode === 'stress' &&
             node.productBlockStart &&
             node.productRowSpan > 1
           ) {
-            // 常规数据块只有几行，居中阅读更自然；压力数据的产品块
-            // 最长跨 1,000 行，顶部对齐才能让产品与首个区域同时出现。
+            // 常规组织块只有几行，居中阅读更自然；压力数据块较长，
+            // 顶部对齐才能让组织与首个科目同时出现。
             sheet
               .getRange(row, PRODUCT_HIERARCHY_COLUMN, 1, 2)
               .vAlign(GC.Spread.Sheets.VerticalAlign.top);
@@ -1334,7 +1290,6 @@ export function useSpreadsheetController(
         }
         styleDataRows(startRow, rowCount, sheet.getColumnCount());
         configureCellTypes(startRow, rowCount);
-        styleStatusCells(startRow, rowCount);
         applyCellEditability(startRow, rowCount);
         loadedStressPages.add(pageIndex);
         for (let row = startRow; row < startRow + rowCount; row += 1)
@@ -1355,7 +1310,6 @@ export function useSpreadsheetController(
         ]);
         styleDataRows(row, 1, sheet.getColumnCount());
         configureCellTypes(row, 1);
-        styleStatusCells(row, 1);
         applyCellEditability(row, 1);
         loadedStressRows.add(row);
       };
@@ -1633,12 +1587,6 @@ export function useSpreadsheetController(
               row.productRowSpan,
               1,
             );
-            sheet.addSpan(
-              rowIndex,
-              PRODUCT_ATTRIBUTE_COLUMN,
-              row.productRowSpan,
-              1,
-            );
           });
 
           const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
@@ -1664,8 +1612,8 @@ export function useSpreadsheetController(
           if (!stress) styleDataRows(0, rowCount, colCount);
           sheet
             .getRange(0, 0, COLUMN_HEADER_ROW_COUNT, colCount, headerArea)
-            .backColor('#f4f6fa')
-            .foreColor('#344054')
+            .backColor('#93c5f3')
+            .foreColor('#172b3a')
             .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
             .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .font('600 12px Arial, PingFang SC');
@@ -1677,8 +1625,8 @@ export function useSpreadsheetController(
               .font('650 12px Arial, PingFang SC');
           sheet
             .getRange(0, 0, 1, colCount, headerArea)
-            .backColor('#e9e3fb')
-            .foreColor('#513b9d')
+            .backColor('#93c5f3')
+            .foreColor('#172b3a')
             .font('700 12px Arial, PingFang SC');
           sheet
             .getRange(
@@ -1688,8 +1636,8 @@ export function useSpreadsheetController(
               1,
               headerArea,
             )
-            .backColor('#e8f6ee')
-            .foreColor('#19704f');
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
           sheet
             .getRange(
               COLUMN_HEADER_ROW_COUNT - 1,
@@ -1698,8 +1646,8 @@ export function useSpreadsheetController(
               1,
               headerArea,
             )
-            .backColor('#fff4dc')
-            .foreColor('#875c18');
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
           sheet
             .getRange(
               COLUMN_HEADER_ROW_COUNT - 1,
@@ -1708,8 +1656,8 @@ export function useSpreadsheetController(
               1,
               headerArea,
             )
-            .backColor('#eeeafd')
-            .foreColor('#6045b8');
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
           for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1)
             sheet.setRowHeight(
               row,
@@ -1718,7 +1666,7 @@ export function useSpreadsheetController(
             );
           if (!stress) configureCellTypes(0, rowCount);
 
-          // 常规与大数据模式都由产品列、区域列分别维护独立状态并
+          // 常规与大数据模式都由组织列、科目列分别维护独立状态并
           // 重建可见投影。大数据模式只在单元格写入阶段按视口分页，
           // 不再使用会把两列可见性绑在一起的整行 Outline。
           sheet.showRowOutline(false);
@@ -1742,7 +1690,6 @@ export function useSpreadsheetController(
           if (!stress) {
             applyStableComments();
             applyStableAttachmentIndicators();
-            styleStatusCells(0, rowCount);
             applyCellEditability(0, rowCount);
           }
 
@@ -1863,7 +1810,7 @@ export function useSpreadsheetController(
         }
         renderProjectionRows();
         notify(
-          `${dimension === 'product' ? '产品树' : '区域树'}已全部${
+          `${dimension === 'product' ? '组织树' : '科目树'}已全部${
             expanded ? '展开' : '收起'
           }`,
         );
@@ -1882,8 +1829,11 @@ export function useSpreadsheetController(
         productExpanded.clear();
         INITIAL_PRODUCT_EXPANDED.forEach((id) => productExpanded.add(id));
         regionExpandedByProduct.clear();
+        createInitialRegionExpansion(activeView).forEach((state, productId) =>
+          regionExpandedByProduct.set(productId, state),
+        );
         renderProjectionRows();
-        notify('已恢复默认折叠组合');
+        notify('已恢复费用预算表默认展开状态');
       };
 
       const openPanelForSelection = (nextPanel: Exclude<PanelName, null>) => {
@@ -1969,7 +1919,7 @@ export function useSpreadsheetController(
           if (expanded) productExpanded.add(node.productId);
           else productExpanded.delete(node.productId);
           renderProjectionRows();
-          notify(`已${expanded ? '展开' : '收起'}${node.productLabel}产品`);
+          notify(`已${expanded ? '展开' : '收起'}组织 ${node.productLabel}`);
           return;
         }
         if (col === REGION_HIERARCHY_COLUMN && node.regionIsGroup) {
@@ -1981,7 +1931,7 @@ export function useSpreadsheetController(
           notify(
             `已${expanded ? '展开' : '收起'}${node.productLabel}的${
               node.regionLabel
-            }区域`,
+            }科目`,
           );
         }
       };
@@ -1999,6 +1949,7 @@ export function useSpreadsheetController(
               nodeId: row.id,
               productId: row.productId,
               productParentId: row.productParentId,
+              productAncestorIds: row.productAncestorIds,
               regionRootId: row.regionRootId,
               regionDepth: row.regionDepth,
               col,
@@ -2124,13 +2075,11 @@ export function useSpreadsheetController(
 
       const revealRegularSearchMatch = (match: RegularSearchMatch) => {
         let expandedHierarchy = false;
-        if (
-          match.productParentId &&
-          !productExpanded.has(match.productParentId)
-        ) {
-          productExpanded.add(match.productParentId);
+        match.productAncestorIds.forEach((ancestorId) => {
+          if (productExpanded.has(ancestorId)) return;
+          productExpanded.add(ancestorId);
           expandedHierarchy = true;
-        }
+        });
         if (match.regionDepth > 0) {
           const state = extensionStateFor(match.productId);
           if (!state.has(match.regionRootId)) {
@@ -2154,7 +2103,7 @@ export function useSpreadsheetController(
 
       /**
        * 使用后端回传的行维和列维定位单元格。定位前只展开目标所需的
-       * 产品和区域祖先；常规模式若处于下钻页，会回到全量投影重试。
+       * 组织和科目祖先；常规模式若处于下钻页，会回到全量投影重试。
        */
       const locateBusinessCell = (dimension: BusinessCellDimension) => {
         if (!isBusinessCellDimension(dimension)) {
@@ -2204,13 +2153,11 @@ export function useSpreadsheetController(
         }
 
         let hierarchyExpanded = viewReset;
-        if (
-          target.productParentId &&
-          !productExpanded.has(target.productParentId)
-        ) {
-          productExpanded.add(target.productParentId);
+        getProductAncestorIds(target.productId).forEach((ancestorId) => {
+          if (productExpanded.has(ancestorId)) return;
+          productExpanded.add(ancestorId);
           hierarchyExpanded = true;
-        }
+        });
         if (target.regionDepth > 0) {
           const state = extensionStateFor(target.productId);
           if (!state.has(target.regionRootId)) {
