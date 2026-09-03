@@ -1142,13 +1142,15 @@ UniverTable/
 ```
 pages/UniverTable/
 ├── index.tsx                 # 演示页：模式切换、工具栏、ETable 装配
-├── expenseBudgetData.ts      # 费用预算 · 树形行数据（organization 树 + subject attributes）
+├── expenseBudgetData.ts      # 费用预算 · 小样树形行数据
+├── expenseBudgetDataGenerator.ts  # 费用预算 · 1万～100万行压测生成
 └── expenseBudgetHeader.ts    # 费用预算 · 多级表头 + treeConfig + 冻结/深度常量
 ```
 
 | 文件 | 导出要点 |
 |------|----------|
 | `expenseBudgetData.ts` | `expenseBudgetTreeData`、`EXPENSE_BUDGET_ORG_COUNT` |
+| `expenseBudgetDataGenerator.ts` | `generateScaledExpenseBudgetTreeData`、`planScaledExpenseBudget` |
 | `expenseBudgetHeader.ts` | `expenseBudgetHeaderColumns`、`expenseBudgetTreeConfig`、`EXPENSE_BUDGET_HEADER_DEPTH`、`EXPENSE_BUDGET_FREEZE_COLS` |
 
 装配关系：`index.tsx` 在 `dataScale === 'budget'` 时把 `treeData={expenseBudgetTreeData}`、`treeConfig={expenseBudgetTreeConfig}` 传给 `<ETable />`。
@@ -2007,17 +2009,21 @@ onUploadAttachment={async (file, cell) => ({
 
 | 文件 | 职责 |
 |------|------|
-| `index.tsx` | UI、数据规模切换、经营树/大数据生成、工具栏与侧栏 |
-| `expenseBudgetData.ts` | 费用预算树形行数据 |
+| `index.tsx` | UI、数据规模切换、经营树/费用预算大数据生成、工具栏与侧栏 |
+| `expenseBudgetData.ts` | 费用预算小样树形行数据（9 组织） |
+| `expenseBudgetDataGenerator.ts` | 费用预算 1万～100万行压测数据生成 |
 | `expenseBudgetHeader.ts` | 费用预算多级表头 + `treeConfig` |
 
 ### 14.2 数据规模（`DATA_SCALE_OPTIONS`）
 
 | 选项 | 作用 |
 |------|------|
-| **费用预算（树形折叠）** | 默认；`expenseBudgetTreeData` + `expenseBudgetTreeConfig` |
+| **费用预算（树形折叠）** | 默认小样；`expenseBudgetTreeData` + `expenseBudgetTreeConfig` |
+| **费用预算 1万 / 5万 / 10万 / 50万 / 100万行** | `generateScaledExpenseBudgetTreeData()`；结构仍为组织树 + 科目五级行；启用 `liteMode` / `skipMerges` |
 | 树形演示 | 页内固定经营树（品类/子品类/区域） |
-| 1万 / 5万 / 10万 / 50万 / 100万行 | `generateScaledTreeData()` + `liteMode` / `skipMerges` |
+| 1万 / 5万 / 10万 / 50万 / 100万行（树形） | `generateScaledTreeData()` + `liteMode` / `skipMerges` |
+
+费用预算压测按「每组织 5 行」规划节点数：`集团 → 公司 → 部门`，科目仍为「费用汇总 → 日常费用合计 → 办公/电/水」。
 
 ### 14.3 工具栏与 options
 
@@ -2139,10 +2145,11 @@ import {
 | `src/components/UniverTable/dimensionLocate.ts` | 按维度 / rowId 定位 |
 | `src/components/UniverTable/readonly.ts` | 只读 + Backspace 拦截 |
 | `src/pages/UniverTable/index.tsx` | 演示页装配 |
-| `src/pages/UniverTable/expenseBudgetData.ts` | 费用预算行数据 |
+| `src/pages/UniverTable/expenseBudgetData.ts` | 费用预算小样行数据 |
+| `src/pages/UniverTable/expenseBudgetDataGenerator.ts` | 费用预算大数据生成 |
 | `src/pages/UniverTable/expenseBudgetHeader.ts` | 费用预算表头与 treeConfig |
 | `docs/UniverTable.md` | 本文档 |
 
 ---
 
-*文档版本与代码同步至当前仓库实现（Univer 0.25.x；费用预算默认示例：2025年表头、9 组织节点、科目三级缩进、默认全折叠；编辑回传拼接 `rowId`/`columnId`（`/` 分隔）；`setCellValue` / `setCellValues` 按维度批量回写；表头居中；Backspace 只读拦截；演示页冻结表头默认关闭）。*
+*文档版本与代码同步至当前仓库实现（Univer 0.25.x；费用预算默认示例：2025年表头、9 组织节点、科目三级缩进、默认全折叠；费用预算亦支持 1万～100万行压测；编辑回传拼接 `rowId`/`columnId`（`/` 分隔）；`setCellValue` / `setCellValues` 按维度批量回写；表头居中；Backspace 只读拦截；演示页冻结表头默认关闭）。*

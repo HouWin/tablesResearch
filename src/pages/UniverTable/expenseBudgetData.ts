@@ -94,7 +94,6 @@ const makeSubjectAttributes = (
   const collapsed = options?.collapsed ?? true;
   const subtotalLabel = options?.subtotalLabel ?? '日常费用合计';
 
-  console.log(prefix,'..prefix')
   return [
     {
       id: `${prefix}-summary`,
