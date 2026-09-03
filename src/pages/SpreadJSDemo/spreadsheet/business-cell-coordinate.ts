@@ -4,6 +4,8 @@ import {
   businessRowDimensionKey,
   getBusinessColumnDimension,
   getBusinessColumnIndex,
+  getCellSourceNode,
+  getCellSourceRowDimension,
   isHierarchyField,
   type BusinessColumnDimension,
   type BusinessRowDimension,
@@ -66,13 +68,14 @@ export function toBusinessCellDimension(
   col: number,
 ): BusinessCellDimension | null {
   const column = COLUMNS[col];
-  const sourceNode = row?.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  const sourceNode = getCellSourceNode(row, col);
   if (!row || !column || isHierarchyField(column.field) || !sourceNode)
     return null;
   const columnDimension = getBusinessColumnDimension(column.field);
-  if (!columnDimension) return null;
+  const rowDimension = getCellSourceRowDimension(row, col);
+  if (!columnDimension || !rowDimension) return null;
   return {
-    row: { ...row.rowDimension },
+    row: rowDimension,
     column: [...columnDimension],
   };
 }
@@ -118,9 +121,13 @@ export function resolveBusinessCellDimension(
 
   const candidates = rows
     .map((candidate, row) => ({ candidate, row }))
-    .filter(({ candidate }) =>
-      businessRowDimensionsEqual(candidate.rowDimension, dimension.row),
-    );
+    .filter(({ candidate }) => {
+      const candidateDimension = getCellSourceRowDimension(candidate, col);
+      return (
+        candidateDimension &&
+        businessRowDimensionsEqual(candidateDimension, dimension.row)
+      );
+    });
   const matched =
     candidates.find(({ candidate }) =>
       matchesCanonicalProjection(candidate, dimension.row),

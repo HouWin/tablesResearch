@@ -91,7 +91,8 @@ export const BUSINESS_COLUMN_DATA = [
         label: '产品属性',
         width: 144,
         dataType: 'string',
-        editable: false,
+        editor: { type: 'text' },
+        editable: true,
         searchable: true,
       },
       {

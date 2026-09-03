@@ -70,6 +70,8 @@ export type BusinessNode = {
   /** 后台记录 ID；汇总节点和明细节点都必须全局唯一。 */
   id: string;
   name: string;
+  /** 后台维护的产品属性；仅 category / subcategory 产品节点用于展示。 */
+  productAttribute: string;
   hierarchyRole: HierarchyRole;
   revenue: number;
   productRevenue: number;
@@ -109,10 +111,7 @@ export type BusinessRowDimension = {
   region?: string;
   detail?: string;
 };
-export type HierarchyField =
-  | 'productHierarchy'
-  | 'productAttribute'
-  | 'regionHierarchy';
+export type HierarchyField = 'productHierarchy' | 'regionHierarchy';
 export type BusinessField = Exclude<
   keyof BusinessNode,
   'id' | 'children' | 'regionSummaries' | 'detailIds' | 'hierarchyRole'
@@ -122,6 +121,8 @@ export type ViewRow = BusinessNode & {
   /** 从 BUSINESS_DATA 的 children 路径派生，不使用易变的 Worksheet 行号。 */
   rowDimension: BusinessRowDimension;
   sourceNodes: readonly BusinessNode[];
+  /** 产品属性列对应的唯一后台产品记录，与区域指标的数据源分离。 */
+  productSourceNode?: BusinessNode;
   level: number;
   hasChildren?: boolean;
   productId: string;
@@ -262,13 +263,14 @@ function makeNode(
   owner: string,
   status: Status,
   updatedAt: string,
-  children?: BusinessNode[],
+  productAttribute = '',
 ): BusinessNode {
   const productRevenue = Math.round(revenue * 0.78);
   const onlineOrders = Math.round(orders * 0.63);
   return {
     id,
     name,
+    productAttribute,
     hierarchyRole,
     revenue,
     productRevenue,
@@ -283,7 +285,6 @@ function makeNode(
     verified: status === '已核验',
     updatedAt: new Date(`${updatedAt}T00:00:00`),
     adjustmentFactor: Number((0.8 + (orders % 31) / 100).toFixed(2)),
-    children,
   };
 }
 
@@ -550,6 +551,7 @@ function makeGroup(
   return {
     id,
     name,
+    productAttribute: '',
     hierarchyRole,
     ...metrics,
     owner,
@@ -558,6 +560,30 @@ function makeGroup(
     updatedAt: new Date('2026-08-21T00:00:00'),
     children,
     regionSummaries,
+  };
+}
+
+function makeProductGroup(
+  id: string,
+  name: string,
+  hierarchyRole: Extract<HierarchyRole, 'category' | 'subcategory'>,
+  children: BusinessNode[],
+  productAttribute: string,
+  owner: string,
+  status: Status = '已核验',
+  regionSummaries?: BusinessNode[],
+): BusinessNode {
+  return {
+    ...makeGroup(
+      id,
+      name,
+      hierarchyRole,
+      children,
+      owner,
+      status,
+      regionSummaries,
+    ),
+    productAttribute,
   };
 }
 
@@ -570,7 +596,7 @@ function makeRegion(
   return makeGroup(id, name, 'region', children, owner);
 }
 
-const furnitureBookcases = makeGroup(
+const furnitureBookcases = makeProductGroup(
   'furniture-bookcases',
   '书柜',
   'subcategory',
@@ -634,10 +660,11 @@ const furnitureBookcases = makeGroup(
       '赵敏',
     ),
   ],
+  '收纳家具',
   '林嘉',
 );
 
-const furnitureChairs = makeGroup(
+const furnitureChairs = makeProductGroup(
   'furniture-chairs',
   '座椅',
   'subcategory',
@@ -701,10 +728,11 @@ const furnitureChairs = makeGroup(
       '苏然',
     ),
   ],
+  '坐具',
   '林嘉',
 );
 
-const officePaper = makeGroup(
+const officePaper = makeProductGroup(
   'office-paper',
   '纸品',
   'subcategory',
@@ -768,10 +796,11 @@ const officePaper = makeGroup(
       '赵敏',
     ),
   ],
+  '纸制品',
   '罗蔚',
 );
 
-const officeStorage = makeGroup(
+const officeStorage = makeProductGroup(
   'office-storage',
   '收纳',
   'subcategory',
@@ -835,10 +864,11 @@ const officeStorage = makeGroup(
       '苏然',
     ),
   ],
+  '收纳用品',
   '罗蔚',
 );
 
-const technologyMobile = makeGroup(
+const technologyMobile = makeProductGroup(
   'technology-mobile',
   '移动终端',
   'subcategory',
@@ -902,10 +932,11 @@ const technologyMobile = makeGroup(
       '赵敏',
     ),
   ],
+  '移动终端',
   '程澈',
 );
 
-const technologyEquipment = makeGroup(
+const technologyEquipment = makeProductGroup(
   'technology-equipment',
   '办公设备',
   'subcategory',
@@ -969,13 +1000,14 @@ const technologyEquipment = makeGroup(
       '赵敏',
     ),
   ],
+  '商用硬件',
   '程澈',
   '待复核',
 );
 
 type BackendRegionSummaryInput = Omit<
   BusinessNode,
-  'updatedAt' | 'children' | 'regionSummaries'
+  'updatedAt' | 'children' | 'regionSummaries' | 'productAttribute'
 > & {
   updatedAt: string;
   detailIds: string[];
@@ -986,6 +1018,7 @@ function backendRegionSummary(
 ): BusinessNode {
   return {
     ...summary,
+    productAttribute: '',
     updatedAt: new Date(`${summary.updatedAt}T00:00:00`),
   };
 }
@@ -998,11 +1031,12 @@ function backendRegionSummary(
  * category 的 regionSummaries 是跨子类区域汇总，不由前端重新计算。
  */
 export const BUSINESS_DATA: BusinessNode[] = [
-  makeGroup(
+  makeProductGroup(
     'furniture',
     '家具',
     'category',
     [furnitureBookcases, furnitureChairs],
+    '家居耐用品',
     '林嘉',
     '已核验',
     [
@@ -1070,11 +1104,12 @@ export const BUSINESS_DATA: BusinessNode[] = [
       }),
     ],
   ),
-  makeGroup(
+  makeProductGroup(
     'office-supplies',
     '办公用品',
     'category',
     [officePaper, officeStorage],
+    '日常办公耗材',
     '罗蔚',
     '待复核',
     [
@@ -1156,11 +1191,12 @@ export const BUSINESS_DATA: BusinessNode[] = [
       }),
     ],
   ),
-  makeGroup(
+  makeProductGroup(
     'technology',
     '技术产品',
     'category',
     [technologyMobile, technologyEquipment],
+    '数码与硬件',
     '程澈',
     '待复核',
     [
@@ -1342,18 +1378,6 @@ export function findBusinessNodeByRowDimension(
 
 export const INITIAL_PRODUCT_EXPANDED = ['furniture'] as const;
 
-const PRODUCT_ATTRIBUTES: Readonly<Record<string, string>> = {
-  furniture: '家居耐用品',
-  'furniture-bookcases': '收纳家具',
-  'furniture-chairs': '坐具',
-  'office-supplies': '日常办公耗材',
-  'office-paper': '纸制品',
-  'office-storage': '收纳用品',
-  technology: '数码与硬件',
-  'technology-mobile': '移动终端',
-  'technology-equipment': '商用硬件',
-};
-
 const REGION_KEYS: Readonly<Record<string, string>> = {
   华东: 'east',
   华中: 'central',
@@ -1377,7 +1401,6 @@ type VisibleProductNode = {
   id: string;
   parentId: string | null;
   label: string;
-  attribute: string;
   depth: 0 | 1;
   isGroup: boolean;
   expanded: boolean;
@@ -1434,10 +1457,6 @@ function productRootsForView(view: DrillView) {
   );
 }
 
-function productAttributeFor(node: BusinessNode) {
-  return PRODUCT_ATTRIBUTES[node.id] ?? `${node.name}业务线`;
-}
-
 function getVisibleProducts(
   view: DrillView,
   expandedIds: ReadonlySet<string>,
@@ -1453,7 +1472,6 @@ function getVisibleProducts(
       id: root.id,
       parentId: null,
       label: root.name,
-      attribute: productAttributeFor(root),
       depth: 0,
       isGroup,
       expanded,
@@ -1467,7 +1485,6 @@ function getVisibleProducts(
           id: child.id,
           parentId: root.id,
           label: child.name,
-          attribute: productAttributeFor(child),
           depth: 1,
           isGroup: false,
           expanded: false,
@@ -1633,12 +1650,13 @@ export function createBusinessProjectionRows(
           : undefined,
         rowDimension,
         sourceNodes: region.sourceNodes,
+        productSourceNode: product.node,
         level: product.depth,
         hasChildren: product.isGroup,
         productId: product.id,
         productParentId: product.parentId,
         productLabel: product.label,
-        productAttribute: product.attribute,
+        productAttribute: product.node.productAttribute,
         productDepth: product.depth,
         productIsGroup: product.isGroup,
         productExpanded: product.expanded,
@@ -2015,7 +2033,6 @@ type StressProjectionProduct = {
   parentId: string | null;
   categoryLabel: string;
   label: string;
-  attribute: string;
   depth: 0 | 1;
   isGroup: boolean;
   summary: ViewRow;
@@ -2122,7 +2139,6 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
         parentId: groupSummary.productId,
         categoryLabel: groupSummary.productLabel,
         label: productSummary.productLabel,
-        attribute: productSummary.productAttribute,
         depth: 1,
         isGroup: false,
         summary: productSummary,
@@ -2139,7 +2155,6 @@ function buildStressProjectionIndex(rows: ViewRow[]): StressProjectionIndex {
       parentId: null,
       categoryLabel: groupSummary.productLabel,
       label: groupSummary.productLabel,
-      attribute: groupSummary.productAttribute,
       depth: 0,
       isGroup: children.length > 0,
       summary: groupSummary,
@@ -2198,12 +2213,13 @@ function projectStressProduct(
       sourceNodes: region.summaryRows.flatMap((row) =>
         row.sourceNodes.length ? row.sourceNodes : [row],
       ),
+      productSourceNode: product.summary,
       level: product.depth,
       hasChildren: product.isGroup,
       productId: product.id,
       productParentId: product.parentId,
       productLabel: product.label,
-      productAttribute: product.attribute,
+      productAttribute: product.summary.productAttribute,
       productDepth: product.depth,
       productIsGroup: product.isGroup,
       productExpanded: product.isGroup && productExpanded.has(product.id),
@@ -2240,12 +2256,13 @@ function projectStressProduct(
               }
             : detail.rowDimension,
           sourceNodes,
+          productSourceNode: product.summary,
           level: product.depth,
           hasChildren: false,
           productId: product.id,
           productParentId: product.parentId,
           productLabel: product.label,
-          productAttribute: product.attribute,
+          productAttribute: product.summary.productAttribute,
           productDepth: product.depth,
           productIsGroup: product.isGroup,
           productExpanded: product.isGroup && productExpanded.has(product.id),
@@ -2413,11 +2430,36 @@ export function regionHierarchyText(row: ViewRow) {
 }
 
 export function isHierarchyField(field: ColumnField): field is HierarchyField {
-  return (
-    field === 'productHierarchy' ||
-    field === 'productAttribute' ||
-    field === 'regionHierarchy'
-  );
+  return field === 'productHierarchy' || field === 'regionHierarchy';
+}
+
+/** 当前投影单元格唯一对应的后台记录。产品属性映射产品节点，其余业务列映射行数据源。 */
+export function getCellSourceNode(row: ViewRow | undefined, col: number) {
+  const column = COLUMNS[col];
+  if (!row || !column || isHierarchyField(column.field)) return null;
+  if (column.field === 'productAttribute')
+    return row.productBlockStart ? row.productSourceNode ?? row : null;
+  return row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+}
+
+/** 获取单元格后台记录的稳定行维；压力数据不在 BUSINESS_DATA 索引中时沿用投影维度。 */
+export function getCellSourceRowDimension(
+  row: ViewRow | undefined,
+  col: number,
+) {
+  const column = COLUMNS[col];
+  if (!row || !column || isHierarchyField(column.field)) return null;
+  if (column.field !== 'productAttribute') return { ...row.rowDimension };
+  const sourceNode = getCellSourceNode(row, col);
+  if (!sourceNode) return null;
+  const indexedDimension = getBusinessRowDimension(sourceNode.id);
+  if (indexedDimension) return indexedDimension;
+  return row.productDepth === 0
+    ? { category: row.rowDimension.category }
+    : {
+        category: row.rowDimension.category,
+        subcategory: row.productLabel,
+      };
 }
 
 export function getCellEditability(
@@ -2431,16 +2473,19 @@ export function getCellEditability(
     return {
       editable: false,
       reason: isHierarchyField(column.field)
-        ? '层级和属性字段由业务数据源维护'
+        ? '层级字段由表格投影维护'
         : '后台列配置将该字段设为只读',
       sourceNode: null,
     };
   }
-  const sourceNode = row.sourceNodes.length === 1 ? row.sourceNodes[0] : null;
+  const sourceNode = getCellSourceNode(row, col);
   if (!sourceNode) {
     return {
       editable: false,
-      reason: '当前投影无法唯一映射到一条后台业务记录',
+      reason:
+        column.field === 'productAttribute' && !row.productBlockStart
+          ? '请在产品属性合并单元格中编辑'
+          : '当前投影无法唯一映射到一条后台业务记录',
       sourceNode: null,
     };
   }
@@ -2520,6 +2565,9 @@ export function updateBusinessNode(
   switch (field) {
     case 'name':
       if (typeof value === 'string') node.name = value.replace(/^\u3000+/, '');
+      break;
+    case 'productAttribute':
+      if (typeof value === 'string') node.productAttribute = value;
       break;
     case 'owner':
       if (typeof value === 'string') node.owner = value;

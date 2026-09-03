@@ -875,6 +875,7 @@ export function useSpreadsheetController(
             cell.locked(!editability.editable);
             if (
               isHierarchyField(COLUMNS[col].field) ||
+              COLUMNS[col].field === 'productAttribute' ||
               COLUMNS[col].editor?.type === 'select' ||
               COLUMNS[col].editor?.type === 'checkbox'
             )

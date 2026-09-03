@@ -1,4 +1,4 @@
-import { displayValue, type SelectedCell } from './model';
+import { displayValue, getCellSourceNode, type SelectedCell } from './model';
 
 export type LineageDetails = {
   result: string;
@@ -29,7 +29,10 @@ export function getLineageDetails(
   selected: SelectedCell | null,
 ): LineageDetails | null {
   if (!selected) return null;
-  const sourceIds = selected.node.sourceNodes.map(({ id }) => id).join('、');
+  const cellSource = getCellSourceNode(selected.node, selected.col);
+  const sourceIds = cellSource
+    ? cellSource.id
+    : selected.node.sourceNodes.map(({ id }) => id).join('、');
   return {
     result: selected.text || displayValue(selected.value),
     description: '后台接口返回值',

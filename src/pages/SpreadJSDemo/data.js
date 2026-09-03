@@ -19,7 +19,10 @@ const BUSINESS_COLUMN_DATA = [
         label: '产品属性',
         width: 144,
         dataType: 'string',
-        editable: false,
+        editor: {
+          type: 'text',
+        },
+        editable: true,
         searchable: true,
       },
       {
@@ -241,6 +244,7 @@ const BUSINESS_DATA = [
   {
     id: 'furniture',
     name: '家具',
+    productAttribute: '家居耐用品',
     hierarchyRole: 'category',
     revenue: 15099200,
     productRevenue: 11777376,
@@ -259,6 +263,7 @@ const BUSINESS_DATA = [
       {
         id: 'furniture-bookcases',
         name: '书柜',
+        productAttribute: '收纳家具',
         hierarchyRole: 'subcategory',
         revenue: 6018000,
         productRevenue: 4694040,
@@ -391,6 +396,7 @@ const BUSINESS_DATA = [
       {
         id: 'furniture-chairs',
         name: '座椅',
+        productAttribute: '坐具',
         hierarchyRole: 'subcategory',
         revenue: 9081200,
         productRevenue: 7083336,
@@ -589,6 +595,7 @@ const BUSINESS_DATA = [
   {
     id: 'office-supplies',
     name: '办公用品',
+    productAttribute: '日常办公耗材',
     hierarchyRole: 'category',
     revenue: 11399200,
     productRevenue: 8891376,
@@ -607,6 +614,7 @@ const BUSINESS_DATA = [
       {
         id: 'office-paper',
         name: '纸品',
+        productAttribute: '纸制品',
         hierarchyRole: 'subcategory',
         revenue: 5218000,
         productRevenue: 4070040,
@@ -739,6 +747,7 @@ const BUSINESS_DATA = [
       {
         id: 'office-storage',
         name: '收纳',
+        productAttribute: '收纳用品',
         hierarchyRole: 'subcategory',
         revenue: 6181200,
         productRevenue: 4821336,
@@ -951,6 +960,7 @@ const BUSINESS_DATA = [
   {
     id: 'technology',
     name: '技术产品',
+    productAttribute: '数码与硬件',
     hierarchyRole: 'category',
     revenue: 34544000,
     productRevenue: 26944320,
@@ -969,6 +979,7 @@ const BUSINESS_DATA = [
       {
         id: 'technology-mobile',
         name: '移动终端',
+        productAttribute: '移动终端',
         hierarchyRole: 'subcategory',
         revenue: 16560000,
         productRevenue: 12916800,
@@ -1101,6 +1112,7 @@ const BUSINESS_DATA = [
       {
         id: 'technology-equipment',
         name: '办公设备',
+        productAttribute: '商用硬件',
         hierarchyRole: 'subcategory',
         revenue: 17984000,
         productRevenue: 14027520,
