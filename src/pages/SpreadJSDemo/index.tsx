@@ -14,14 +14,6 @@ export default function SpreadJSDemoPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    const previousTitle = document.title;
-    document.title = '费用预算表 · 预算管理工作台';
-    return () => {
-      document.title = previousTitle;
-    };
-  }, []);
-
-  useEffect(() => {
     const syncFullscreenState = () => {
       setIsFullscreen(document.fullscreenElement === pageRef.current);
     };
@@ -65,7 +57,7 @@ export default function SpreadJSDemoPage() {
       <a className="skip-link" href="#spreadsheet-workspace">
         跳到费用预算表
       </a>
-      <main className="demo-shell">
+      <div className="demo-shell">
         <DemoHeader
           status={initializationError ? 'error' : ready ? 'ready' : 'loading'}
           licenseConfigured={licenseConfigured}
@@ -82,7 +74,7 @@ export default function SpreadJSDemoPage() {
           licenseConfigured={licenseConfigured}
         />
         {toast ? <ToastMessage toast={toast} /> : null}
-      </main>
+      </div>
     </div>
   );
 }

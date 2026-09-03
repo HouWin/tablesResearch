@@ -11,20 +11,6 @@ export type LineageDetails = {
   }[];
 };
 
-export function formatFileSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export function canPreviewAttachment(mimeType: string, name: string) {
-  return (
-    mimeType.startsWith('image/') ||
-    mimeType === 'application/pdf' ||
-    /\.pdf$/i.test(name)
-  );
-}
-
 export function getLineageDetails(
   selected: SelectedCell | null,
 ): LineageDetails | null {

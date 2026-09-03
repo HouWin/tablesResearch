@@ -8,16 +8,15 @@ import {
   isHierarchyField,
   type BusinessColumnDimension,
   type BusinessRowDimension,
-  type HierarchyRole,
   type ViewRow,
 } from './model';
 
 /**
  * 前后台共用的业务单元格坐标。
  *
- * row 由 BUSINESS_DATA 的组织 ID 路径和科目 ID 路径组成；column 来自
- * BUSINESS_COLUMN_DATA 的稳定 id/field 路径。名称与标签只用于展示，
- * 双向定位不依赖易变的中文名称或 Worksheet 物理行列号。
+ * row 只包含 BUSINESS_DATA 的组织 ID 和科目 ID；column 是
+ * BUSINESS_COLUMN_DATA 从顶层到叶子列的 field 路径。双向定位不依赖名称、
+ * 树节点角色或 Worksheet 物理行列号。
  */
 export type BusinessCellDimension = {
   row: BusinessRowDimension;
@@ -45,41 +44,19 @@ const BUSINESS_ROW_LOCATION_INDEX_CACHE = new WeakMap<
   ReadonlyMap<string, BusinessRowLocation>
 >();
 
-const ORGANIZATION_ROLES = new Set<HierarchyRole>([
-  'group',
-  'businessUnit',
-  'department',
-]);
-const SUBJECT_ROLES = new Set<HierarchyRole>([
-  'subjectSummary',
-  'subjectDetail',
-]);
-
-function isDimensionItem(value: unknown, roles: ReadonlySet<HierarchyRole>) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === 'string' &&
-    Boolean(item.id.trim()) &&
-    typeof item.name === 'string' &&
-    Boolean(item.name.trim()) &&
-    typeof item.hierarchyRole === 'string' &&
-    roles.has(item.hierarchyRole as HierarchyRole)
-  );
-}
-
 export function isBusinessRowDimension(
   value: unknown,
 ): value is BusinessRowDimension {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  if (!Array.isArray(row.organization) || !row.organization.length)
-    return false;
-  if (!Array.isArray(row.subject) || !row.subject.length) return false;
+  const keys = Object.keys(row);
   return (
-    row.organization.every((item) =>
-      isDimensionItem(item, ORGANIZATION_ROLES),
-    ) && row.subject.every((item) => isDimensionItem(item, SUBJECT_ROLES))
+    keys.length === 2 &&
+    keys.every((key) => key === 'organizationId' || key === 'subjectId') &&
+    typeof row.organizationId === 'string' &&
+    Boolean(row.organizationId.trim()) &&
+    typeof row.subjectId === 'string' &&
+    Boolean(row.subjectId.trim())
   );
 }
 
@@ -87,29 +64,13 @@ export function isBusinessColumnDimension(
   value: unknown,
 ): value is BusinessColumnDimension {
   if (!Array.isArray(value) || !value.length) return false;
-  const validItems = value.every((item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
-    const segment = item as Record<string, unknown>;
-    return (
-      typeof segment.id === 'string' &&
-      Boolean(segment.id.trim()) &&
-      typeof segment.field === 'string' &&
-      Boolean(segment.field.trim()) &&
-      typeof segment.label === 'string' &&
-      Boolean(segment.label.trim())
-    );
-  });
-  if (!validItems) return false;
+  if (
+    !value.every((field) => typeof field === 'string' && Boolean(field.trim()))
+  )
+    return false;
   const dimension = value as unknown as BusinessColumnDimension;
   const col = getBusinessColumnIndex(dimension);
-  return col >= 0 && COLUMNS[col]?.field === dimension.at(-1)?.field;
-}
-
-export function businessRowDimensionsEqual(
-  left: BusinessRowDimension,
-  right: BusinessRowDimension,
-) {
-  return businessRowDimensionKey(left) === businessRowDimensionKey(right);
+  return col >= 0 && COLUMNS[col]?.field === dimension.at(-1);
 }
 
 /** Worksheet 单元格 -> 后台业务维度。 */
@@ -126,7 +87,7 @@ export function toBusinessCellDimension(
   if (!columnDimension || !rowDimension) return null;
   return {
     row: rowDimension,
-    column: columnDimension.map((item) => ({ ...item })),
+    column: [...columnDimension],
   };
 }
 
@@ -148,9 +109,10 @@ function matchesCanonicalProjection(
   row: ViewRow,
   dimension: BusinessRowDimension,
 ) {
-  const organizationId = dimension.organization.at(-1)?.id;
-  const subjectId = dimension.subject.at(-1)?.id;
-  return row.productId === organizationId && row.regionBusinessId === subjectId;
+  return (
+    row.productId === dimension.organizationId &&
+    row.regionBusinessId === dimension.subjectId
+  );
 }
 
 function rowLocation(candidate: ViewRow, row: number): BusinessRowLocation {
@@ -203,11 +165,8 @@ export function describeBusinessCellDimension(
   dimension: BusinessCellDimension,
 ) {
   const col = getBusinessColumnIndex(dimension.column);
-  const rowPath = [
-    ...dimension.row.organization.map(({ name }) => name),
-    ...dimension.row.subject.map(({ name }) => name),
-  ];
-  const columnLabel =
-    col >= 0 ? COLUMNS[col].label : dimension.column.at(-1)?.label;
-  return [...rowPath, columnLabel].filter(Boolean).join(' / ');
+  const columnLabel = col >= 0 ? COLUMNS[col].label : dimension.column.at(-1);
+  return [dimension.row.organizationId, dimension.row.subjectId, columnLabel]
+    .filter(Boolean)
+    .join(' / ');
 }

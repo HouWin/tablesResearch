@@ -14,18 +14,11 @@ export type ColumnEditor =
   | { type: 'checkbox' }
   | { type: 'date' };
 
-/** 前后台共用的列维成员；定位只依赖稳定 id/field，label 用于展示。 */
-export type BusinessColumnDimensionItem = {
-  id: string;
-  field: string;
-  label: string;
-};
-
-/** 顶层节点到叶子列的完整稳定路径。 */
-export type BusinessColumnDimension = readonly BusinessColumnDimensionItem[];
+/** 前后台共用的列维：从顶层节点到叶子列的完整 field 路径。 */
+export type BusinessColumnDimension = readonly string[];
 
 export function businessColumnDimensionKey(dimension: BusinessColumnDimension) {
-  return JSON.stringify(dimension.map(({ id, field }) => [id, field] as const));
+  return JSON.stringify(dimension);
 }
 
 /** 后台列树中的叶子节点，对应 Worksheet 中的一列。 */
@@ -185,10 +178,7 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
     if (nodeFields.has(node.field))
       throw new Error(`后台列配置存在重复 field：${node.field}`);
     nodeFields.add(node.field);
-    const path = [
-      ...parentPath,
-      { id: node.id, field: node.field, label: node.label },
-    ];
+    const path = [...parentPath, node.field];
     if (isColumnLeaf(node)) {
       if (leafFields.has(node.field))
         throw new Error(`后台叶子列存在重复数据 field：${node.field}`);
@@ -243,14 +233,6 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   };
 
   const headerSections = roots.map(spanOfNode);
-  const headerGroups = roots.flatMap((root) =>
-    isColumnLeaf(root)
-      ? []
-      : root.children
-          .filter((child): child is BusinessColumnGroup => !isColumnLeaf(child))
-          .map(spanOf),
-  );
-
   const leafDepth = (node: BusinessColumnNode, depth: number): number =>
     isColumnLeaf(node)
       ? depth
@@ -328,7 +310,6 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   return {
     columns,
     headerSections,
-    headerGroups,
     headerCells,
     headerRowCount: lastHeaderRow + 1,
     outlineGroups,
@@ -343,7 +324,6 @@ const COLUMN_MODEL = buildBusinessColumnModel(BUSINESS_COLUMN_DATA);
 
 export const COLUMNS: ColumnDefinition[] = [...COLUMN_MODEL.columns];
 export const COLUMN_HEADER_SECTIONS = COLUMN_MODEL.headerSections;
-export const COLUMN_HEADER_GROUPS = COLUMN_MODEL.headerGroups;
 export const COLUMN_HEADER_CELLS = COLUMN_MODEL.headerCells;
 export const COLUMN_HEADER_ROW_COUNT = COLUMN_MODEL.headerRowCount;
 export const COLUMN_GROUPS = COLUMN_MODEL.outlineGroups;
@@ -353,7 +333,7 @@ export function getBusinessColumnDimension(
   field: ColumnField,
 ): BusinessColumnDimension | null {
   const path = COLUMN_MODEL.pathByField.get(field);
-  return path ? path.map((item) => ({ ...item })) : null;
+  return path ? [...path] : null;
 }
 
 export function getBusinessColumnIndex(dimension: BusinessColumnDimension) {

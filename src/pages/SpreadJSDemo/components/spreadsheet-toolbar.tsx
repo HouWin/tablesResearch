@@ -72,6 +72,8 @@ export function SpreadsheetToolbar({
     actionsRef,
     dataMode,
     tableBusy,
+    canUndo,
+    canRedo,
     openPanel,
     searchOpen,
     setSearchOpen,
@@ -101,6 +103,28 @@ export function SpreadsheetToolbar({
     if (keep !== 'dimension') setDimensionLocatorOpen(false);
   };
 
+  useEffect(() => {
+    const openSearchFromShortcut = (event: KeyboardEvent) => {
+      if (
+        tableBusy ||
+        event.key.toLocaleLowerCase() !== 'f' ||
+        (!event.ctrlKey && !event.metaKey) ||
+        !document.activeElement?.closest('.spreadjs-demo-page')
+      )
+        return;
+      event.preventDefault();
+      if (searchOpen) {
+        document.querySelector<HTMLInputElement>('#sheet-search')?.focus();
+        return;
+      }
+      setColumnMenuOpen(false);
+      setDimensionLocatorOpen(false);
+      setSearchOpen(true);
+    };
+    window.addEventListener('keydown', openSearchFromShortcut);
+    return () => window.removeEventListener('keydown', openSearchFromShortcut);
+  }, [tableBusy, searchOpen]);
+
   return (
     <div className="toolbar-shell">
       <section
@@ -112,18 +136,22 @@ export function SpreadsheetToolbar({
         <div className="toolbar-group" role="group" aria-label="编辑操作">
           <button
             type="button"
-            disabled={tableBusy}
+            disabled={tableBusy || !canUndo}
             onClick={() => actionsRef.current?.undo()}
-            title="撤销单元格编辑"
+            title="撤销单元格编辑（Ctrl/⌘ + Z）"
+            aria-label="撤销单元格编辑"
+            aria-keyshortcuts="Control+Z Meta+Z"
           >
             <Undo2 size={16} />
             <span>撤销</span>
           </button>
           <button
             type="button"
-            disabled={tableBusy}
+            disabled={tableBusy || !canRedo}
             onClick={() => actionsRef.current?.redo()}
-            title="重做单元格编辑"
+            title="重做单元格编辑（Ctrl/⌘ + Shift + Z）"
+            aria-label="重做单元格编辑"
+            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
           >
             <Redo2 size={16} />
             <span>重做</span>
@@ -133,6 +161,7 @@ export function SpreadsheetToolbar({
             disabled={tableBusy}
             onClick={() => actionsRef.current?.copy()}
             title="复制矩形选区"
+            aria-label="复制矩形选区"
           >
             <Copy size={16} />
             <span>复制选区</span>
@@ -148,6 +177,7 @@ export function SpreadsheetToolbar({
             aria-haspopup="true"
             aria-expanded={searchOpen}
             aria-controls="sheet-search-popover"
+            aria-keyshortcuts="Control+F Meta+F"
             className={searchOpen ? 'is-active' : ''}
             onClick={() => {
               const nextOpen = !searchOpen;
@@ -249,6 +279,7 @@ export function SpreadsheetToolbar({
         <button
           type="button"
           disabled={tableBusy}
+          aria-label={rowGroupsCollapsed ? '展开全部行组' : '收起全部行组'}
           title={
             rowGroupsCollapsed
               ? dataMode === 'stress'
@@ -268,6 +299,7 @@ export function SpreadsheetToolbar({
         <button
           type="button"
           disabled={tableBusy}
+          aria-label={columnGroupsCollapsed ? '展开全部列组' : '收起全部列组'}
           title={columnGroupsCollapsed ? '展开全部列组' : '收起全部列组'}
           onClick={() => actionsRef.current?.toggleColumnGroups()}
           className={columnGroupsCollapsed ? 'is-active' : ''}
@@ -281,6 +313,7 @@ export function SpreadsheetToolbar({
           disabled={tableBusy}
           onClick={() => actionsRef.current?.autoFit()}
           title="根据内容适配全部列宽"
+          aria-label="根据内容适配全部列宽"
         >
           <Gauge size={16} />
           <span>适配列宽</span>
@@ -346,6 +379,9 @@ export function SpreadsheetToolbar({
           }
           className={dataMode === 'stress' ? 'stress-active' : ''}
           disabled={tableBusy}
+          aria-label={
+            dataMode === 'stress' ? '恢复常规预算样例' : '载入 10 万行压力数据'
+          }
           aria-pressed={dataMode === 'stress'}
           onClick={() =>
             actionsRef.current?.loadDataMode(
