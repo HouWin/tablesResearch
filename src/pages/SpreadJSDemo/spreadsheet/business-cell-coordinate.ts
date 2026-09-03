@@ -16,7 +16,7 @@ import {
  * 前后台共用的业务单元格坐标。
  *
  * row 来自 BUSINESS_DATA 的 children 路径；column 来自
- * BUSINESS_COLUMN_DATA 的 children 路径。两者都不依赖易变的物理行列号。
+ * BUSINESS_COLUMN_DATA 的节点路径。两者都不依赖易变的物理行列号。
  */
 export type BusinessCellDimension = {
   row: BusinessRowDimension;

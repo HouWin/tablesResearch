@@ -4,8 +4,8 @@
 
 ## 数据与表格结构
 
-- 唯一业务数据源：[`spreadsheet/model.ts`](./spreadsheet/model.ts) 中的 `BUSINESS_DATA`；[`data.js`](./data.js) 仅保留兼容导出。
-- 列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts) 中的 `BUSINESS_COLUMN_DATA`。
+- 页面运行时数据源：[`spreadsheet/model.ts`](./spreadsheet/model.ts) 中的 `BUSINESS_DATA`；[`data.js`](./data.js) 保留与后台返回形态一致的完整静态数据示例。
+- 列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts) 中的 `BUSINESS_COLUMN_DATA`。组织、科目、功能属性是顶层叶子列，2025 年是包含全年合计及 1—12 月的顶层分组，与 Excel 表头结构直接对应；列树的叶子、顶层分组及中间分组都必须提供全树唯一的 `field`。
 - Excel 原始样例：[`费用预算表-行维度展开示例.xlsx`](./费用预算表-行维度展开示例.xlsx)。
 - 页面包含 3 个行维度：组织、科目、功能属性；数值列为全年合计和 1 月至 12 月。
 - 常规样例完全展开后为 45 行 × 16 列。

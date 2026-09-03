@@ -14,7 +14,7 @@ export type ColumnEditor =
   | { type: 'checkbox' }
   | { type: 'date' };
 
-/** 根分组到叶子列的稳定 ID 路径。 */
+/** 顶层节点到叶子列的稳定 ID 路径。 */
 export type BusinessColumnDimension = readonly string[];
 
 /** 后台列树中的叶子节点，对应 Worksheet 中的一列。 */
@@ -28,19 +28,21 @@ export type BusinessColumnLeaf = {
   editor?: ColumnEditor;
   editable: boolean;
   searchable?: boolean;
+  /** 仅在顶层节点上生效；冻结该叶子列。 */
+  frozen?: boolean;
 };
 
 /** 后台列树中的分组节点，对应一层合并表头。 */
 export type BusinessColumnGroup = {
   id: string;
+  /** 分组节点自身的稳定字段标识，不直接映射 BUSINESS_DATA 的单元格值。 */
+  field: string;
   label: string;
   children: readonly BusinessColumnNode[];
   /** 整个分组折叠时保留的汇总字段。 */
   summaryField?: ColumnField;
-  /** 冻结该根分组下的所有叶子列。 */
+  /** 仅在顶层节点上生效；冻结该分组下的所有叶子列。 */
   frozen?: boolean;
-  /** 叶子标题纵向贯穿全部表头行，用于 Excel 式行维标题。 */
-  leafHeadersSpanAllRows?: boolean;
 };
 
 export type BusinessColumnNode = BusinessColumnGroup | BusinessColumnLeaf;
@@ -74,43 +76,39 @@ export type ColumnOutlineGroup = {
  */
 export const BUSINESS_COLUMN_DATA = [
   {
-    id: 'budget-dimensions',
-    label: '',
+    id: 'organization-hierarchy',
+    field: 'organizationHierarchy',
+    label: '组织',
+    width: 216,
+    dataType: 'string',
+    editable: false,
+    searchable: true,
     frozen: true,
-    leafHeadersSpanAllRows: true,
-    children: [
-      {
-        id: 'organization-hierarchy',
-        field: 'organizationHierarchy',
-        label: '组织',
-        width: 216,
-        dataType: 'string',
-        editable: false,
-        searchable: true,
-      },
-      {
-        id: 'subject-hierarchy',
-        field: 'subjectHierarchy',
-        label: '科目',
-        width: 194,
-        dataType: 'string',
-        editable: false,
-        searchable: true,
-      },
-      {
-        id: 'functional-attribute',
-        field: 'functionalAttribute',
-        label: '功能属性',
-        width: 154,
-        dataType: 'string',
-        editor: { type: 'text' },
-        editable: true,
-        searchable: true,
-      },
-    ],
+  },
+  {
+    id: 'subject-hierarchy',
+    field: 'subjectHierarchy',
+    label: '科目',
+    width: 194,
+    dataType: 'string',
+    editable: false,
+    searchable: true,
+    frozen: true,
+  },
+  {
+    id: 'functional-attribute',
+    field: 'functionalAttribute',
+    label: '功能属性',
+    width: 154,
+    dataType: 'string',
+    editor: { type: 'text' },
+    editable: true,
+    searchable: true,
+    frozen: true,
   },
   {
     id: 'budget-2025',
+    field: 'budget2025',
     label: '2025年',
     summaryField: 'annualTotal',
     children: [
@@ -151,10 +149,10 @@ export const BUSINESS_COLUMN_DATA = [
       })),
     ],
   },
-] as const satisfies readonly BusinessColumnGroup[];
+] as const satisfies readonly BusinessColumnNode[];
 
 function isColumnLeaf(node: BusinessColumnNode): node is BusinessColumnLeaf {
-  return 'field' in node;
+  return !('children' in node);
 }
 
 function leavesOf(nodes: readonly BusinessColumnNode[]): BusinessColumnLeaf[] {
@@ -163,11 +161,10 @@ function leavesOf(nodes: readonly BusinessColumnNode[]): BusinessColumnLeaf[] {
   );
 }
 
-export function buildBusinessColumnModel(
-  roots: readonly BusinessColumnGroup[],
-) {
+export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   const ids = new Set<string>();
-  const fields = new Set<ColumnField>();
+  const nodeFields = new Set<string>();
+  const leafFields = new Set<ColumnField>();
   const pathByField = new Map<ColumnField, BusinessColumnDimension>();
   const indexByDimension = new Map<string, number>();
 
@@ -177,11 +174,14 @@ export function buildBusinessColumnModel(
   ) => {
     if (ids.has(node.id)) throw new Error(`后台列配置存在重复 id：${node.id}`);
     ids.add(node.id);
+    if (nodeFields.has(node.field))
+      throw new Error(`后台列配置存在重复 field：${node.field}`);
+    nodeFields.add(node.field);
     const path = [...parentPath, node.id];
     if (isColumnLeaf(node)) {
-      if (fields.has(node.field))
-        throw new Error(`后台列配置存在重复 field：${node.field}`);
-      fields.add(node.field);
+      if (leafFields.has(node.field))
+        throw new Error(`后台叶子列存在重复数据 field：${node.field}`);
+      leafFields.add(node.field);
       pathByField.set(node.field, path);
       return;
     }
@@ -218,11 +218,26 @@ export function buildBusinessColumnModel(
     };
   };
 
-  const headerSections = roots.map(spanOf);
+  const spanOfNode = (node: BusinessColumnNode): ColumnHeaderSpan => {
+    if (!isColumnLeaf(node)) return spanOf(node);
+    const startCol = indexByField.get(node.field);
+    if (startCol === undefined)
+      throw new Error(`后台叶子列无法定位：${node.id}`);
+    return {
+      id: node.id,
+      label: node.label,
+      startCol,
+      colCount: 1,
+    };
+  };
+
+  const headerSections = roots.map(spanOfNode);
   const headerGroups = roots.flatMap((root) =>
-    root.children
-      .filter((child): child is BusinessColumnGroup => !isColumnLeaf(child))
-      .map(spanOf),
+    isColumnLeaf(root)
+      ? []
+      : root.children
+          .filter((child): child is BusinessColumnGroup => !isColumnLeaf(child))
+          .map(spanOf),
   );
 
   const leafDepth = (node: BusinessColumnNode, depth: number): number =>
@@ -231,26 +246,23 @@ export function buildBusinessColumnModel(
       : Math.max(...node.children.map((child) => leafDepth(child, depth + 1)));
   const lastHeaderRow = Math.max(...roots.map((root) => leafDepth(root, 0)));
   const headerCells: ColumnHeaderCell[] = [];
+  const addLeafHeader = (column: BusinessColumnLeaf, row: number) => {
+    const startCol = indexByField.get(column.field);
+    if (startCol === undefined)
+      throw new Error(`后台叶子列无法定位：${column.id}`);
+    headerCells.push({
+      id: column.id,
+      label: column.label,
+      startCol,
+      colCount: 1,
+      row,
+      rowCount: lastHeaderRow - row + 1,
+      kind: 'column',
+    });
+  };
   const visitHeader = (group: BusinessColumnGroup, row: number) => {
     const span = spanOf(group);
     const directLeaves = group.children.every(isColumnLeaf);
-    if (directLeaves && group.leafHeadersSpanAllRows) {
-      group.children.filter(isColumnLeaf).forEach((column) => {
-        const startCol = indexByField.get(column.field);
-        if (startCol === undefined)
-          throw new Error(`后台叶子列无法定位：${column.id}`);
-        headerCells.push({
-          id: column.id,
-          label: column.label,
-          startCol,
-          colCount: 1,
-          row: 0,
-          rowCount: lastHeaderRow + 1,
-          kind: 'column',
-        });
-      });
-      return;
-    }
     headerCells.push({
       ...span,
       row,
@@ -258,27 +270,19 @@ export function buildBusinessColumnModel(
       kind: 'group',
     });
     if (directLeaves) {
-      group.children.filter(isColumnLeaf).forEach((column) => {
-        const startCol = indexByField.get(column.field);
-        if (startCol === undefined)
-          throw new Error(`后台叶子列无法定位：${column.id}`);
-        headerCells.push({
-          id: column.id,
-          label: column.label,
-          startCol,
-          colCount: 1,
-          row: lastHeaderRow,
-          rowCount: 1,
-          kind: 'column',
-        });
-      });
+      group.children
+        .filter(isColumnLeaf)
+        .forEach((column) => addLeafHeader(column, lastHeaderRow));
       return;
     }
     group.children.forEach((child) => {
       if (!isColumnLeaf(child)) visitHeader(child, row + 1);
     });
   };
-  roots.forEach((root) => visitHeader(root, 0));
+  roots.forEach((root) => {
+    if (isColumnLeaf(root)) addLeafHeader(root, 0);
+    else visitHeader(root, 0);
+  });
 
   const outlineGroups: ColumnOutlineGroup[] = [];
   const visitOutline = (group: BusinessColumnGroup) => {
@@ -301,11 +305,13 @@ export function buildBusinessColumnModel(
       if (!isColumnLeaf(child)) visitOutline(child);
     });
   };
-  roots.forEach(visitOutline);
+  roots.forEach((root) => {
+    if (!isColumnLeaf(root)) visitOutline(root);
+  });
 
   const frozenColumns = roots
     .filter((root) => root.frozen)
-    .flatMap((root) => leavesOf(root.children));
+    .flatMap((root) => (isColumnLeaf(root) ? [root] : leavesOf(root.children)));
   frozenColumns.forEach((column, index) => {
     if (indexByField.get(column.field) !== index)
       throw new Error('冻结列必须连续位于后台列树最左侧');

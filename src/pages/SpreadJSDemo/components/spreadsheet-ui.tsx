@@ -471,7 +471,7 @@ export function ColumnVisibilityPopover({
       <div className="column-list">
         {COLUMN_HEADER_SECTIONS.map((section) => (
           <section key={section.id} className="column-section">
-            <h3>{section.label}</h3>
+            {section.colCount > 1 ? <h3>{section.label}</h3> : null}
             {COLUMNS.slice(
               section.startCol,
               section.startCol + section.colCount,
