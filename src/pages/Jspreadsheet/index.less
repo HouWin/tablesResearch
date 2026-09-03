@@ -249,6 +249,52 @@
   color: #222;
 }
 
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-category-col),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="0"].jss-outline-org-merge),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="0"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="1"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="2"]) {
+  text-align: center !important;
+  vertical-align: middle !important;
+  background-color: #dceaf5 !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-org-wrap) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+/* 组织树：左对齐 + 层级缩进（对齐透视源数据 Category/Region） */
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="0"].jss-outline-org-tree),
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-category-col.jss-outline-org-tree) {
+  text-align: left !important;
+  vertical-align: middle !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-org-wrap--tree) {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+/* 科目树：左对齐 + 缩进（费用汇总 → 合计 → 明细） */
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="1"].jss-outline-subject-tree),
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-subject-tree) {
+  text-align: left !important;
+  vertical-align: middle !important;
+  background-color: #dceaf5 !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-subject-parent .jss-outline-label) {
+  font-weight: 600;
+}
+
+.jss-page__sheet :global(table.jss-outline-table .jss-outline-subject-leaf .jss-outline-label) {
+  font-weight: 400;
+}
+
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-group-cell),
 .jss-page__sheet :global(table.jss-outline-table td.readonly) {
   cursor: default;
@@ -256,9 +302,56 @@
 }
 
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-category-col) {
-  text-align: left !important;
-  background-color: #e8f1f8 !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+  background-color: #dceaf5 !important;
   font-weight: 700 !important;
+}
+
+/* 费用表表头：组织/科目/功能属性列头 rowspan；2025年跨全年合计+月 */
+.jss-page__sheet :global(table.jss-outline-table thead tr.jss_nested > th[role="nested-header"]) {
+  background-color: #dceaf5 !important;
+  font-weight: 600 !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+  color: #1f1f1f;
+}
+
+.jss-page__sheet :global(table.jss-outline-table thead tr.jss_nested > th.jss-outline-dim-header) {
+  background-color: #dceaf5 !important;
+  vertical-align: middle !important;
+}
+
+.jss-page__sheet :global(table.jss-outline-table thead tr:not(.jss_nested) td),
+.jss-page__sheet :global(table.jss-outline-table thead tr:not(.jss_nested) th),
+.jss-page__sheet :global(table.jss-outline-table .jss_headers td),
+.jss-page__sheet :global(table.jss-outline-table .jss_headers th) {
+  background-color: #dceaf5 !important;
+  font-weight: 600;
+  text-align: center !important;
+}
+
+/* 全年合计(col=3)：浅黄 */
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="3"]) {
+  background-color: #fff2cc !important;
+  text-align: right !important;
+}
+
+/* 月度列白底右对齐 */
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="4"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="5"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="6"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="7"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="8"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="9"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="10"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="11"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="12"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="13"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="14"]),
+.jss-page__sheet :global(table.jss-outline-table tbody td[data-x="15"]) {
+  background-color: #ffffff !important;
+  text-align: right !important;
 }
 
 .jss-page__sheet :global(table.jss-outline-table .jss-outline-region-col) {

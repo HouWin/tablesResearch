@@ -69,6 +69,11 @@ export default defineConfig({
           component: './Jspreadsheet/Demo',
         },
         {
+          name: '费用表 Data Grid',
+          path: '/jspreadsheet/budget',
+          component: './Jspreadsheet/Budget',
+        },
+        {
           name: '扩展页',
           path: '/jspreadsheet/lab',
           component: './Jspreadsheet/Lab',
