@@ -1236,7 +1236,7 @@ export function useSpreadsheetController(
             node.sourceNodes.length !== 1 ||
             node.sourceNodes.some(
               (sourceNode) =>
-                sourceNode.hierarchyRole !== 'detail' ||
+                sourceNode.hierarchyRole !== 'subjectDetail' ||
                 sourceNode.name.includes('合计'),
             );
           if (isSummaryRow) {

@@ -39,8 +39,6 @@ export type BusinessColumnGroup = {
   field: string;
   label: string;
   children: readonly BusinessColumnNode[];
-  /** 整个分组折叠时保留的汇总字段。 */
-  summaryField?: ColumnField;
   /** 仅在顶层节点上生效；冻结该分组下的所有叶子列。 */
   frozen?: boolean;
 };
@@ -110,7 +108,6 @@ export const BUSINESS_COLUMN_DATA = [
     id: 'budget-2025',
     field: 'budget2025',
     label: '2025年',
-    summaryField: 'annualTotal',
     children: [
       {
         id: 'annual-total',
@@ -287,13 +284,10 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   const outlineGroups: ColumnOutlineGroup[] = [];
   const visitOutline = (group: BusinessColumnGroup) => {
     const leaves = leavesOf(group.children);
-    if (group.summaryField && leaves.length > 1) {
-      const summaryCol = indexByField.get(group.summaryField);
-      const firstCol = indexByField.get(leaves[0].field);
-      if (summaryCol === undefined || firstCol === undefined)
-        throw new Error(`列组汇总字段不存在：${group.id}`);
-      if (summaryCol !== firstCol)
-        throw new Error(`列组汇总字段必须是分组第一列：${group.id}`);
+    if (leaves.length > 1) {
+      const summaryCol = indexByField.get(leaves[0].field);
+      if (summaryCol === undefined)
+        throw new Error(`后台列分组无法定位首列：${group.id}`);
       outlineGroups.push({
         id: group.id,
         summaryCol,

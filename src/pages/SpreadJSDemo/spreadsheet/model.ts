@@ -74,7 +74,7 @@ export const BUDGET_VALUE_FIELDS = [
 ] as const;
 export type BudgetValueField = (typeof BUDGET_VALUE_FIELDS)[number];
 
-export type HierarchyRole = 'category' | 'subcategory' | 'region' | 'detail';
+export type HierarchyRole = 'organization' | 'subjectSummary' | 'subjectDetail';
 
 export type BusinessNode = {
   /** 后台记录 ID；组织、汇总和明细记录都全局唯一。 */
@@ -116,9 +116,9 @@ export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
 /**
- * 继续沿用稳定的四段行维协议：category / subcategory 对应组织，
- * region / detail 对应科目。组织第三级使用完整组织名覆盖 subcategory，
- * 因而维度仍然唯一且不依赖 Worksheet 行号。
+ * 为兼容既有前后台单元格坐标，行维仍沿用四段键名；它们只属于坐标协议，
+ * 不再作为 BUSINESS_DATA 的 hierarchyRole。组织第三级使用完整组织名覆盖
+ * subcategory，因而维度仍然唯一且不依赖 Worksheet 行号。
  */
 export type BusinessRowDimension = {
   category: string;
@@ -311,35 +311,35 @@ function makeSubjectTree(
   return makeBudgetNode(
     `${id}-expense-summary`,
     '费用汇总',
-    'region',
+    'subjectSummary',
     '-',
     ...values.summary,
     [
       makeBudgetNode(
         `${id}-subtotal`,
         subtotalName,
-        'detail',
+        'subjectDetail',
         '-',
         ...values.subtotal,
       ),
       makeBudgetNode(
         `${id}-office`,
         '费用-办公费',
-        'detail',
+        'subjectDetail',
         functionalAttribute,
         ...values.office,
       ),
       makeBudgetNode(
         `${id}-electricity`,
         '费用-电费',
-        'detail',
+        'subjectDetail',
         functionalAttribute,
         ...values.electricity,
       ),
       makeBudgetNode(
         `${id}-water`,
         '费用-水费',
-        'detail',
+        'subjectDetail',
         functionalAttribute,
         ...values.water,
       ),
@@ -358,7 +358,7 @@ const STANDARD_UNIT_VALUES = {
 function makeOrganization(
   id: string,
   name: string,
-  hierarchyRole: Extract<HierarchyRole, 'category' | 'subcategory'>,
+  hierarchyRole: Extract<HierarchyRole, 'organization'>,
   values: BudgetPair,
   subjectTree: BusinessNode,
   children?: BusinessNode[],
@@ -377,7 +377,7 @@ function makeOrganization(
 const huajingSales = makeOrganization(
   'huajing-sales',
   '华晶公司-销售部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree(
     'huajing-sales',
@@ -389,7 +389,7 @@ const huajingSales = makeOrganization(
 const huajingFinance = makeOrganization(
   'huajing-finance',
   '华晶公司-财务部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   // 源 Excel 的财务部功能属性确实为“销售”，按原始数据保留。
   makeSubjectTree(
@@ -402,7 +402,7 @@ const huajingFinance = makeOrganization(
 const huajingAdministration = makeOrganization(
   'huajing-administration',
   '华晶公司-行政部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree(
     'huajing-administration',
@@ -414,7 +414,7 @@ const huajingAdministration = makeOrganization(
 const huajingResearch = makeOrganization(
   'huajing-research',
   '华晶公司-研发部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree(
     'huajing-research',
@@ -426,7 +426,7 @@ const huajingResearch = makeOrganization(
 const huajing = makeOrganization(
   'huajing',
   '华晶公司',
-  'subcategory',
+  'organization',
   [28_800, 2_400],
   makeSubjectTree('huajing', '日常费用合计', '管理', {
     summary: [28_800, 2_400],
@@ -441,7 +441,7 @@ const huajing = makeOrganization(
 const shanghuaSales = makeOrganization(
   'shanghua-sales',
   '上华公司-销售部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree(
     'shanghua-sales',
@@ -453,7 +453,7 @@ const shanghuaSales = makeOrganization(
 const shanghua = makeOrganization(
   'shanghua',
   '上华公司',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree('shanghua', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
   [shanghuaSales],
@@ -461,7 +461,7 @@ const shanghua = makeOrganization(
 const headquarters = makeOrganization(
   'headquarters',
   '华润微电子本部',
-  'subcategory',
+  'organization',
   [7_200, 600],
   makeSubjectTree('headquarters', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
 );
@@ -474,7 +474,7 @@ export const BUSINESS_DATA: BusinessNode[] = [
   makeOrganization(
     'cr-micro-group',
     '华润微电子集团',
-    'category',
+    'organization',
     [43_200, 3_600],
     makeSubjectTree('cr-micro-group', '日常费用合计', '管理', {
       summary: [43_200, 3_600],
@@ -534,15 +534,19 @@ function indexBusinessRowDimensions(
   parent?: BusinessRowDimension,
 ) {
   nodes.forEach((node) => {
-    if (!parent && node.hierarchyRole !== 'category')
-      throw new Error(`BUSINESS_DATA 根节点必须是 category：${node.id}`);
-    const dimension: BusinessRowDimension =
-      node.hierarchyRole === 'category'
-        ? { category: node.name }
-        : {
-            ...(parent as BusinessRowDimension),
-            [node.hierarchyRole]: node.name,
-          };
+    if (!parent && node.hierarchyRole !== 'organization')
+      throw new Error(`BUSINESS_DATA 根节点必须是 organization：${node.id}`);
+    const dimensionKey: keyof BusinessRowDimension =
+      node.hierarchyRole === 'organization'
+        ? parent
+          ? 'subcategory'
+          : 'category'
+        : node.hierarchyRole === 'subjectSummary'
+        ? 'region'
+        : 'detail';
+    const dimension: BusinessRowDimension = parent
+      ? { ...parent, [dimensionKey]: node.name }
+      : { category: node.name };
     const key = businessRowDimensionKey(dimension);
     const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
     if (duplicate)
@@ -637,16 +641,13 @@ export function pathForView(view: DrillView) {
 
 function productRootsForView(view: DrillView) {
   return rootsForView(view).filter(
-    (node) =>
-      node.hierarchyRole === 'category' || node.hierarchyRole === 'subcategory',
+    (node) => node.hierarchyRole === 'organization',
   );
 }
 
 function organizationChildren(node: BusinessNode) {
   return (node.children ?? []).filter(
-    (child) =>
-      child.hierarchyRole === 'category' ||
-      child.hierarchyRole === 'subcategory',
+    (child) => child.hierarchyRole === 'organization',
   );
 }
 
@@ -761,7 +762,7 @@ export function createBusinessProjectionRows(
             ? `${product.id}::${region.rootId}`
             : `${product.id}::${region.rootId}::${backendNode.id}`,
         name: `${product.label} / ${region.label}`,
-        hierarchyRole: region.depth === 0 ? 'region' : 'detail',
+        hierarchyRole: region.depth === 0 ? 'subjectSummary' : 'subjectDetail',
         children: product.isGroup
           ? organizationChildren(product.node)
           : undefined,
@@ -968,7 +969,7 @@ function createStressRecord(index: number): ViewRow {
   const businessNode: BusinessNode = {
     id: `stress-record-${index}`,
     name: detailLabel,
-    hierarchyRole: 'detail',
+    hierarchyRole: 'subjectDetail',
     functionalAttribute: ['管理', '销售', '研发'][index % 3],
     ...values,
   };
@@ -1115,7 +1116,7 @@ function projectStressProduct(
       ...fallback,
       id: `${product.id}:${region.id}:summary`,
       name: region.label,
-      hierarchyRole: 'region',
+      hierarchyRole: 'subjectSummary',
       ...aggregateBudgetNodes(region.facts, fallback),
       children: undefined,
       regionSummaries: undefined,
@@ -1166,7 +1167,7 @@ function projectStressProduct(
             ...childFallback,
             id: `${child.id}:${region.id}:summary`,
             name: child.label,
-            hierarchyRole: 'detail',
+            hierarchyRole: 'subjectDetail',
             ...aggregateBudgetNodes(childRegion.facts, childFallback),
           };
           return [
@@ -1388,7 +1389,7 @@ export function getCellEditability(
   return {
     editable: true,
     reason:
-      sourceNode.hierarchyRole === 'detail'
+      sourceNode.hierarchyRole === 'subjectDetail'
         ? '可编辑预算明细记录'
         : '可编辑后台汇总记录',
     sourceNode,

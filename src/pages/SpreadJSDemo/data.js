@@ -36,7 +36,6 @@ const BUSINESS_COLUMN_DATA = [
     id: 'budget-2025',
     field: 'budget2025',
     label: '2025年',
-    summaryField: 'annualTotal',
     children: [
       {
         id: 'annual-total',
@@ -202,7 +201,7 @@ const BUSINESS_DATA = [
   {
     id: 'cr-micro-group',
     name: '华润微电子集团',
-    hierarchyRole: 'category',
+    hierarchyRole: 'organization',
     functionalAttribute: '-',
     annualTotal: 43200,
     january: 3600,
@@ -221,7 +220,7 @@ const BUSINESS_DATA = [
       {
         id: 'headquarters',
         name: '华润微电子本部',
-        hierarchyRole: 'subcategory',
+        hierarchyRole: 'organization',
         functionalAttribute: '-',
         annualTotal: 7200,
         january: 600,
@@ -240,7 +239,7 @@ const BUSINESS_DATA = [
           {
             id: 'headquarters-expense-summary',
             name: '费用汇总',
-            hierarchyRole: 'region',
+            hierarchyRole: 'subjectSummary',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -259,7 +258,7 @@ const BUSINESS_DATA = [
               {
                 id: 'headquarters-subtotal',
                 name: '日常费用合计',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -278,7 +277,7 @@ const BUSINESS_DATA = [
               {
                 id: 'headquarters-office',
                 name: '费用-办公费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 1200,
                 january: 100,
@@ -297,7 +296,7 @@ const BUSINESS_DATA = [
               {
                 id: 'headquarters-electricity',
                 name: '费用-电费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 2400,
                 january: 200,
@@ -316,7 +315,7 @@ const BUSINESS_DATA = [
               {
                 id: 'headquarters-water',
                 name: '费用-水费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 3600,
                 january: 300,
@@ -339,7 +338,7 @@ const BUSINESS_DATA = [
       {
         id: 'huajing',
         name: '华晶公司',
-        hierarchyRole: 'subcategory',
+        hierarchyRole: 'organization',
         functionalAttribute: '-',
         annualTotal: 28800,
         january: 2400,
@@ -358,7 +357,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-sales',
             name: '华晶公司-销售部',
-            hierarchyRole: 'subcategory',
+            hierarchyRole: 'organization',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -377,7 +376,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-sales-expense-summary',
                 name: '费用汇总',
-                hierarchyRole: 'region',
+                hierarchyRole: 'subjectSummary',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -396,7 +395,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-sales-subtotal',
                     name: '管理费用合计',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '-',
                     annualTotal: 7200,
                     january: 600,
@@ -415,7 +414,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-sales-office',
                     name: '费用-办公费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 1200,
                     january: 100,
@@ -434,7 +433,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-sales-electricity',
                     name: '费用-电费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 2400,
                     january: 200,
@@ -453,7 +452,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-sales-water',
                     name: '费用-水费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 3600,
                     january: 300,
@@ -476,7 +475,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-finance',
             name: '华晶公司-财务部',
-            hierarchyRole: 'subcategory',
+            hierarchyRole: 'organization',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -495,7 +494,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-finance-expense-summary',
                 name: '费用汇总',
-                hierarchyRole: 'region',
+                hierarchyRole: 'subjectSummary',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -514,7 +513,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-finance-subtotal',
                     name: '管理费用合计',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '-',
                     annualTotal: 7200,
                     january: 600,
@@ -533,7 +532,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-finance-office',
                     name: '费用-办公费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 1200,
                     january: 100,
@@ -552,7 +551,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-finance-electricity',
                     name: '费用-电费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 2400,
                     january: 200,
@@ -571,7 +570,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-finance-water',
                     name: '费用-水费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 3600,
                     january: 300,
@@ -594,7 +593,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-administration',
             name: '华晶公司-行政部',
-            hierarchyRole: 'subcategory',
+            hierarchyRole: 'organization',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -613,7 +612,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-administration-expense-summary',
                 name: '费用汇总',
-                hierarchyRole: 'region',
+                hierarchyRole: 'subjectSummary',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -632,7 +631,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-administration-subtotal',
                     name: '日常费用合计',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '-',
                     annualTotal: 7200,
                     january: 600,
@@ -651,7 +650,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-administration-office',
                     name: '费用-办公费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '管理',
                     annualTotal: 1200,
                     january: 100,
@@ -670,7 +669,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-administration-electricity',
                     name: '费用-电费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '管理',
                     annualTotal: 2400,
                     january: 200,
@@ -689,7 +688,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-administration-water',
                     name: '费用-水费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '管理',
                     annualTotal: 3600,
                     january: 300,
@@ -712,7 +711,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-research',
             name: '华晶公司-研发部',
-            hierarchyRole: 'subcategory',
+            hierarchyRole: 'organization',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -731,7 +730,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-research-expense-summary',
                 name: '费用汇总',
-                hierarchyRole: 'region',
+                hierarchyRole: 'subjectSummary',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -750,7 +749,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-research-subtotal',
                     name: '日常费用合计',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '-',
                     annualTotal: 7200,
                     january: 600,
@@ -769,7 +768,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-research-office',
                     name: '费用-办公费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '研发',
                     annualTotal: 1200,
                     january: 100,
@@ -788,7 +787,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-research-electricity',
                     name: '费用-电费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '研发',
                     annualTotal: 2400,
                     january: 200,
@@ -807,7 +806,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'huajing-research-water',
                     name: '费用-水费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '研发',
                     annualTotal: 3600,
                     january: 300,
@@ -832,7 +831,7 @@ const BUSINESS_DATA = [
           {
             id: 'huajing-expense-summary',
             name: '费用汇总',
-            hierarchyRole: 'region',
+            hierarchyRole: 'subjectSummary',
             functionalAttribute: '-',
             annualTotal: 28800,
             january: 2400,
@@ -851,7 +850,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-subtotal',
                 name: '日常费用合计',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '-',
                 annualTotal: 28800,
                 january: 2400,
@@ -870,7 +869,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-office',
                 name: '费用-办公费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 4800,
                 january: 400,
@@ -889,7 +888,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-electricity',
                 name: '费用-电费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 9600,
                 january: 800,
@@ -908,7 +907,7 @@ const BUSINESS_DATA = [
               {
                 id: 'huajing-water',
                 name: '费用-水费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 14400,
                 january: 1200,
@@ -931,7 +930,7 @@ const BUSINESS_DATA = [
       {
         id: 'shanghua',
         name: '上华公司',
-        hierarchyRole: 'subcategory',
+        hierarchyRole: 'organization',
         functionalAttribute: '-',
         annualTotal: 7200,
         january: 600,
@@ -950,7 +949,7 @@ const BUSINESS_DATA = [
           {
             id: 'shanghua-sales',
             name: '上华公司-销售部',
-            hierarchyRole: 'subcategory',
+            hierarchyRole: 'organization',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -969,7 +968,7 @@ const BUSINESS_DATA = [
               {
                 id: 'shanghua-sales-expense-summary',
                 name: '费用汇总',
-                hierarchyRole: 'region',
+                hierarchyRole: 'subjectSummary',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -988,7 +987,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'shanghua-sales-subtotal',
                     name: '日常费用合计',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '-',
                     annualTotal: 7200,
                     january: 600,
@@ -1007,7 +1006,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'shanghua-sales-office',
                     name: '费用-办公费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 1200,
                     january: 100,
@@ -1026,7 +1025,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'shanghua-sales-electricity',
                     name: '费用-电费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 2400,
                     january: 200,
@@ -1045,7 +1044,7 @@ const BUSINESS_DATA = [
                   {
                     id: 'shanghua-sales-water',
                     name: '费用-水费',
-                    hierarchyRole: 'detail',
+                    hierarchyRole: 'subjectDetail',
                     functionalAttribute: '销售',
                     annualTotal: 3600,
                     january: 300,
@@ -1070,7 +1069,7 @@ const BUSINESS_DATA = [
           {
             id: 'shanghua-expense-summary',
             name: '费用汇总',
-            hierarchyRole: 'region',
+            hierarchyRole: 'subjectSummary',
             functionalAttribute: '-',
             annualTotal: 7200,
             january: 600,
@@ -1089,7 +1088,7 @@ const BUSINESS_DATA = [
               {
                 id: 'shanghua-subtotal',
                 name: '日常费用合计',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '-',
                 annualTotal: 7200,
                 january: 600,
@@ -1108,7 +1107,7 @@ const BUSINESS_DATA = [
               {
                 id: 'shanghua-office',
                 name: '费用-办公费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 1200,
                 january: 100,
@@ -1127,7 +1126,7 @@ const BUSINESS_DATA = [
               {
                 id: 'shanghua-electricity',
                 name: '费用-电费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 2400,
                 january: 200,
@@ -1146,7 +1145,7 @@ const BUSINESS_DATA = [
               {
                 id: 'shanghua-water',
                 name: '费用-水费',
-                hierarchyRole: 'detail',
+                hierarchyRole: 'subjectDetail',
                 functionalAttribute: '管理',
                 annualTotal: 3600,
                 january: 300,
@@ -1171,7 +1170,7 @@ const BUSINESS_DATA = [
       {
         id: 'cr-micro-group-expense-summary',
         name: '费用汇总',
-        hierarchyRole: 'region',
+        hierarchyRole: 'subjectSummary',
         functionalAttribute: '-',
         annualTotal: 43200,
         january: 3600,
@@ -1190,7 +1189,7 @@ const BUSINESS_DATA = [
           {
             id: 'cr-micro-group-subtotal',
             name: '日常费用合计',
-            hierarchyRole: 'detail',
+            hierarchyRole: 'subjectDetail',
             functionalAttribute: '-',
             annualTotal: 43200,
             january: 3600,
@@ -1209,7 +1208,7 @@ const BUSINESS_DATA = [
           {
             id: 'cr-micro-group-office',
             name: '费用-办公费',
-            hierarchyRole: 'detail',
+            hierarchyRole: 'subjectDetail',
             functionalAttribute: '管理',
             annualTotal: 7200,
             january: 600,
@@ -1228,7 +1227,7 @@ const BUSINESS_DATA = [
           {
             id: 'cr-micro-group-electricity',
             name: '费用-电费',
-            hierarchyRole: 'detail',
+            hierarchyRole: 'subjectDetail',
             functionalAttribute: '管理',
             annualTotal: 14400,
             january: 1200,
@@ -1247,7 +1246,7 @@ const BUSINESS_DATA = [
           {
             id: 'cr-micro-group-water',
             name: '费用-水费',
-            hierarchyRole: 'detail',
+            hierarchyRole: 'subjectDetail',
             functionalAttribute: '管理',
             annualTotal: 21600,
             january: 1800,
