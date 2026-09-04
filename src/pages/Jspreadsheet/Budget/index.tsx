@@ -2,7 +2,7 @@
  * Jspreadsheet Data Grid · 预算费用表
  * 能力：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
  * 下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 /
- * 大数据虚拟滚动 / 列宽拖动 / 自适应列宽
+ * 大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 / 选区统计 / 脏格定位
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Spreadsheet, Worksheet, jspreadsheet } from '@jspreadsheet/react';
@@ -12,7 +12,7 @@ import bar from '@jspreadsheet/bar';
 import barFormulas from '@jspreadsheet/bar/dist/formulas.json';
 import lemonade from 'lemonadejs';
 import { PageContainer } from '@ant-design/pro-components';
-import { Button, Select, Space, Spin, message } from 'antd';
+import { Button, Dropdown, Select, Space, Spin, message } from 'antd';
 import 'jsuites/dist/jsuites.css';
 import 'jspreadsheet/dist/jspreadsheet.css';
 import '@jsuites/css/dist/style.css';
@@ -39,18 +39,24 @@ import {
   buildRowDimension,
   buildSheetFromProjection,
   buildLargeDataAsync,
+  calcSelectionStats,
   canonicalProductId,
   cellName,
   clearAllDirtyHighlights,
   dirtyCellKey,
+  downloadTextFile,
   expandViewRowsForScale,
+  fieldToColumnIndex,
+  formatStatNumber,
   getWorksheetList,
   isBudgetValueRowEditable,
   paintDirtyHighlights,
   paintVisibleFoldToggles,
+  parseA1,
   resolveViewRow,
   scaleTargetRows,
   setCellDirtyHighlight,
+  sheetDataToCsv,
   snapshotRowData,
   stableCellKey,
   toEditValue,
@@ -58,6 +64,7 @@ import {
   type BudgetScale,
   type BuiltSheet,
   type FoldMeta,
+  type SelectionStats,
   type TrackItem,
 } from './budget-core';
 
@@ -135,6 +142,9 @@ export default function JspreadsheetBudgetPage() {
   const sheetBusyRef = useRef(false);
   sheetBusyRef.current = sheetBusy;
   const [loadInfo, setLoadInfo] = useState('');
+  const [selectionStats, setSelectionStats] = useState<SelectionStats | null>(
+    null,
+  );
 
   const resetDirtyState = useCallback(() => {
     dirtyRef.current.clear();
@@ -447,13 +457,6 @@ export default function JspreadsheetBudgetPage() {
     handleCellChange(worksheet, null, x, y, newValue, oldValue);
   };
 
-  historyBridge.onSelect = (_worksheet, px, py, ux, uy) => {
-    const start = cellName(Number(px), Number(py));
-    const end = cellName(Number(ux), Number(uy));
-    if (!start) return;
-    setHistoryCell(start === end ? start : `${start}:${end}`);
-  };
-
   const handleSave = useCallback(() => {
     if (dirtyRef.current.size === 0) {
       message.info('没有待保存的修改');
@@ -492,6 +495,165 @@ export default function JspreadsheetBudgetPage() {
     const ws = getWorksheetList(spreadsheet)[0];
     if (ws) clearAllDirtyHighlights(ws);
   }, []);
+
+  const clearDirtyMarks = useCallback(() => {
+    if (dirtyRef.current.size === 0) {
+      message.info('当前没有脏标记');
+      return;
+    }
+    dirtyRef.current.clear();
+    setDirtyCount(0);
+    const ws = getWorksheetList(spreadsheet)[0];
+    if (ws) clearAllDirtyHighlights(ws);
+    message.success('已清空脏标记');
+  }, []);
+
+  const refreshSelectionStats = useCallback(
+    (px: any, py: any, ux: any, uy: any) => {
+      const c0 = Number(px);
+      const r0 = Number(py);
+      const c1 = Number(ux);
+      const r1 = Number(uy);
+      if (
+        ![c0, r0, c1, r1].every((n) => Number.isFinite(n)) ||
+        c0 < 0 ||
+        r0 < 0
+      ) {
+        setSelectionStats(null);
+        return;
+      }
+      setSelectionStats(
+        calcSelectionStats(sheetRef.current.data, c0, r0, c1, r1),
+      );
+    },
+    [],
+  );
+
+  const gotoA1 = useCallback((a1: string) => {
+    const cell = (a1 || '').split(':')[0];
+    const parsed = parseA1(cell);
+    if (!parsed) {
+      message.warning('无法解析单元格地址');
+      return;
+    }
+    const ws = getWorksheetList(spreadsheet)[0];
+    if (!ws) return;
+    try {
+      ws.updateSelectionFromCoords?.(
+        parsed.col,
+        parsed.row,
+        parsed.col,
+        parsed.row,
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      ws.goto?.(cell);
+    } catch {
+      // ignore
+    }
+    setHistoryCell(cell);
+    refreshSelectionStats(parsed.col, parsed.row, parsed.col, parsed.row);
+  }, [refreshSelectionStats]);
+
+  const gotoNextDirty = useCallback(() => {
+    const list = [...dirtyRef.current.values()];
+    if (!list.length) {
+      message.info('没有待保存的脏格');
+      return;
+    }
+    const focus = historyCell.split(':')[0];
+    const focusParsed = parseA1(focus);
+    const ordered = list
+      .map((entry) => {
+        const row =
+          typeof entry.rowIndex === 'number'
+            ? entry.rowIndex
+            : sheetRef.current.viewRows.findIndex(
+                (r) => buildRowDimension(r).key === entry.row.key,
+              );
+        const col = fieldToColumnIndex(entry.field) ?? COL_ATTR;
+        return {
+          row,
+          col,
+          a1: cellName(col, Math.max(0, row)),
+        };
+      })
+      .filter((x) => x.row >= 0)
+      .sort((a, b) => a.row - b.row || a.col - b.col);
+
+    if (!ordered.length) {
+      message.info('脏格缺少行定位信息');
+      return;
+    }
+
+    let next = ordered[0];
+    if (focusParsed) {
+      const idx = ordered.findIndex(
+        (x) =>
+          x.row > focusParsed.row ||
+          (x.row === focusParsed.row && x.col > focusParsed.col),
+      );
+      next = idx >= 0 ? ordered[idx] : ordered[0];
+    }
+    gotoA1(next.a1);
+    message.success(`已定位 ${next.a1}`);
+  }, [gotoA1, historyCell]);
+
+  const exportCsv = useCallback(() => {
+    const rows = sheetRef.current.data;
+    if (!rows.length) {
+      message.warning('没有可导出的数据');
+      return;
+    }
+    if (rows.length > 20000) {
+      message.loading({
+        content: '正在生成 CSV…',
+        key: 'budget-export',
+        duration: 0,
+      });
+    }
+    window.setTimeout(() => {
+      try {
+        const csv = sheetDataToCsv(rows);
+        downloadTextFile(
+          `budget-${scale}-${rows.length}.csv`,
+          `\uFEFF${csv}`,
+          'text/csv;charset=utf-8',
+        );
+        message.success({
+          content: `已导出 ${rows.length.toLocaleString()} 行 CSV`,
+          key: 'budget-export',
+        });
+      } catch (err) {
+        console.error(err);
+        message.error({ content: '导出失败', key: 'budget-export' });
+      }
+    }, 0);
+  }, [scale]);
+
+  const exportDirtyJson = useCallback(() => {
+    const changes = [...dirtyRef.current.values()];
+    if (!changes.length) {
+      message.info('没有待导出的脏变更');
+      return;
+    }
+    downloadTextFile(
+      `budget-dirty-${changes.length}.json`,
+      JSON.stringify({ count: changes.length, changes }, null, 2),
+      'application/json;charset=utf-8',
+    );
+    message.success(`已导出 ${changes.length} 处脏变更 JSON`);
+  }, []);
+
+  historyBridge.onSelect = (_worksheet, px, py, ux, uy) => {
+    const start = cellName(Number(px), Number(py));
+    const end = cellName(Number(ux), Number(uy));
+    if (!start) return;
+    setHistoryCell(start === end ? start : `${start}:${end}`);
+    refreshSelectionStats(px, py, ux, uy);
+  };
 
   const onbeforecomments = useCallback((_ws: any, cells: Record<string, any>) => {
     const next: Record<string, any> = {};
@@ -621,10 +783,31 @@ export default function JspreadsheetBudgetPage() {
         icon: 'view_week',
         onclick: () => instance.closeColumnGroup?.(COL_MONTH_START),
       });
+      items.push({ type: 'line' });
+      items.push({
+        title: '定位下一个脏格',
+        icon: 'my_location',
+        onclick: () => gotoNextDirty(),
+      });
+      items.push({
+        title: '清空脏标记',
+        icon: 'layers_clear',
+        onclick: () => clearDirtyMarks(),
+      });
+      items.push({
+        title: '导出当前表 CSV',
+        icon: 'download',
+        onclick: () => exportCsv(),
+      });
+      items.push({
+        title: '导出脏变更 JSON',
+        icon: 'data_object',
+        onclick: () => exportDirtyJson(),
+      });
 
       return items;
     },
-    [drillSelected],
+    [drillSelected, gotoNextDirty, clearDirtyMarks, exportCsv, exportDirtyJson],
   );
 
   const toolbar = useCallback(
@@ -729,6 +912,27 @@ export default function JspreadsheetBudgetPage() {
             fileInputRef.current?.click();
           },
         },
+        { type: 'divisor' },
+        {
+          content: 'my_location',
+          tooltip: '定位下一个脏格',
+          onclick: () => gotoNextDirty(),
+        },
+        {
+          content: 'layers_clear',
+          tooltip: '清空脏标记',
+          onclick: () => clearDirtyMarks(),
+        },
+        {
+          content: 'download',
+          tooltip: '导出 CSV',
+          onclick: () => exportCsv(),
+        },
+        {
+          content: 'data_object',
+          tooltip: '导出脏变更 JSON',
+          onclick: () => exportDirtyJson(),
+        },
       ];
 
       if (defaultToolbar && Array.isArray(defaultToolbar.items)) {
@@ -741,7 +945,15 @@ export default function JspreadsheetBudgetPage() {
       }
       return { items: extraItems, responsive: true };
     },
-    [collapseAllFolds, drillSelected, expandAllFolds],
+    [
+      collapseAllFolds,
+      drillSelected,
+      expandAllFolds,
+      gotoNextDirty,
+      clearDirtyMarks,
+      exportCsv,
+      exportDirtyJson,
+    ],
   );
 
   useEffect(() => {
@@ -847,13 +1059,19 @@ export default function JspreadsheetBudgetPage() {
     () => tracks.filter((item) => item.cell === focusCell),
     [tracks, focusCell],
   );
+  const dirtyEntries = useMemo(
+    () => [...dirtyRef.current.values()],
+    // dirtyCount 变化时刷新列表
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dirtyCount],
+  );
 
   return (
     <PageContainer
       title="Jspreadsheet Data Grid · 预算费用表"
       subTitle={`投影对齐 SpreadJS · ${sheet.data.length.toLocaleString()} 行`}
       extra={
-        <Space>
+        <Space wrap>
           <Select
             size="small"
             style={{ width: 200 }}
@@ -863,6 +1081,7 @@ export default function JspreadsheetBudgetPage() {
               beginProgrammaticWrite(true);
               setScale(v as BudgetScale);
               setTracks([]);
+              setSelectionStats(null);
             }}
             disabled={sheetBusy}
           />
@@ -873,7 +1092,41 @@ export default function JspreadsheetBudgetPage() {
               待保存 {dirtyCount} 处
             </span>
           )}
-          <Button type="primary" onClick={handleSave} disabled={dirtyCount === 0 || sheetBusy}>
+          <Button
+            size="small"
+            onClick={gotoNextDirty}
+            disabled={dirtyCount === 0 || sheetBusy}
+          >
+            下一脏格
+          </Button>
+          <Button
+            size="small"
+            onClick={clearDirtyMarks}
+            disabled={dirtyCount === 0 || sheetBusy}
+          >
+            清空脏标记
+          </Button>
+          <Dropdown
+            menu={{
+              items: [
+                { key: 'csv', label: '导出 CSV', onClick: () => exportCsv() },
+                {
+                  key: 'dirty',
+                  label: '导出脏变更 JSON',
+                  onClick: () => exportDirtyJson(),
+                },
+              ],
+            }}
+          >
+            <Button size="small" disabled={sheetBusy}>
+              导出
+            </Button>
+          </Dropdown>
+          <Button
+            type="primary"
+            onClick={handleSave}
+            disabled={dirtyCount === 0 || sheetBusy}
+          >
             保存
           </Button>
         </Space>
@@ -883,7 +1136,8 @@ export default function JspreadsheetBudgetPage() {
         <p className="jss-page__hint">
           费用表已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
           下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 /
-          大数据虚拟滚动 / 列宽拖动 / 自适应列宽。科目列与「管理费用合计」等汇总行只读；全年合计与月度、功能属性、业务日期可编辑。
+          大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 CSV·JSON / 选区统计 /
+          脏格定位。科目与汇总行只读；全年合计、月度、功能属性、业务日期可编辑。点击侧栏追踪记录可跳转单元格。
         </p>
 
         <input
@@ -955,6 +1209,7 @@ export default function JspreadsheetBudgetPage() {
                 tableOverflow={true}
                 tableWidth="100%"
                 tableHeight="640px"
+                filters={!isHuge}
                 virtualizationX={false}
                 virtualizationY={true}
               />
@@ -962,16 +1217,89 @@ export default function JspreadsheetBudgetPage() {
           </div>
 
           <aside className="jss-page__side">
+            <section className="jss-panel" style={{ flex: '0 0 auto' }}>
+              <div className="jss-panel__title">选区统计</div>
+              {!selectionStats ? (
+                <div className="jss-panel__empty">框选数值单元格后显示求和 / 平均等。</div>
+              ) : (
+                <ul className="jss-panel__list jss-panel__stats">
+                  <li className="jss-panel__item">
+                    单元格 <strong>{selectionStats.cells.toLocaleString()}</strong>
+                    {selectionStats.truncated ? '（已抽样）' : ''}
+                  </li>
+                  <li className="jss-panel__item">
+                    数值格 <strong>{selectionStats.numeric.toLocaleString()}</strong>
+                  </li>
+                  <li className="jss-panel__item">
+                    求和 <strong>{formatStatNumber(selectionStats.sum)}</strong>
+                  </li>
+                  <li className="jss-panel__item">
+                    平均 <strong>{formatStatNumber(selectionStats.average)}</strong>
+                  </li>
+                  <li className="jss-panel__item">
+                    最小 <strong>{formatStatNumber(selectionStats.min)}</strong>
+                  </li>
+                  <li className="jss-panel__item">
+                    最大 <strong>{formatStatNumber(selectionStats.max)}</strong>
+                  </li>
+                </ul>
+              )}
+            </section>
+
+            <section className="jss-panel" style={{ flex: 1 }}>
+              <div className="jss-panel__title">
+                脏格列表 · {dirtyCount}
+              </div>
+              {dirtyEntries.length === 0 ? (
+                <div className="jss-panel__empty">修改单元格后会出现在这里，点击可跳转。</div>
+              ) : (
+                <ul className="jss-panel__list">
+                  {dirtyEntries.slice(0, 40).map((entry) => {
+                    const row =
+                      typeof entry.rowIndex === 'number' ? entry.rowIndex : -1;
+                    const col = fieldToColumnIndex(entry.field) ?? COL_ATTR;
+                    const a1 = row >= 0 ? cellName(col, row) : entry.col.key;
+                    return (
+                      <li
+                        key={`${entry.row.key}|${entry.col.key}`}
+                        className="jss-panel__item jss-panel__item--clickable"
+                        onClick={() => {
+                          if (row >= 0) gotoA1(cellName(col, row));
+                          else message.info('该脏格缺少行号，请用「下一脏格」');
+                        }}
+                      >
+                        <div>
+                          <strong>{a1}</strong>
+                          <span className="jss-panel__meta">
+                            {' '}
+                            · {entry.field}
+                          </span>
+                        </div>
+                        <div>
+                          {String(entry.oldValue ?? '∅')} →{' '}
+                          {String(entry.newValue ?? '∅')}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
             <section className="jss-panel" style={{ flex: 1.2 }}>
               <div className="jss-panel__title">数据追踪（最近变更）</div>
               {tracks.length === 0 ? (
                 <div className="jss-panel__empty">
-                  编辑任意单元格后，变更会记录在这里。
+                  编辑任意单元格后，变更会记录在这里。点击可跳转。
                 </div>
               ) : (
                 <ul className="jss-panel__list">
                   {tracks.slice(0, 40).map((item) => (
-                    <li key={item.id} className="jss-panel__item">
+                    <li
+                      key={item.id}
+                      className="jss-panel__item jss-panel__item--clickable"
+                      onClick={() => gotoA1(item.cell)}
+                    >
                       <div>
                         <strong>{item.cell}</strong>
                         <span className="jss-panel__meta"> · {item.time}</span>

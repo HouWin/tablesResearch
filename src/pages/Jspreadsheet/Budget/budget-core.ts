@@ -125,6 +125,133 @@ export function toEditValue(value: unknown): number | string | null {
   return Number.isFinite(num) && raw !== '' ? num : String(value);
 }
 
+export const BUDGET_FLAT_HEADERS = [
+  '组织',
+  '科目',
+  '功能属性',
+  '全年合计',
+  ...BUDGET_MONTHS,
+  '业务日期',
+] as const;
+
+export type SelectionStats = {
+  cells: number;
+  numeric: number;
+  sum: number;
+  average: number;
+  min: number;
+  max: number;
+  truncated: boolean;
+};
+
+const MAX_SELECTION_STATS_CELLS = 5000;
+
+export function calcSelectionStats(
+  data: any[][],
+  px: number,
+  py: number,
+  ux: number,
+  uy: number,
+): SelectionStats {
+  const c0 = Math.max(0, Math.min(px, ux));
+  const c1 = Math.max(px, ux);
+  const r0 = Math.max(0, Math.min(py, uy));
+  const r1 = Math.max(py, uy);
+  const rowCount = Math.max(0, r1 - r0 + 1);
+  const colCount = Math.max(0, c1 - c0 + 1);
+  const total = rowCount * colCount;
+  const limit = Math.min(total, MAX_SELECTION_STATS_CELLS);
+  let numeric = 0;
+  let sum = 0;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < limit; i += 1) {
+    const row = r0 + Math.floor(i / colCount);
+    const col = c0 + (i % colCount);
+    const raw = data[row]?.[col];
+    const val = toEditValue(raw);
+    if (typeof val !== 'number' || !Number.isFinite(val)) continue;
+    numeric += 1;
+    sum += val;
+    if (val < min) min = val;
+    if (val > max) max = val;
+  }
+
+  return {
+    cells: total,
+    numeric,
+    sum,
+    average: numeric ? sum / numeric : 0,
+    min: numeric ? min : 0,
+    max: numeric ? max : 0,
+    truncated: total > MAX_SELECTION_STATS_CELLS,
+  };
+}
+
+export function parseA1(a1: string): { col: number; row: number } | null {
+  const m = String(a1 || '')
+    .trim()
+    .toUpperCase()
+    .match(/^([A-Z]+)(\d+)$/);
+  if (!m) return null;
+  let col = 0;
+  for (let i = 0; i < m[1].length; i += 1) {
+    col = col * 26 + (m[1].charCodeAt(i) - 64);
+  }
+  col -= 1;
+  const row = Number(m[2]) - 1;
+  if (!Number.isFinite(col) || !Number.isFinite(row) || col < 0 || row < 0) {
+    return null;
+  }
+  return { col, row };
+}
+
+function csvEscape(value: unknown): string {
+  const text =
+    value == null || value === ''
+      ? ''
+      : typeof value === 'number' && Number.isFinite(value)
+        ? String(value)
+        : String(value);
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+export function sheetDataToCsv(
+  data: any[][],
+  headers: readonly string[] = BUDGET_FLAT_HEADERS,
+): string {
+  const lines = [headers.map(csvEscape).join(',')];
+  for (const row of data) {
+    lines.push(
+      headers.map((_, i) => csvEscape(row?.[i])).join(','),
+    );
+  }
+  return lines.join('\n');
+}
+
+export function downloadTextFile(
+  filename: string,
+  content: string,
+  mime = 'text/plain;charset=utf-8',
+) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function formatStatNumber(n: number) {
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('zh-CN', {
+    maximumFractionDigits: 2,
+  });
+}
+
 export function buildRowDimension(viewRow: ViewRow) {
   const orgPart = `organization:${viewRow.productLabel}`;
   const subjectPart =
