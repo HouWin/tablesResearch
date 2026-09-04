@@ -1,0 +1,63 @@
+/* 透视表 v8 样式 */
+
+.pivot-prototype {
+  .htCore td {
+    position: relative; /* 脏角标定位基准 */
+  }
+
+  .ht-tree-indent {
+    display: inline-block;
+    flex: none;
+  }
+
+  .ht-tree-spacer {
+    display: inline-block;
+    width: 15px;
+    flex: none;
+  }
+
+  .ht-tree-toggle {
+    display: inline-block;
+    width: 15px;
+    margin-right: 2px;
+    cursor: pointer;
+    color: #1677ff;
+    font-size: 12px;
+    user-select: none;
+    text-align: center;
+    flex: none;
+
+    &:hover {
+      color: #0958d9;
+      font-weight: 700;
+    }
+  }
+
+  .ht-tree-label {
+    vertical-align: middle;
+  }
+
+  /* 脏角标（未保存修改） */
+  .ht-dirty {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-top: 8px solid #fa8c16;
+    border-left: 8px solid transparent;
+  }
+
+  /* 按需加载占位 */
+  .ht-pivot-loading {
+    color: #bfbfbf;
+  }
+
+  /* 列维度组表头（仅维度层可点击折叠） */
+  .ht-col-group-header {
+    cursor: pointer;
+    color: #1677ff;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+}

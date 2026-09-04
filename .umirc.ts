@@ -63,6 +63,11 @@ export default defineConfig({
           path: '/handsontable/big-data',
           component: './Handsontable/BigDataExample',
         },
+        {
+          name: '透视表原型',
+          path: '/handsontable/pivot-prototype',
+          component: './Handsontable/PivotPrototype',
+        },
       ],
     },
     {
