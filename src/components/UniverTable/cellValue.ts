@@ -1,5 +1,25 @@
 import { readSheetDataRow } from './exportData';
-import type {ETableCell, ETableCellLocator, ETableColumn,ETableGetCellValueOptions,ETableGetCellValueResult,ETableGetRowValueOptions,ETableGetRowValueResult,ETablePrimitive,ETableRow,ETableRowLocator,ETableSetCellValueOptions,ETableSetCellValueResult,ETableSetRowValueResult,} from './types';
+import type {
+  ETableCell,
+  ETableCellLocator,
+  ETableCellValuePatch,
+  ETableColumn,
+  ETableGetCellValueOptions,
+  ETableGetCellValueResult,
+  ETableGetRowValueOptions,
+  ETableGetRowValueResult,
+  ETablePrimitive,
+  ETableRow,
+  ETableRowLocator,
+  ETableSetCellValueOptions,
+  ETableSetCellValueResult,
+  ETableSetCellValuesResult,
+  ETableSetRowValueResult,
+} from './types';
+import {
+  isDimensionCellLocator,
+  resolveDimensionCellLocator,
+} from './dimensionLocate';
 
 const columnName = (column: number): string => {
   let result = '';
@@ -52,31 +72,53 @@ export const resolveCellLocator = (
       cell: locator.toUpperCase(),
     };
   }
-  if ('field' in locator) {
-    const column = leafColumns.findIndex((item) => item.id === locator.field);
+
+  // { dataRow, field } — 注意维度定位也可能带 field，需同时有 dataRow
+  if (
+    locator &&
+    typeof locator === 'object' &&
+    'dataRow' in locator &&
+    'field' in locator &&
+    typeof (locator as { dataRow?: unknown }).dataRow === 'number'
+  ) {
+    const dataRowLocator = locator as { dataRow: number; field: string };
+    const column = leafColumns.findIndex((item) => item.id === dataRowLocator.field);
     if (column < 0) {
       return null;
     }
-    const sheetRow = headerDepth + locator.dataRow;
+    const sheetRow = headerDepth + dataRowLocator.dataRow;
     return {
       sheetRow,
       column,
-      dataRow: locator.dataRow,
-      field: locator.field,
+      dataRow: dataRowLocator.dataRow,
+      field: dataRowLocator.field,
       cell: cellAddress(sheetRow, column),
     };
   }
-  const field = leafColumns[locator.column]?.id;
-  if (!field) {
-    return null;
+
+  if (
+    locator &&
+    typeof locator === 'object' &&
+    'sheetRow' in locator &&
+    'column' in locator &&
+    typeof (locator as { sheetRow?: unknown }).sheetRow === 'number' &&
+    typeof (locator as { column?: unknown }).column === 'number'
+  ) {
+    const sheetLocator = locator as { sheetRow: number; column: number };
+    const field = leafColumns[sheetLocator.column]?.id;
+    if (!field) {
+      return null;
+    }
+    return {
+      sheetRow: sheetLocator.sheetRow,
+      column: sheetLocator.column,
+      dataRow: sheetLocator.sheetRow - headerDepth,
+      field,
+      cell: cellAddress(sheetLocator.sheetRow, sheetLocator.column),
+    };
   }
-  return {
-    sheetRow: locator.sheetRow,
-    column: locator.column,
-    dataRow: locator.sheetRow - headerDepth,
-    field,
-    cell: cellAddress(locator.sheetRow, locator.column),
-  };
+
+  return null;
 };
 
 const normalizeInputValue = (
@@ -122,9 +164,13 @@ const readSheetDisplayValue = (worksheet: any, sheetRow: number, column: number)
 const findProjectedDataRow = (
   logicalRow: number,
   getLogicalDataRow: (projectedDataRow: number) => number | null,
-  windowSize: number,
+  getProjectedDataRow: ((logicalRow: number) => number | null) | undefined,
+  treeViewportWindowSize: number,
 ) => {
-  for (let projected = 0; projected < windowSize; projected += 1) {
+  if (getProjectedDataRow) {
+    return getProjectedDataRow(logicalRow);
+  }
+  for (let projected = 0; projected < treeViewportWindowSize; projected += 1) {
     if (getLogicalDataRow(projected) === logicalRow) {
       return projected;
     }
@@ -137,12 +183,14 @@ const resolveSheetRowForDataRow = (
   headerDepth: number,
   useTreeViewport: boolean,
   getLogicalDataRow: ((projectedDataRow: number) => number | null) | undefined,
+  getProjectedDataRow: ((logicalRow: number) => number | null) | undefined,
   treeViewportWindowSize: number,
 ) => {
   if (useTreeViewport && getLogicalDataRow) {
     const projected = findProjectedDataRow(
       dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {
@@ -210,6 +258,7 @@ export const getCellValueFromTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   options?: ETableGetCellValueOptions;
 }): ETableGetCellValueResult => {
@@ -221,12 +270,27 @@ export const getCellValueFromTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     options,
   } = params;
   const preferWorksheet = options?.preferWorksheet !== false;
 
-  const target = resolveCellLocator(locator, leafColumns, headerDepth);
+  let effectiveLocator: ETableCellLocator = locator;
+  if (isDimensionCellLocator(locator)) {
+    const byDim = resolveDimensionCellLocator(
+      locator,
+      rows,
+      leafColumns,
+      headerDepth,
+    );
+    if (!byDim) {
+      return { success: false, value: null, displayValue: '', source: 'memory' };
+    }
+    effectiveLocator = { dataRow: byDim.dataRow, field: byDim.field };
+  }
+
+  const target = resolveCellLocator(effectiveLocator, leafColumns, headerDepth);
   if (!target || target.dataRow < 0 || target.dataRow >= rows.length) {
     return { success: false, value: null, displayValue: '', source: 'memory' };
   }
@@ -238,6 +302,7 @@ export const getCellValueFromTable = (params: {
       headerDepth,
       useTreeViewport,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     )
     : null;
@@ -279,6 +344,7 @@ export const getRowValueFromTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   options?: ETableGetRowValueOptions;
 }): ETableGetRowValueResult => {
@@ -290,6 +356,7 @@ export const getRowValueFromTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     options,
   } = params;
@@ -311,6 +378,7 @@ export const getRowValueFromTable = (params: {
       headerDepth,
       useTreeViewport,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     )
     : null;
@@ -352,6 +420,7 @@ export const setCellValueOnTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   recordChange?: (row: number, column: number, from: string, to: string) => void;
   options?: ETableSetCellValueOptions;
@@ -365,6 +434,7 @@ export const setCellValueOnTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     recordChange,
     options,
@@ -373,7 +443,21 @@ export const setCellValueOnTable = (params: {
   const syncMemory = options?.syncMemory !== false;
   const shouldRecord = options?.recordChange === true;
 
-  const target = resolveCellLocator(locator, leafColumns, headerDepth);
+  let effectiveLocator: ETableCellLocator = locator;
+  if (isDimensionCellLocator(locator)) {
+    const byDim = resolveDimensionCellLocator(
+      locator,
+      rows,
+      leafColumns,
+      headerDepth,
+    );
+    if (!byDim) {
+      return { success: false, appliedToSheet: false };
+    }
+    effectiveLocator = { dataRow: byDim.dataRow, field: byDim.field };
+  }
+
+  const target = resolveCellLocator(effectiveLocator, leafColumns, headerDepth);
   if (!target) {
     return { success: false, appliedToSheet: false };
   }
@@ -397,6 +481,7 @@ export const setCellValueOnTable = (params: {
     const projected = findProjectedDataRow(
       target.dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {
@@ -423,6 +508,86 @@ export const setCellValueOnTable = (params: {
   }
 
   return { success: true, appliedToSheet, ...target };
+};
+
+/** 将批量 patch 归一成 ETableCellLocator */
+export const resolvePatchToLocator = (
+  patch: ETableCellValuePatch,
+): ETableCellLocator | null => {
+  if (patch.locator !== undefined) {
+    return patch.locator;
+  }
+  if (patch.cell) {
+    return patch.cell;
+  }
+  if (typeof patch.dataRow === 'number' && patch.field) {
+    return { dataRow: patch.dataRow, field: patch.field };
+  }
+  if (
+    patch.rowId ||
+    patch.columnId ||
+    patch.field ||
+    patch.rowDimensions?.length ||
+    patch.columnDimensions?.length
+  ) {
+    return {
+      rowId: patch.rowId,
+      columnId: patch.columnId,
+      field: patch.field,
+      rowDimensions: patch.rowDimensions,
+      columnDimensions: patch.columnDimensions,
+    };
+  }
+  return null;
+};
+
+/**
+ * 批量按维度 / 定位更新多个单元格。
+ */
+export const setCellValuesOnTable = (params: {
+  patches: ETableCellValuePatch[];
+  leafColumns: ETableColumn[];
+  headerDepth: number;
+  worksheet: any | null;
+  rows: ETableRow[];
+  useTreeViewport: boolean;
+  getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
+  treeViewportWindowSize?: number;
+  recordChange?: (row: number, column: number, from: string, to: string) => void;
+  options?: ETableSetCellValueOptions;
+}): ETableSetCellValuesResult => {
+  const { patches, options, ...rest } = params;
+  const results: Array<ETableSetCellValueResult & { index: number }> = [];
+  let successCount = 0;
+
+  patches.forEach((patch, index) => {
+    const locator = resolvePatchToLocator(patch);
+    if (!locator) {
+      results.push({ index, success: false, appliedToSheet: false });
+      return;
+    }
+    const result = setCellValueOnTable({
+      ...rest,
+      locator,
+      value: patch.value,
+      options,
+    });
+    if (result.success) {
+      successCount += 1;
+    }
+    results.push({ index, ...result });
+  });
+
+  const total = patches.length;
+  const failedCount = total - successCount;
+  return {
+    success: failedCount === 0 && total > 0,
+    total,
+    successCount,
+    failedCount,
+    results,
+  };
 };
 
 export const resolveRowLocator = (
@@ -465,6 +630,7 @@ export const setRowValueOnTable = (params: {
   rows: ETableRow[];
   useTreeViewport: boolean;
   getLogicalDataRow?: (projectedDataRow: number) => number | null;
+  getProjectedDataRow?: (logicalRow: number) => number | null;
   treeViewportWindowSize?: number;
   recordChange?: (row: number, column: number, from: string, to: string) => void;
   options?: ETableSetCellValueOptions;
@@ -478,6 +644,7 @@ export const setRowValueOnTable = (params: {
     rows,
     useTreeViewport,
     getLogicalDataRow,
+    getProjectedDataRow,
     treeViewportWindowSize = 300,
     recordChange,
     options,
@@ -509,6 +676,7 @@ export const setRowValueOnTable = (params: {
     const projected = findProjectedDataRow(
       dataRow,
       getLogicalDataRow,
+      getProjectedDataRow,
       treeViewportWindowSize,
     );
     if (projected === null) {

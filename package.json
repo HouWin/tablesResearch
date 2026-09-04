@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "max dev",
     "build": "max build",
+    "typecheck:spreadjs": "tsc -p tsconfig.spreadjs.json --noEmit",
     "format": "prettier --cache --write .",
     "prepare": "husky",
     "postinstall": "max setup",

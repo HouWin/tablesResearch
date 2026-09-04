@@ -9,6 +9,8 @@
  * 注意：这是渲染层「分页」，不是面向用户的 UI 分页。
  */
 import { applyColumnTypes } from './columnTypes';
+import type { ETableCellToneContext } from './cellTone';
+import { buildRowSheetValues } from './cellTone';
 import type { ETableColumn, ETableRow } from './types';
 
 /** 超过该行数时启用视口按页懒写入（否则仍分片全量写入） */
@@ -46,45 +48,13 @@ export type VirtualDataLoader = {
   dispose: () => void;
 };
 
-const toRowValues = (row: ETableRow, leafColumns: ETableColumn[]) => {
-  const bgStyle = row.style?.bg
-    ? {
-        bg: {
-          rgb: row.style.bg.startsWith('#') ? row.style.bg : `#${row.style.bg}`,
-        },
-      }
-    : null;
+const toRowValues = (
+  row: ETableRow,
+  dataRow: number,
+  leafColumns: ETableColumn[],
+  cellTone: ETableCellToneContext | null,
+) => buildRowSheetValues(row, dataRow, leafColumns, cellTone);
 
-  return leafColumns.map((column) => {
-    const cell = row.data?.[column.id];
-    if (cell !== null && typeof cell === 'object') {
-      const styledCell = cell as { value?: unknown; style?: Record<string, unknown> };
-      if (styledCell.style || bgStyle) {
-        return {
-          v: styledCell.value ?? null,
-          s: {
-            ...(bgStyle || {}),
-            ...(styledCell.style || {}),
-            bg: (styledCell.style as any)?.bg || bgStyle?.bg,
-          },
-        };
-      }
-      return styledCell.value ?? null;
-    }
-    if (bgStyle) {
-      return {
-        v: cell ?? null,
-        s: bgStyle,
-      };
-    }
-    return cell ?? null;
-  });
-};
-
-/**
- * 视口虚拟写入：只写可见页，滚动时再补页。
- * Canvas 本身只绘制可视区；此处避免百万行一次 setValues 卡死主线程。
- */
 export const createVirtualDataLoader = (params: {
   univerAPI: any;
   worksheet: UniverWorksheet;
@@ -95,6 +65,7 @@ export const createVirtualDataLoader = (params: {
   pageSize?: number;
   initialPages?: number;
   prefetchRows?: number;
+  cellTone?: ETableCellToneContext | null;
   onPageLoaded?: (stats: VirtualRenderStats) => void;
 }): VirtualDataLoader | null => {
   const {
@@ -107,6 +78,7 @@ export const createVirtualDataLoader = (params: {
     pageSize = VIRTUAL_PAGE_SIZE,
     initialPages = VIRTUAL_INITIAL_PAGES,
     prefetchRows = VIRTUAL_PREFETCH_ROWS,
+    cellTone = null,
     onPageLoaded,
   } = params;
 
@@ -146,7 +118,9 @@ export const createVirtualDataLoader = (params: {
     if (!slice.length) {
       return;
     }
-    const values = slice.map((row) => toRowValues(row, leafColumns));
+    const values = slice.map((row, index) =>
+      toRowValues(row, offset + index, leafColumns, cellTone),
+    );
     const sheetRow = dataStartRow + offset;
     worksheet.getRange(sheetRow, 0, values.length, leafColumns.length).setValues(values);
 

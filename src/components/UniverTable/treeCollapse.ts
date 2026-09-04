@@ -9,7 +9,17 @@
  * 行数 ≥ 5000 时由 treeViewport.ts 接管（视口投影，不再全表 hideRows）。
  */
 import type { ETableMerge, ETableRowGroup, ETableTreeToggleBinding } from './types';
-import { buildMergeIndexByAnchorRow, reapplyMergesForRowSpan } from './renderer';
+import { reapplyMergesForRowSpan, reapplyMergesInDataRange } from './renderer';
+import { mergeCellStyle } from './cellTone';
+import {
+  buildRegionIndex,
+  buildToggleMaps,
+  captureScrollAnchor,
+  collectRowGroups,
+  createMergeReapplyScheduler,
+  restoreScrollAnchor,
+  scheduleIdleWork,
+} from './treeShared';
 import { VIRTUAL_PAGE_SIZE } from './virtualRender';
 
 const LARGE_TOGGLE_COUNT = 200;
@@ -17,25 +27,7 @@ const DEFAULT_TOGGLE_BATCH_SIZE = 60;
 /** 单次 SetRowHidden 命令内 ranges 上限，避免极端场景 mutation 过久阻塞 */
 const BULK_ROW_RANGE_CHUNK = 4000;
 const SET_ROWS_HIDDEN_CMD = 'sheet.command.set-rows-hidden';
-const SET_ROWS_VISIBLE_CMD = 'sheet.command.set-specific-rows-visible';
 const ROW_RANGE_TYPE = 1;
-
-/**
- * 收集全部行分组（含嵌套）。
- */
-const collectGroups = (groups: ETableRowGroup[]): ETableRowGroup[] => {
-  const result: ETableRowGroup[] = [];
-  const walk = (list: ETableRowGroup[]) => {
-    list.forEach((group) => {
-      result.push(group);
-      if (group.children?.length) {
-        walk(group.children);
-      }
-    });
-  };
-  walk(groups);
-  return result;
-};
 
 const yieldToMain = () =>
   new Promise<void>((resolve) => {
@@ -140,54 +132,6 @@ const hideCoalescedRowRanges = (
   }
 };
 
-const showCoalescedRowRanges = (
-  univerAPI: any,
-  worksheet: any,
-  ranges: Array<{ start: number; count: number }>,
-) => {
-  if (!ranges.length) {
-    return;
-  }
-  const merged = mergeRowRanges(ranges);
-  const ctx = getSheetCommandContext(worksheet);
-  if (!ctx.unitId || !ctx.subUnitId || typeof univerAPI?.syncExecuteCommand !== 'function') {
-    merged.forEach(({ start, count }) => {
-      try {
-        if (typeof worksheet.showRows === 'function') {
-          worksheet.showRows(start, count);
-        } else {
-          const range = worksheet.getRange(start, 0, count, 1);
-          worksheet.unhideRow?.(range);
-        }
-      } catch (error) {
-        console.warn('[ETable] coalesced showRows failed', { start, count, error });
-      }
-    });
-    return;
-  }
-
-  const sheetRanges = toSheetRowRanges(merged, ctx.endColumn);
-  for (let offset = 0; offset < sheetRanges.length; offset += BULK_ROW_RANGE_CHUNK) {
-    const chunk = sheetRanges.slice(offset, offset + BULK_ROW_RANGE_CHUNK);
-    try {
-      univerAPI.syncExecuteCommand(SET_ROWS_VISIBLE_CMD, {
-        unitId: ctx.unitId,
-        subUnitId: ctx.subUnitId,
-        ranges: chunk,
-      });
-    } catch (error) {
-      console.warn('[ETable] bulk showRows failed', { count: chunk.length, error });
-      chunk.forEach((range) => {
-        try {
-          worksheet.showRows?.(range.startRow, range.endRow - range.startRow + 1);
-        } catch (innerError) {
-          console.warn('[ETable] fallback showRows failed', { range, innerError });
-        }
-      });
-    }
-  }
-};
-
 const setRowsCollapsed = (
   worksheet: any,
   dataStartRow: number,
@@ -231,7 +175,7 @@ const setRowsCollapsed = (
           mergeFix.afterReapply?.();
         };
         if (rowOptions?.deferMergeFix) {
-          requestAnimationFrame(runMergeFix);
+          scheduleIdleWork(runMergeFix);
         } else {
           runMergeFix();
         }
@@ -268,102 +212,6 @@ export interface ETableTreeCollapseApi {
   ready: Promise<void>;
 }
 
-const buildRegionIndex = (
-  toggles: ETableTreeToggleBinding[],
-  categoryToggles: ETableTreeToggleBinding[],
-  groupMap: Map<string, ETableRowGroup>,
-) => {
-  const regionTogglesByCategoryId = new Map<string, ETableTreeToggleBinding[]>();
-  const categoryBounds = categoryToggles
-    .map((categoryToggle) => {
-      const categoryGroup = groupMap.get(categoryToggle.groupId);
-      if (!categoryGroup) {
-        return null;
-      }
-      return {
-        categoryId: categoryToggle.groupId,
-        toggleRow: categoryToggle.row,
-        start: categoryGroup.startRow,
-        end: categoryGroup.startRow + categoryGroup.count,
-      };
-    })
-    .filter(Boolean) as Array<{
-    categoryId: string;
-    toggleRow: number;
-    start: number;
-    end: number;
-  }>;
-
-  categoryBounds.sort((a, b) => a.toggleRow - b.toggleRow);
-  categoryBounds.forEach((bound) => {
-    regionTogglesByCategoryId.set(bound.categoryId, []);
-  });
-
-  const regionToggles = toggles.filter((toggle) => toggle.kind === 'region');
-  regionToggles.sort((a, b) => a.row - b.row);
-
-  const resolveCategoryId = (
-    toggle: ETableTreeToggleBinding,
-    groupStart: number | undefined,
-    groupEnd: number,
-  ): string | null => {
-    if (!categoryBounds.length) {
-      return null;
-    }
-    let lo = 0;
-    let hi = categoryBounds.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (categoryBounds[mid].toggleRow <= toggle.row) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    if (idx < 0) {
-      return null;
-    }
-
-    const candidates: number[] = [idx];
-    if (idx > 0) {
-      candidates.unshift(idx - 1);
-    }
-    if (idx + 1 < categoryBounds.length) {
-      candidates.push(idx + 1);
-    }
-
-    for (let i = 0; i < candidates.length; i += 1) {
-      const bound = categoryBounds[candidates[i]];
-      if (toggle.groupId === bound.categoryId) {
-        continue;
-      }
-      const onSummaryRow = toggle.row === bound.toggleRow;
-      const headerInCategory = toggle.row >= bound.start && toggle.row < bound.end;
-      const bodyInCategory =
-        groupStart !== undefined && groupStart >= bound.start && groupEnd <= bound.end;
-      if (onSummaryRow || headerInCategory || bodyInCategory) {
-        return bound.categoryId;
-      }
-    }
-    return null;
-  };
-
-  for (let i = 0; i < regionToggles.length; i += 1) {
-    const toggle = regionToggles[i];
-    const regionGroup = groupMap.get(toggle.groupId);
-    const groupStart = regionGroup?.startRow;
-    const groupEnd = regionGroup ? regionGroup.startRow + regionGroup.count : -1;
-    const categoryId = resolveCategoryId(toggle, groupStart, groupEnd);
-    if (categoryId) {
-      regionTogglesByCategoryId.get(categoryId)!.push(toggle);
-    }
-  }
-
-  return regionTogglesByCategoryId;
-};
-
 /**
  * 树形 UI：用隐藏行实现折叠，折叠箭头只在单元格内（▶/▼），不使用左侧大纲栏。
  */
@@ -391,19 +239,55 @@ export const setupTreeCellCollapse = (
   const useBatchToggle = toggles.length >= LARGE_TOGGLE_COUNT;
   const merges = options?.merges ?? [];
   const skipMergeFix = options?.skipMergeFix ?? !merges.length;
-  const mergesByAnchorRow = skipMergeFix ? new Map() : buildMergeIndexByAnchorRow(merges);
   const ensureDataRows = options?.ensureDataRows;
+
+  let pendingMergeRange: { start: number; end: number } | null = null;
+  const flushMergeReapply = createMergeReapplyScheduler(() => {
+    if (!pendingMergeRange || skipMergeFix || !merges.length) {
+      pendingMergeRange = null;
+      return;
+    }
+    const { start, end } = pendingMergeRange;
+    pendingMergeRange = null;
+    reapplyMergesInDataRange(worksheet, merges, dataStartRow, start, end);
+  });
+  const queueMergeReapply = (rangeStart: number, rangeEnd: number) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    if (!pendingMergeRange) {
+      pendingMergeRange = { start: rangeStart, end: rangeEnd };
+    } else {
+      pendingMergeRange.start = Math.min(pendingMergeRange.start, rangeStart);
+      pendingMergeRange.end = Math.max(pendingMergeRange.end, rangeEnd);
+    }
+    flushMergeReapply();
+  };
+
+  const groupMap = new Map(
+    collectRowGroups(rowGroups).map((group) => [group.id, group]),
+  );
+
+  const collapsedState = new Map(
+    toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
+  );
+
+  const { toggleByGroupId, toggleByCell, togglesByLogicalRow: togglesByRow } =
+    buildToggleMaps(toggles);
+
+  const categoryToggles = toggles.filter((item) => item.kind === 'category');
+  const regionTogglesByCategoryId = buildRegionIndex(toggles, categoryToggles, groupMap);
+
+  const captureSheetScroll = () => captureScrollAnchor(worksheet, dataStartRow);
+  const restoreSheetScroll = (anchor: { row: number; column: number } | null) =>
+    restoreScrollAnchor(worksheet, anchor);
 
   const mergeFixForRegion = (anchorRow: number, group: Pick<ETableRowGroup, 'count'>) => {
     if (skipMergeFix) {
       return undefined;
     }
-    const relevant = mergesByAnchorRow.get(anchorRow);
-    if (!relevant?.length) {
-      return undefined;
-    }
     return {
-      merges: relevant,
+      merges,
       anchorRow,
       afterReapply: () => {
         const categoryToggle = togglesByRow.get(anchorRow)?.find(
@@ -417,6 +301,33 @@ export const setupTreeCellCollapse = (
         }
       },
     };
+  };
+
+  const reapplyMergesForToggle = (toggle: ETableTreeToggleBinding) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    const group = groupMap.get(toggle.groupId);
+    if (!group) {
+      return;
+    }
+    const rangeStart = toggle.row;
+    const rangeEnd = toggle.row + 1 + group.count;
+    queueMergeReapply(rangeStart, rangeEnd);
+  };
+
+  const reapplyMergesForCategory = (categoryGroupId: string) => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    const categoryToggle = toggleByGroupId.get(categoryGroupId);
+    const categoryGroup = groupMap.get(categoryGroupId);
+    if (!categoryToggle || !categoryGroup?.count) {
+      return;
+    }
+    const rangeStart = categoryToggle.row;
+    const rangeEnd = categoryGroup.startRow + categoryGroup.count;
+    queueMergeReapply(rangeStart, rangeEnd);
   };
 
   const toggleGroupRows = (
@@ -437,41 +348,14 @@ export const setupTreeCellCollapse = (
       }
     }
     setRowsCollapsed(worksheet, dataStartRow, group, collapsed, mergeFix, {
-      deferMergeFix: useBatchToggle,
+      deferMergeFix: Boolean(mergeFix && !collapsed),
     });
   };
-
-  const groupMap = new Map(
-    collectGroups(rowGroups).map((group) => [group.id, group]),
-  );
-
-  const collapsedState = new Map(
-    toggles.map((toggle) => [toggle.groupId, Boolean(toggle.collapsed)]),
-  );
-
-  const toggleByGroupId = new Map(toggles.map((toggle) => [toggle.groupId, toggle]));
-  const toggleByCell = new Map<string, ETableTreeToggleBinding>();
-  const togglesByRow = new Map<number, ETableTreeToggleBinding[]>();
-
-  toggles.forEach((toggle) => {
-    toggleByCell.set(`${toggle.row}:${toggle.column}`, toggle);
-    const rowToggles = togglesByRow.get(toggle.row) ?? [];
-    rowToggles.push(toggle);
-    togglesByRow.set(toggle.row, rowToggles);
-  });
-
-  const categoryToggles = toggles.filter((item) => item.kind === 'category');
-  const regionTogglesByCategoryId = buildRegionIndex(toggles, categoryToggles, groupMap);
 
   /** 品类展开时需隐藏的 Region 明细行（预计算，避免每次 toggle 遍历数百 Region） */
   const categoryRegionHideItems = new Map<
     string,
     Array<{ range: { start: number; count: number }; regionGroupId: string }>
-  >();
-  /** 品类展开且 Region 全折叠时仅需 show 的汇总行（避免整块 unhide 后再 hide 上千行） */
-  const categorySummaryShowRanges = new Map<
-    string,
-    Array<{ start: number; count: number }>
   >();
   categoryToggles.forEach((categoryToggle) => {
     const regions = regionTogglesByCategoryId.get(categoryToggle.groupId) ?? [];
@@ -479,7 +363,6 @@ export const setupTreeCellCollapse = (
       regionGroupId: string;
       range: { start: number; count: number };
     }> = [];
-    const summaryRows: Array<{ start: number; count: number }> = [];
     regions.forEach((regionToggle) => {
       const regionGroup = groupMap.get(regionToggle.groupId);
       if (!regionGroup?.count) {
@@ -492,26 +375,24 @@ export const setupTreeCellCollapse = (
           count: regionGroup.count,
         },
       });
-      if (regionToggle.row !== categoryToggle.row) {
-        summaryRows.push({ start: dataStartRow + regionToggle.row, count: 1 });
-      }
     });
     categoryRegionHideItems.set(categoryToggle.groupId, items);
-    categorySummaryShowRanges.set(categoryToggle.groupId, summaryRows);
   });
 
-  const allRegionsCollapsedInCategory = (categoryGroupId: string) => {
-    const regions = regionTogglesByCategoryId.get(categoryGroupId);
-    if (!regions?.length) {
-      return true;
-    }
-    for (let i = 0; i < regions.length; i += 1) {
-      if (!collapsedState.get(regions[i].groupId)) {
-        return false;
-      }
-    }
-    return true;
-  };
+  const rowInCategoryBody = (
+    row: number,
+    categoryGroup: Pick<ETableRowGroup, 'startRow' | 'count'>,
+  ) =>
+    row >= categoryGroup.startRow &&
+    row < categoryGroup.startRow + categoryGroup.count;
+
+  const rangeInCategoryBody = (
+    start: number,
+    count: number,
+    categoryGroup: Pick<ETableRowGroup, 'startRow' | 'count'>,
+  ) =>
+    start >= categoryGroup.startRow &&
+    start + count <= categoryGroup.startRow + categoryGroup.count;
 
   const syncCategoryRegionCollapsedState = (categoryGroupId: string, collapsed: boolean) => {
     const regions = regionTogglesByCategoryId.get(categoryGroupId);
@@ -536,7 +417,7 @@ export const setupTreeCellCollapse = (
     try {
       worksheet.getRange(dataStartRow + toggle.row, toggle.column).setValue({
         v: text,
-        s: { bl: 1 },
+        s: mergeCellStyle({ bl: 1 }),
       });
     } catch (error) {
       console.warn('[ETable] update tree toggle label failed', error);
@@ -580,71 +461,108 @@ export const setupTreeCellCollapse = (
     );
   };
 
+  const reapplyAllMerges = () => {
+    if (skipMergeFix || !merges.length) {
+      return;
+    }
+    let maxEnd = 0;
+    merges.forEach((merge) => {
+      maxEnd = Math.max(maxEnd, merge.row + merge.rowSpan);
+    });
+    queueMergeReapply(0, maxEnd);
+  };
+
   /**
-   * 品类展开：整块 unhide 子树 + 批量 hide 仍折叠的 Region 明细。
+   * 品类展开：先整块 unhide，再藏仍折叠的嵌套品类与 Region 明细。
+   * 这样只露出直接子组织汇总行，不会把孙节点一并展开，也不会漏掉兄弟节点。
    */
   const showCategoryBody = async (categoryGroupId: string) => {
-
-    if (allRegionsCollapsedInCategory(categoryGroupId)) {
-      const showRanges = categorySummaryShowRanges.get(categoryGroupId) ?? [];
-      if (showRanges.length) {
-        showCoalescedRowRanges(univerAPI, worksheet, showRanges);
-      } else {
-        showCategoryBodyRange(categoryGroupId);
-      }
+    const categoryGroup = groupMap.get(categoryGroupId);
+    if (!categoryGroup?.count) {
       return;
     }
 
-    const categoryGroup = groupMap.get(categoryGroupId);
+    showCategoryBodyRange(categoryGroupId);
 
-    if (categoryGroup?.count) {
-      showCategoryBodyRange(categoryGroupId);
-    }
+    // 仍折叠的嵌套品类：隐藏其 body（汇总行保留在父级下可见）
+    const nestedCollapsed = categoryToggles
+      .filter((toggle) => {
+        if (toggle.groupId === categoryGroupId) {
+          return false;
+        }
+        if (!collapsedState.get(toggle.groupId)) {
+          return false;
+        }
+        if (!groupMap.get(toggle.groupId)?.count) {
+          return false;
+        }
+        return rowInCategoryBody(toggle.row, categoryGroup);
+      })
+      .sort((a, b) => {
+        const ga = groupMap.get(a.groupId)!;
+        const gb = groupMap.get(b.groupId)!;
+        return ga.count - gb.count;
+      });
 
-    const hideItems = categoryRegionHideItems.get(categoryGroupId) ?? [];
-    const hideRanges = hideItems
-      .filter((item) => collapsedState.get(item.regionGroupId))
-      .map((item) => item.range);
+    nestedCollapsed.forEach((toggle) => {
+      hideCategoryBody(toggle.groupId);
+    });
+
+    // 当前品类及已展开嵌套品类下，仍折叠的 Region 明细
+    const categoryIdsToClean = new Set<string>([categoryGroupId]);
+    categoryToggles.forEach((toggle) => {
+      if (toggle.groupId === categoryGroupId) {
+        return;
+      }
+      if (collapsedState.get(toggle.groupId)) {
+        return;
+      }
+      if (rowInCategoryBody(toggle.row, categoryGroup)) {
+        categoryIdsToClean.add(toggle.groupId);
+      }
+    });
+
+    const hideRanges: Array<{ start: number; count: number }> = [];
+    categoryIdsToClean.forEach((id) => {
+      const hideItems = categoryRegionHideItems.get(id) ?? [];
+      hideItems.forEach((item) => {
+        if (!collapsedState.get(item.regionGroupId)) {
+          return;
+        }
+        // 明细行需落在当前展开品类 body 内（嵌套已折叠的会随 hideCategoryBody 处理）
+        const logicalStart = item.range.start - dataStartRow;
+        if (
+          rangeInCategoryBody(logicalStart, item.range.count, categoryGroup)
+        ) {
+          hideRanges.push(item.range);
+        }
+      });
+    });
+
+    // 兜底：索引外但仍在 body 内的折叠 Region
+    toggles.forEach((toggle) => {
+      if (toggle.kind !== 'region' || !collapsedState.get(toggle.groupId)) {
+        return;
+      }
+      const regionGroup = groupMap.get(toggle.groupId);
+      if (!regionGroup?.count) {
+        return;
+      }
+      if (
+        rangeInCategoryBody(regionGroup.startRow, regionGroup.count, categoryGroup)
+      ) {
+        hideRanges.push({
+          start: dataStartRow + regionGroup.startRow,
+          count: regionGroup.count,
+        });
+      }
+    });
 
     if (hideRanges.length) {
       hideCoalescedRowRanges(univerAPI, worksheet, hideRanges);
     }
 
-    if (skipMergeFix || !merges.length) {
-      return;
-    }
-
-    const expandedItems = hideItems.filter(
-      (item) => !collapsedState.get(item.regionGroupId),
-    );
-    if (!expandedItems.length) {
-      return;
-    }
-
-    const expandOne = (item: (typeof hideItems)[number]) => {
-      const regionGroup = groupMap.get(item.regionGroupId);
-      const regionToggle = toggleByGroupId.get(item.regionGroupId);
-      if (!regionGroup || !regionToggle) {
-        return;
-      }
-      toggleGroupRows(
-        regionGroup,
-        false,
-        mergeFixForRegion(regionToggle.row, regionGroup),
-      );
-    };
-
-    if (useBatchToggle && expandedItems.length > 20) {
-      for (let offset = 0; offset < expandedItems.length; offset += batchSize) {
-        expandedItems.slice(offset, offset + batchSize).forEach(expandOne);
-        if (offset + batchSize < expandedItems.length) {
-          await yieldToMain();
-        }
-      }
-      return;
-    }
-
-    expandedItems.forEach(expandOne);
+    reapplyMergesForCategory(categoryGroupId);
   };
 
   const hideRegionToggle = (toggle: ETableTreeToggleBinding) => {
@@ -730,6 +648,9 @@ export const setupTreeCellCollapse = (
         ? mergeFixForRegion(toggle.row, group)
         : undefined,
     );
+    if (!collapsed && toggle.kind === 'region') {
+      reapplyMergesForToggle(toggle);
+    }
   };
 
   const initDefaultCollapse = async () => {
@@ -818,6 +739,11 @@ export const setupTreeCellCollapse = (
     }
 
     const next = !collapsedState.get(groupId);
+    const scrollAnchor = captureSheetScroll();
+
+    const restoreScroll = () => {
+      restoreSheetScroll(scrollAnchor);
+    };
 
     const runCategoryBody = async () => {
       if (next) {
@@ -829,13 +755,17 @@ export const setupTreeCellCollapse = (
     };
 
     const runToggle = async () => {
-      if (toggle.kind === 'category' && useBatchToggle) {
-        await runCategoryBody();
-      } else {
-        const result = applyCollapsed(groupId, next);
-        if (result instanceof Promise) {
-          await result;
+      try {
+        if (toggle.kind === 'category' && useBatchToggle) {
+          await runCategoryBody();
+        } else {
+          const result = applyCollapsed(groupId, next);
+          if (result instanceof Promise) {
+            await result;
+          }
         }
+      } finally {
+        restoreScroll();
       }
     };
 
@@ -857,34 +787,76 @@ export const setupTreeCellCollapse = (
   };
 
   const expandAll = () => {
-    categoryToggles.forEach((toggle) => {
-      applyCollapsed(toggle.groupId, false);
-    });
+    const scrollAnchor = captureSheetScroll();
 
-    if (!useBatchToggle) {
+    const expandCollapsedRegions = () => {
       toggles
         .filter((toggle) => toggle.kind === 'region' && collapsedState.get(toggle.groupId))
         .forEach((toggle) => {
-          const group = groupMap.get(toggle.groupId);
-          if (group) {
-            setRowsCollapsed(worksheet, dataStartRow, group, true);
-          }
+          applyCollapsed(toggle.groupId, false);
         });
+    };
+
+    const expandCategories = async () => {
+      for (let i = 0; i < categoryToggles.length; i += 1) {
+        const toggle = categoryToggles[i];
+        if (collapsedState.get(toggle.groupId)) {
+          await applyCollapsed(toggle.groupId, false);
+        }
+        if (useBatchToggle) {
+          await yieldToMain();
+        }
+      }
+    };
+
+    if (useBatchToggle) {
+      enqueueToggleTask(async () => {
+        await expandCategories();
+        expandCollapsedRegions();
+        reapplyAllMerges();
+        restoreSheetScroll(scrollAnchor);
+      });
       return;
     }
 
-    enqueueToggleTask(async () => {
-      const collapsedRegions = toggles.filter(
-        (toggle) => toggle.kind === 'region' && collapsedState.get(toggle.groupId),
-      );
-      await batchHideRegionToggles(collapsedRegions);
+    categoryToggles.forEach((toggle) => {
+      if (collapsedState.get(toggle.groupId)) {
+        applyCollapsed(toggle.groupId, false);
+      }
     });
+    expandCollapsedRegions();
+    reapplyAllMerges();
+    restoreSheetScroll(scrollAnchor);
   };
 
   const collapseAll = () => {
-    categoryToggles.forEach((toggle) => {
-      applyCollapsed(toggle.groupId, true, { skipLabel: false });
-    });
+    const scrollAnchor = captureSheetScroll();
+
+    const collapseExpanded = async () => {
+      toggles
+        .filter((toggle) => toggle.kind === 'region' && !collapsedState.get(toggle.groupId))
+        .forEach((toggle) => {
+          applyCollapsed(toggle.groupId, true);
+        });
+
+      for (let i = 0; i < categoryToggles.length; i += 1) {
+        const toggle = categoryToggles[i];
+        if (!collapsedState.get(toggle.groupId)) {
+          applyCollapsed(toggle.groupId, true, { skipLabel: false });
+        }
+        if (useBatchToggle) {
+          await yieldToMain();
+        }
+      }
+      restoreSheetScroll(scrollAnchor);
+    };
+
+    if (useBatchToggle) {
+      enqueueToggleTask(collapseExpanded);
+      return;
+    }
+
+    void collapseExpanded();
   };
 
   const groupCoverIntervals = toggles

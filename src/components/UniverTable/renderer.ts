@@ -7,10 +7,23 @@
  * - renderMerges：单元格合并（含视口模式下的逻辑锚点合并）
  * - ensureSheetCapacity：写入前扩容行列，避免 Range out of bounds
  */
-import { VerticalAlign } from '@univerjs/core';
+import { HorizontalAlign, VerticalAlign } from '@univerjs/core';
 import { buildHeaderLayout } from './layout';
 import { ASYNC_RENDER_ROW_THRESHOLD } from './treeDataGenerator';
 import type { ETableCell, ETableColumn, ETableMerge, ETableRow } from './types';
+import type { ETableCellToneContext } from './cellTone';
+import { buildRowSheetValues, mergeCellStyle } from './cellTone';
+
+/** 内容区：仅垂直居中（水平保持默认/按列） */
+export const VERTICAL_MIDDLE_STYLE = {
+  vt: VerticalAlign.MIDDLE,
+} as const;
+
+/** 表头：水平 + 垂直居中 */
+export const HEADER_CENTER_STYLE = {
+  ht: HorizontalAlign.CENTER,
+  vt: VerticalAlign.MIDDLE,
+} as const;
 
 /**
  * =========================================================
@@ -175,8 +188,11 @@ export const renderHeader = (worksheet: UniverWorksheet, columns: ETableColumn[]
     }
     // 获取当前表头区域。
     const range = worksheet.getRange(item.startRow, item.startColumn, item.rowSpan, item.columnSpan);
-    // 写入标题。
-    range.setValue(item.title);
+    // 写入标题（表头上下左右居中）
+    range.setValue({
+      v: item.title,
+      s: { ...HEADER_CENTER_STYLE },
+    });
 
     /**
      * -----------------------------------------------------
@@ -262,7 +278,12 @@ export const renderData = (
   rows: ETableRow[] = [],
   leafColumns: ETableColumn[] = [],
   startRow: number,
-  options?: { virtualScroll?: boolean; chunkSize?: number; skipWrite?: boolean },
+  options?: {
+    virtualScroll?: boolean;
+    chunkSize?: number;
+    skipWrite?: boolean;
+    cellTone?: ETableCellToneContext | null;
+  },
 ): number => {
   // 如果工作表不存在，或者没有数据，或者没有叶子列，则直接返回
   if (!worksheet || !rows.length || !leafColumns.length) {
@@ -287,17 +308,16 @@ export const renderData = (
 
   // 如果使用单次写入，则直接写入
   if (useSingleWrite) {
-    // 构建行值
-    const values = buildRowValues(rows, leafColumns);
-    // 写入行值
+    const values = buildRowValues(rows, leafColumns, { cellTone: options?.cellTone });
     worksheet.getRange(startRow, 0, values.length, leafColumns.length).setValues(values);
   } else {
-    // 分片写入
     for (let offset = 0; offset < rows.length; offset += chunkSize) {
-      // 计算分片大小
       const limit = Math.min(chunkSize, rows.length - offset);
-      // 构建行值
-      const values = buildRowValues(rows, leafColumns, { offset, limit });
+      const values = buildRowValues(rows, leafColumns, {
+        offset,
+        limit,
+        cellTone: options?.cellTone,
+      });
       // 分片写入
       worksheet.getRange(startRow + offset, 0, values.length, leafColumns.length).setValues(values);
     }
@@ -319,9 +339,14 @@ export const renderData = (
 const buildRowValues = (
   rows: ETableRow[],
   leafColumns: ETableColumn[],
-  options?: { skipRowBackgrounds?: boolean; offset?: number; limit?: number },
+  options?: {
+    skipRowBackgrounds?: boolean;
+    offset?: number;
+    limit?: number;
+    cellTone?: ETableCellToneContext | null;
+  },
 ) => {
-  // 是否跳过行背景
+  const cellTone = options?.cellTone ?? null;
   const skipRowBackgrounds = options?.skipRowBackgrounds ?? false;
   // 偏移量
   const offset = options?.offset ?? 0;
@@ -337,11 +362,18 @@ const buildRowValues = (
   const colIds = new Array<string>(colCount);
   // 遍历列
   for (let c = 0; c < colCount; c += 1) {
-    // 设置列ID
     colIds[c] = leafColumns[c].id;
   }
 
-  // 如果跳过行背景，则创建矩阵
+  if (cellTone) {
+    const matrix = new Array(rowCount);
+    for (let r = 0; r < rowCount; r += 1) {
+      const dataRow = offset + r;
+      matrix[r] = buildRowSheetValues(rows[dataRow], dataRow, leafColumns, cellTone);
+    }
+    return matrix;
+  }
+
   if (skipRowBackgrounds) {
     // 创建矩阵
     const matrix = new Array(rowCount);
@@ -461,6 +493,7 @@ export const renderDataAsync = async (
     virtualScroll?: boolean;
     chunkSize?: number;
     skipRowBackgrounds?: boolean;
+    cellTone?: ETableCellToneContext | null;
   },
 ): Promise<void> => {
   // 如果工作表不存在，或者没有数据，或者没有叶子列，或者数据开始行小于0，则直接返回
@@ -473,9 +506,12 @@ export const renderDataAsync = async (
   // 计算分片大小
   const chunkSize = resolveDataChunkSize(rows.length, options?.chunkSize);
   // 创建值选项
+  const cellTone = options?.cellTone ?? null;
   const valueOptions = {
-    // 是否跳过行背景
-    skipRowBackgrounds: options?.skipRowBackgrounds ?? rows.length > 2000,
+    skipRowBackgrounds: cellTone
+      ? false
+      : options?.skipRowBackgrounds ?? rows.length > 2000,
+    cellTone,
   };
   // 是否在分片之间让出主线程
   const yieldBetweenChunks = rows.length >= ASYNC_RENDER_ROW_THRESHOLD;
@@ -584,10 +620,195 @@ export const renderRowHeights = (worksheet: UniverWorksheet, startRow: number, c
 };
 
 /**
- * =========================================================
- * 自定义合并
- * =========================================================
+ * 去掉水平对齐，只保留/写入垂直居中（避免上次强制水平居中残留到数据区）。
  */
+const withVerticalMiddleOnly = (style?: Record<string, unknown>) => {
+  const next = { ...(style || {}) };
+  delete next.ht;
+  return mergeCellStyle({
+    ...next,
+    ...VERTICAL_MIDDLE_STYLE,
+  });
+};
+
+const withHeaderCenter = (style?: Record<string, unknown>) =>
+  mergeCellStyle({
+    ...(style || {}),
+    ...HEADER_CENTER_STYLE,
+  });
+
+/**
+ * 表头区域强制上下左右居中（merge / 数字格式之后调用）。
+ */
+export const applyHeaderCenterAlign = (
+  worksheet: UniverWorksheet,
+  headerRowCount: number,
+  columnCount: number,
+) => {
+  if (!worksheet || headerRowCount <= 0 || columnCount <= 0) {
+    return;
+  }
+
+  const range = worksheet.getRange(0, 0, headerRowCount, columnCount);
+  if (!range) {
+    return;
+  }
+
+  try {
+    const rawMatrix =
+      typeof range.getCellDatas === 'function'
+        ? range.getCellDatas()
+        : typeof range.getValues === 'function'
+          ? range.getValues()
+          : null;
+
+    if (Array.isArray(rawMatrix) && rawMatrix.length) {
+      const matrix = rawMatrix.map((row: unknown) => {
+        const cells = Array.isArray(row) ? row : [];
+        const out = new Array(columnCount);
+        for (let c = 0; c < columnCount; c += 1) {
+          const cell = cells[c];
+          if (cell !== null && typeof cell === 'object' && !Array.isArray(cell)) {
+            const data = cell as { v?: unknown; s?: Record<string, unknown> };
+            out[c] = {
+              ...data,
+              v: data.v ?? null,
+              s: withHeaderCenter(
+                typeof data.s === 'object' && data.s ? data.s : {},
+              ),
+            };
+          } else {
+            out[c] = {
+              v: cell ?? null,
+              s: { ...HEADER_CENTER_STYLE },
+            };
+          }
+        }
+        return out;
+      });
+      range.setValues(matrix);
+      return;
+    }
+  } catch (error) {
+    console.warn('[ETable] applyHeaderCenterAlign batch failed', error);
+  }
+
+  for (let r = 0; r < headerRowCount; r += 1) {
+    for (let c = 0; c < columnCount; c += 1) {
+      try {
+        const cellRange = worksheet.getRange(r, c);
+        const raw =
+          typeof cellRange.getCellData === 'function'
+            ? cellRange.getCellData()
+            : null;
+        const prevStyle =
+          raw && typeof raw === 'object' && raw.s && typeof raw.s === 'object'
+            ? (raw.s as Record<string, unknown>)
+            : {};
+        const value =
+          raw && typeof raw === 'object' && 'v' in raw
+            ? (raw as { v?: unknown }).v
+            : typeof cellRange.getValue === 'function'
+              ? cellRange.getValue()
+              : null;
+        cellRange.setValue({
+          v: value ?? null,
+          s: withHeaderCenter(prevStyle),
+        });
+      } catch {
+        // ignore single cell
+      }
+    }
+  }
+};
+
+/**
+ * 对指定区域强制垂直居中（不改水平对齐）。
+ * 在 setNumberFormat / merge 之后调用，避免格式化冲掉对齐。
+ */
+export const applyVerticalMiddleAlign = (
+  worksheet: UniverWorksheet,
+  startRow: number,
+  rowCount: number,
+  columnCount: number,
+) => {
+  if (!worksheet || rowCount <= 0 || columnCount <= 0) {
+    return;
+  }
+
+  const range = worksheet.getRange(startRow, 0, rowCount, columnCount);
+  if (!range) {
+    return;
+  }
+
+  try {
+    const rawMatrix =
+      typeof range.getCellDatas === 'function'
+        ? range.getCellDatas()
+        : typeof range.getValues === 'function'
+          ? range.getValues()
+          : null;
+
+    if (Array.isArray(rawMatrix) && rawMatrix.length) {
+      const matrix = rawMatrix.map((row: unknown) => {
+        const cells = Array.isArray(row) ? row : [];
+        const out = new Array(columnCount);
+        for (let c = 0; c < columnCount; c += 1) {
+          const cell = cells[c];
+          if (cell !== null && typeof cell === 'object' && !Array.isArray(cell)) {
+            const data = cell as { v?: unknown; s?: Record<string, unknown> };
+            out[c] = {
+              ...data,
+              v: data.v ?? null,
+              s: withVerticalMiddleOnly(
+                typeof data.s === 'object' && data.s ? data.s : {},
+              ),
+            };
+          } else {
+            out[c] = {
+              v: cell ?? null,
+              s: { ...VERTICAL_MIDDLE_STYLE },
+            };
+          }
+        }
+        return out;
+      });
+      range.setValues(matrix);
+      return;
+    }
+  } catch (error) {
+    console.warn('[ETable] applyVerticalMiddleAlign batch failed', error);
+  }
+
+  // 兜底：逐格补齐（费用预算等小表足够）
+  for (let r = 0; r < rowCount; r += 1) {
+    for (let c = 0; c < columnCount; c += 1) {
+      try {
+        const cellRange = worksheet.getRange(startRow + r, c);
+        const raw =
+          typeof cellRange.getCellData === 'function'
+            ? cellRange.getCellData()
+            : null;
+        const prevStyle =
+          raw && typeof raw === 'object' && raw.s && typeof raw.s === 'object'
+            ? (raw.s as Record<string, unknown>)
+            : {};
+        const value =
+          raw && typeof raw === 'object' && 'v' in raw
+            ? (raw as { v?: unknown }).v
+            : typeof cellRange.getValue === 'function'
+              ? cellRange.getValue()
+              : null;
+        cellRange.setValue({
+          v: value ?? null,
+          s: withVerticalMiddleOnly(prevStyle),
+        });
+      } catch {
+        // ignore single cell failure
+      }
+    }
+  }
+};
 
 /**
  * 纵向合并单元格写入值，并强制垂直居中（Univer 默认 vt=0 会顶对齐）。
@@ -602,7 +823,7 @@ const toMergedCellPayload = (value: unknown) => {
       v: cell.value ?? null,
       s: {
         ...(cell.style || {}),
-        vt: VerticalAlign.MIDDLE,
+        ...VERTICAL_MIDDLE_STYLE,
       },
     };
   }
@@ -611,7 +832,7 @@ const toMergedCellPayload = (value: unknown) => {
     // 设置值
     v: value ?? null,
     // 设置样式
-    s: { vt: VerticalAlign.MIDDLE },
+    s: { ...VERTICAL_MIDDLE_STYLE },
   };
 };
 
@@ -760,6 +981,26 @@ export const reapplyMergesForRowSpan = (
     // 应用合并
     applyMerge(worksheet, merge, dataStartRow, { preserveValue: true });
   });
+};
+
+/** 按数据区半开区间 [rangeStart, rangeEnd) 重新应用相交的纵向 merge */
+export const reapplyMergesInDataRange = (
+  worksheet: UniverWorksheet,
+  merges: ETableMerge[],
+  dataStartRow: number,
+  rangeStart: number,
+  rangeEnd: number,
+) => {
+  if (rangeEnd <= rangeStart) {
+    return;
+  }
+  reapplyMergesForRowSpan(
+    worksheet,
+    merges,
+    dataStartRow,
+    rangeStart,
+    rangeEnd - rangeStart,
+  );
 };
 
 /**
@@ -968,77 +1209,60 @@ export const applyProjectedMerges = (
   dataStartRow: number,
   projectedLogicalRows: number[],
   previousMerges: PlannedProjectedMerge[] = [],
+  options?: {
+    planned?: PlannedProjectedMerge[];
+    forceRebuild?: boolean;
+  },
 ): PlannedProjectedMerge[] => {
-  // 如果工作表不存在，或者没有合并，或者没有逻辑行，则直接返回
   if (!worksheet || !merges.length || !projectedLogicalRows.length) {
     return [];
   }
 
-  // 创建应用的合并
   const applied: PlannedProjectedMerge[] = [];
-  // 创建计划
-  const planned = planProjectedMerges(merges, projectedLogicalRows);
-  // 创建逻辑到合并的映射
+  const planned = options?.planned ?? planProjectedMerges(merges, projectedLogicalRows);
+  const forceRebuild = options?.forceRebuild ?? false;
+  const mergeByKey = new Map<string, ETableMerge>();
+  merges.forEach((merge) => {
+    mergeByKey.set(`${merge.row}:${merge.column}`, merge);
+  });
   const prevByLogical = new Map(
     previousMerges.map((merge) => [logicalMergeSignature(merge), merge]),
   );
 
-  // 遍历计划
   planned.forEach((projectedRange) => {
-    // 获取逻辑键
     const logicalKey = logicalMergeSignature(projectedRange);
-    // 获取前一个合并
     const prevMerge = prevByLogical.get(logicalKey);
-
-    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
-    if (
+    const matchesPrev =
       prevMerge &&
       prevMerge.row === projectedRange.row &&
       prevMerge.column === projectedRange.column &&
       prevMerge.rowSpan === projectedRange.rowSpan &&
-      prevMerge.columnSpan === projectedRange.columnSpan
-    ) {
-      // 添加应用
+      prevMerge.columnSpan === projectedRange.columnSpan;
+
+    if (!forceRebuild && matchesPrev) {
       applied.push(projectedRange);
       return;
     }
 
-    // 如果前一个合并，并且前一个合并的行、列、行跨度、列跨度与计划的范围一致，则添加应用
     if (prevMerge) {
-      const alreadyAtTarget =
-        prevMerge.row === projectedRange.row &&
-        prevMerge.column === projectedRange.column &&
-        prevMerge.rowSpan === projectedRange.rowSpan &&
-        prevMerge.columnSpan === projectedRange.columnSpan;
-      if (!alreadyAtTarget) {
-        // 拆分合并
-        breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
-      }
+      breakApartProjectedMergeAt(worksheet, dataStartRow, prevMerge);
     }
 
-    // 获取源合并
-    const sourceMerge = merges.find(
-      (merge) =>
-        merge.row === projectedRange.logicalRow &&
-        merge.column === projectedRange.column,
+    const sourceMerge = mergeByKey.get(
+      `${projectedRange.logicalRow}:${projectedRange.column}`,
     );
-    // 如果源合并不存在，则直接返回
     if (!sourceMerge) {
       return;
     }
 
-    // 创建投影合并
     const projectedMerge: ETableMerge = {
       ...sourceMerge,
       row: projectedRange.row,
     };
 
     try {
-      // 应用合并
       applyMerge(worksheet, projectedMerge, dataStartRow, { preserveValue: true });
-      // 添加应用
       applied.push(projectedRange);
-      // 警告投影合并失败
     } catch (error) {
       console.warn('[ETable] projected merge failed', { merge: projectedMerge, error });
     }

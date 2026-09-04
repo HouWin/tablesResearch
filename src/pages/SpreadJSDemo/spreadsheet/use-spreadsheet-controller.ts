@@ -1,82 +1,89 @@
-'use client';
-
 import { useEffect, useRef, useState } from 'react';
+import {
+  MAX_ATTACHMENTS_PER_CELL,
+  MAX_ATTACHMENT_SIZE,
+  attachmentIconDataUrl,
+  isAcceptedAttachment,
+} from './attachments';
 import {
   CLIPBOARD_CALLBACKS,
   clipboardTextToMatrix,
   describeClipboardRange,
 } from './clipboard';
 import {
+  describeBusinessCellDimension,
+  isBusinessCellDimension,
+  prepareBusinessCellLocationIndex,
+  resolveBusinessCellDimension,
+  toBusinessCellDimension,
+  type BusinessCellDimension,
+} from './business-cell-coordinate';
+import {
   BUSINESS_DATA,
+  BUSINESS_COLUMN_DATA,
   COLUMNS,
   COLUMN_GROUPS,
-  COLUMN_HEADER_GROUPS,
-  COLUMN_HEADER_SECTIONS,
-  AVG_ORDER_COLUMN,
-  COMPLETION_COLUMN,
-  DECIMAL_COLUMN,
+  COLUMN_HEADER_CELLS,
+  COLUMN_HEADER_ROW_COUNT,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
   INITIAL_DATASET_LABEL,
-  ORDERS_COLUMN,
+  ANNUAL_TOTAL_COLUMN,
+  PRODUCT_ATTRIBUTE_COLUMN,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
-  REVENUE_COLUMN,
-  STATUS_COLUMN,
-  STRESS_FULL_PAGE_VISIBLE_ROWS,
-  STRESS_PAGE_SIZE,
   STRESS_TEXT_SEARCH_COLUMNS,
-  UPDATED_AT_COLUMN,
-  VERIFIED_COLUMN,
   canDrillNode,
-  businessCellCoordinateKey,
   columnName,
   createBusinessProjectionRows,
+  createInitialRegionExpansion,
   createStressProjectionRows,
   getAllProductIdsForView,
   getAggregateValue,
   getBusinessProjectionSummary,
   getCellEditability,
   getProductGroupIdsForView,
+  getProductAncestorIds,
   getRegionGroupIdsForProduct,
   getStressAllProductIds,
   getStressProductGroupIds,
   getStressProjectionSummary,
-  getStressRecordsAsync,
   getStressRegionGroupIdsForProduct,
-  isBusinessCellCoordinate,
   isHierarchyField,
   numericDisplayForColumn,
   pathForView,
-  releaseStressRecords,
-  roundToTwoDecimals,
-  resolveBusinessCellCoordinate,
-  simulateStressBackendDelay,
   stableCellKey,
   stressCellSearchText,
-  toBusinessCellCoordinate,
   updateBusinessNode,
   viewForNode,
   viewRowCellValue,
   viewRowValues,
   type AggregateMode,
   type BusinessField,
-  type BusinessCellCoordinate,
   type CellAttachment,
+  type ColumnFormat,
   type DataMode,
   type DrillView,
   type HistoryItem,
-  type NumericDisplay,
   type OutlineDimension,
   type OutlineSnapshot,
   type PanelName,
   type SelectedCell,
   type SelectionStats,
+  type StressSummaryRecords,
   type ToastState,
   type ToastTone,
   type ViewRow,
 } from './model';
+import { calculateSelectionStatistics } from './selection-statistics';
+import {
+  createLocalStressProjectionPageSource,
+  getStressDatasetAsync,
+  releaseStressDataset,
+  STRESS_PAGE_SIZE,
+  type StressProjectionPage,
+} from './stress-data-source';
 
 type GCModule = typeof import('@grapecity-software/spread-sheets');
 type Workbook =
@@ -138,28 +145,28 @@ type VisibleCellChange = {
   fieldLabel: string;
   oldValue: unknown;
   newValue: unknown;
-  kind: '直接修改' | '字段联动' | '汇总联动';
+  kind: '直接修改' | '投影同步';
 };
 
 export type BusinessCellChangePayload = {
-  coordinate: BusinessCellCoordinate;
-  coordinateKey: string;
-  spreadsheet: {
-    sheetName: string;
-    address: string;
-    projectionRowId: string;
-  };
-  change: {
-    source: string;
-    oldValue: unknown;
-    newValue: unknown;
-  };
+  /** 后台 BUSINESS_DATA 中被修改的唯一记录。 */
+  recordId: string;
+  /** 被修改的叶子列 field。 */
+  field: BusinessField;
+  oldValue: unknown;
+  newValue: unknown;
+  /** 完整行维和列维，可原样回传给 locateBusinessCell。 */
+  dimension: BusinessCellDimension;
 };
 
-function logRegularSourceData() {
+function logRegularBackendData() {
   if (process.env.NODE_ENV === 'production') return;
   console.log(
-    '[SpreadJS Demo] 常规模式原始业务数据 BUSINESS_DATA：',
+    '[SpreadJS Demo][渲染完成] 后台列结构 BUSINESS_COLUMN_DATA：',
+    BUSINESS_COLUMN_DATA,
+  );
+  console.log(
+    '[SpreadJS Demo][渲染完成] 后台业务数据 BUSINESS_DATA：',
     BUSINESS_DATA,
   );
 }
@@ -168,11 +175,15 @@ function logRegularSourceData() {
 // useSpreadsheetController({ onBusinessCellChange }) 发送给后端。
 function logCellChange(payload: BusinessCellChangePayload) {
   if (process.env.NODE_ENV === 'production') return;
-  console.log('[SpreadJS Demo][单元格修改]', payload);
+  console.log(
+    `[SpreadJS Demo][单元格修改]\n${JSON.stringify(payload, null, 2)}`,
+  );
 }
 
 export type SpreadsheetControllerOptions = {
-  onBusinessCellChange?: (payload: BusinessCellChangePayload) => void;
+  onBusinessCellChange?: (
+    payload: BusinessCellChangePayload,
+  ) => void | Promise<void>;
 };
 
 export type SpreadsheetActions = {
@@ -197,51 +208,18 @@ export type SpreadsheetActions = {
   deleteComment: () => void;
   addAttachments: (files: File[]) => void;
   removeAttachment: (attachmentId: string) => void;
-  locateBusinessCell: (coordinate: BusinessCellCoordinate) => boolean;
+  locateBusinessCell: (dimension: BusinessCellDimension) => boolean;
 };
-
-export const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx';
-export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
-const MAX_ATTACHMENTS_PER_CELL = 10;
-const ATTACHMENT_EXTENSION_PATTERN =
-  /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|pdf|docx?|xlsx?)$/i;
 
 type RegularSearchMatch = {
   nodeId: string;
   productId: string;
   productParentId: string | null;
+  productAncestorIds: readonly string[];
   regionRootId: string;
   regionDepth: 0 | 1;
   col: number;
 };
-// A solid-color rounded badge with a white paperclip glyph (and an optional
-// count bubble) baked directly into the icon. A bare 13px outline icon on a
-// near-white button background had almost no contrast and just looked like
-// an empty little box, so the badge now carries its own color regardless of
-// the surrounding cell/theme colors.
-function attachmentIconDataUrl(count: number) {
-  const badge =
-    count > 1
-      ? `<circle cx="18.5" cy="5.5" r="5.5" fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
-         <text x="18.5" y="6.2" text-anchor="middle" dominant-baseline="middle" font-size="7.5" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">${
-           count > 9 ? '9+' : count
-         }</text>`
-      : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-    <rect x="1" y="1" width="22" height="22" rx="6" fill="#6548c8"/>
-    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(3,3) scale(0.62)"/>
-    ${badge}
-  </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function isAcceptedAttachment(file: File) {
-  return (
-    file.type.startsWith('image/') ||
-    ATTACHMENT_EXTENSION_PATTERN.test(file.name)
-  );
-}
-
 export function useSpreadsheetController(
   options: SpreadsheetControllerOptions = {},
 ) {
@@ -254,46 +232,12 @@ export function useSpreadsheetController(
   const columnVisibilityRef = useRef(COLUMNS.map(() => true));
   const rowGroupsCollapsedRef = useRef(false);
   const columnGroupsCollapsedRef = useRef(false);
-  const historyRef = useRef<Map<string, HistoryItem[]>>(
-    new Map([
-      [
-        stableCellKey('furniture-bookcases::region:east', 'revenue'),
-        [
-          {
-            id: 'history-3',
-            oldValue: 3_700_400,
-            newValue: 3_724_800,
-            source: '日报回写',
-            createdAt: new Date('2026-08-21T16:34:00+08:00').getTime(),
-          },
-          {
-            id: 'history-2',
-            oldValue: 3_686_800,
-            newValue: 3_700_400,
-            source: '批量粘贴',
-            createdAt: new Date('2026-08-21T14:18:00+08:00').getTime(),
-          },
-          {
-            id: 'history-1',
-            oldValue: null,
-            newValue: 3_686_800,
-            source: '数据导入',
-            createdAt: new Date('2026-08-21T09:02:00+08:00').getTime(),
-          },
-        ],
-      ],
-    ]),
-  );
-  const commentsRef = useRef<Map<string, string>>(
-    new Map([
-      [
-        stableCellKey('furniture-bookcases::region:east', 'revenue'),
-        '待复核：净收入与城市日报存在 2,400 元差异。',
-      ],
-    ]),
-  );
+  const historyRef = useRef<Map<string, HistoryItem[]>>(new Map());
+  const commentsRef = useRef<Map<string, string>>(new Map());
   const attachmentsRef = useRef<Map<string, CellAttachment[]>>(new Map());
   const [ready, setReady] = useState(false);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(
     null,
   );
@@ -328,7 +272,7 @@ export function useSpreadsheetController(
     getBusinessProjectionSummary(
       [],
       new Set<string>(INITIAL_PRODUCT_EXPANDED),
-      new Map<string, Set<string>>(),
+      createInitialRegionExpansion(),
     ),
   );
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -355,45 +299,12 @@ export function useSpreadsheetController(
   );
 
   useEffect(() => {
-    if (!panel && !searchOpen && !columnMenuOpen) return;
-    const closeTransientUi = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (searchOpen) actionsRef.current?.cancelSearch();
-      setPanel(null);
-      setSearchOpen(false);
-      setColumnMenuOpen(false);
-    };
-    const closePopoversOnOutsidePress = (event: PointerEvent) => {
-      if (!searchOpen && !columnMenuOpen) return;
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        target.closest('.toolbar-popover-anchor')
-      )
-        return;
-      if (searchOpen) actionsRef.current?.cancelSearch();
-      setSearchOpen(false);
-      setColumnMenuOpen(false);
-    };
-    window.addEventListener('keydown', closeTransientUi);
-    document.addEventListener('pointerdown', closePopoversOnOutsidePress, true);
-    return () => {
-      window.removeEventListener('keydown', closeTransientUi);
-      document.removeEventListener(
-        'pointerdown',
-        closePopoversOnOutsidePress,
-        true,
-      );
-    };
-  }, [columnMenuOpen, panel, searchOpen]);
-
-  useEffect(() => {
     setReady(false);
     setInitializationError(null);
     let cancelled = false;
     let workbook: Workbook | null = null;
     const productExpanded = new Set<string>(INITIAL_PRODUCT_EXPANDED);
-    const regionExpandedByProduct = new Map<string, Set<string>>();
+    const regionExpandedByProduct = createInitialRegionExpansion();
     let activeView: DrillView = [];
     let activeRows = createBusinessProjectionRows(
       activeView,
@@ -401,6 +312,7 @@ export function useSpreadsheetController(
       regionExpandedByProduct,
     );
     let stressSourceRows: ViewRow[] = [];
+    let stressSummaryRecords: StressSummaryRecords = new Map();
     let activeDataMode: 'regular' | 'stress' = 'regular';
     let activeSearch = {
       query: '',
@@ -415,15 +327,17 @@ export function useSpreadsheetController(
     let toastTimer = 0;
     let stressLoadTimer = 0;
     let stressViewportTimer = 0;
+    let stressIndexWarmupTimer = 0;
     let pendingStressTopRow = 0;
     let groupChangeBatching = false;
     const loadedStressPages = new Set<number>();
-    const loadedStressRows = new Set<number>();
     const pendingStressPages = new Set<number>();
-    const pendingStressRows = new Set<number>();
+    const stressPageSource = createLocalStressProjectionPageSource();
     let stressSessionEpoch = 0;
+    let activeStressProjectionVersion = 0;
     let validationFlashTimer = 0;
     let clipboardHistoryTimer = 0;
+    let commandStateTimer = 0;
     let clipboardHistorySource: string | null = null;
     let clipboardHistorySnapshot: ClipboardHistoryCell[] | null = null;
     let commandHistorySource: '撤销' | '重做' | null = null;
@@ -437,7 +351,7 @@ export function useSpreadsheetController(
       backColor: string | null;
     } | null = null;
 
-    const extensionStateFor = (productId: string) => {
+    const subjectExpansionFor = (productId: string) => {
       let state = regionExpandedByProduct.get(productId);
       if (!state) {
         state = new Set<string>();
@@ -458,7 +372,15 @@ export function useSpreadsheetController(
         stressSourceRows,
         productExpanded,
         regionExpandedByProduct,
+        stressSummaryRecords,
       );
+
+    const stressDatasetSummary = () =>
+      `${stressSourceRows.length.toLocaleString(
+        'zh-CN',
+      )} 条明细 + ${stressSummaryRecords.size.toLocaleString(
+        'zh-CN',
+      )} 条后台汇总`;
 
     const currentProductGroupIds = () =>
       activeDataMode === 'stress'
@@ -522,7 +444,7 @@ export function useSpreadsheetController(
       ])) as [GCModule, unknown];
       if (cancelled || !hostRef.current) return;
 
-      const licenseKey = process.env.NEXT_PUBLIC_SPREADJS_LICENSE_KEY;
+      const licenseKey = process.env.UMI_APP_SPREADJS_LICENSE_KEY;
       if (licenseKey) GC.Spread.Sheets.LicenseKey = licenseKey;
       GC.Spread.Common.CultureManager.culture('zh-cn');
 
@@ -540,9 +462,17 @@ export function useSpreadsheetController(
         incrementalCalculation: true,
       });
       workbook = spread;
+      const syncCommandAvailability = () => {
+        setCanUndo(spread.undoManager().canUndo());
+        setCanRedo(spread.undoManager().canRedo());
+      };
+      const scheduleCommandAvailabilitySync = () => {
+        window.clearTimeout(commandStateTimer);
+        commandStateTimer = window.setTimeout(syncCommandAvailability);
+      };
       spread.options.highlightInvalidData = true;
       const sheet = spread.getActiveSheet();
-      sheet.name('经营明细');
+      sheet.name('费用预算表');
       sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
       sheet.options.protectionOptions = {
         allowSelectLockedCells: true,
@@ -554,15 +484,25 @@ export function useSpreadsheetController(
       };
       sheet.options.isProtected = true;
       sheet.options.rowHeaderAutoText = GC.Spread.Sheets.HeaderAutoText.numbers;
+      sheet.options.gridline.color = '#e9edf3';
+      sheet.options.gridline.showVerticalGridline = true;
+      sheet.options.gridline.showHorizontalGridline = false;
+      sheet.defaults.rowHeight = 24;
       spread.options.scrollByPixel = true;
       spread.options.scrollPixel = 22;
 
-      // Cell types are immutable after setup. Reusing them avoids allocating
-      // new controls and validators for every lazily loaded stress-data page.
-      const statusCellType = new GC.Spread.Sheets.CellTypes.ComboBox();
-      statusCellType.items(['已核验', '待复核', '异常']);
-      statusCellType.editable(false);
-      const verifiedCellType = new GC.Spread.Sheets.CellTypes.CheckBox();
+      // 编辑器完全由后台列配置生成，并在所有数据行复用。
+      const columnCellTypes = COLUMNS.map((column) => {
+        if (column.editor?.type === 'select') {
+          const cellType = new GC.Spread.Sheets.CellTypes.ComboBox();
+          cellType.items([...column.editor.options]);
+          cellType.editable(false);
+          return cellType;
+        }
+        if (column.editor?.type === 'checkbox')
+          return new GC.Spread.Sheets.CellTypes.CheckBox();
+        return undefined;
+      });
       const datePickerCellButton: import('@grapecity-software/spread-sheets').Spread.Sheets.ICellButton =
         {
           imageType: GC.Spread.Sheets.ButtonImageType.dropdown,
@@ -695,55 +635,22 @@ export function useSpreadsheetController(
         worksheet: Worksheet,
         range: import('@grapecity-software/spread-sheets').Spread.Sheets.Range,
       ) => {
-        const startRow = Math.max(range.row, 0);
-        const startCol = Math.max(range.col, 0);
-        const rowCount =
-          range.row < 0 ? worksheet.getRowCount() : range.rowCount;
-        const colCount =
-          range.col < 0 ? worksheet.getColumnCount() : range.colCount;
-        const total = Math.max(0, rowCount * colCount);
-        const inspectLimit = 200_000;
-        const inspectCount = Math.min(total, inspectLimit);
-        let numeric = 0;
-        let sum = 0;
-        let min = Number.POSITIVE_INFINITY;
-        let max = Number.NEGATIVE_INFINITY;
-        let numericDisplay: NumericDisplay | null = null;
-        for (let offset = 0; offset < inspectCount; offset += 1) {
-          const row = startRow + Math.floor(offset / colCount);
-          const col = startCol + (offset % colCount);
-          const stressDataLoaded =
-            loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) ||
-            loadedStressRows.has(row);
-          const value =
-            activeDataMode === 'stress' && !stressDataLoaded
-              ? viewRowCellValue(activeRows[row], col)
-              : worksheet.getValue(row, col);
-          if (typeof value === 'number' && Number.isFinite(value)) {
-            const cellDisplay = numericDisplayForColumn(col);
-            numericDisplay =
-              numericDisplay === null
-                ? cellDisplay
-                : numericDisplay === cellDisplay
-                ? numericDisplay
-                : 'mixed';
-            numeric += 1;
-            sum += value;
-            min = Math.min(min, value);
-            max = Math.max(max, value);
-          }
-        }
-        setSelectionStats({
-          cells: total,
-          numeric,
-          ignored: inspectCount - numeric,
-          sum,
-          average: numeric ? sum / numeric : 0,
-          min: numeric ? min : 0,
-          max: numeric ? max : 0,
-          truncated: total > inspectLimit,
-          numericDisplay: numericDisplay ?? 'number',
-        });
+        setSelectionStats(
+          calculateSelectionStatistics({
+            range,
+            worksheetRowCount: worksheet.getRowCount(),
+            worksheetColumnCount: worksheet.getColumnCount(),
+            valueAt: (row, col) => {
+              const stressDataLoaded = loadedStressPages.has(
+                Math.floor(row / STRESS_PAGE_SIZE),
+              );
+              return activeDataMode === 'stress' && !stressDataLoaded
+                ? viewRowCellValue(activeRows[row], col)
+                : worksheet.getValue(row, col);
+            },
+            displayAt: numericDisplayForColumn,
+          }),
+        );
       };
       const clearOutlinesAndComments = () => {
         const oldRows = Math.max(sheet.getRowCount(), 1);
@@ -762,22 +669,27 @@ export function useSpreadsheetController(
           if (row >= oldRows || col >= oldCols) return;
           const cell = sheet.getCell(row, col);
           cell.cellButtons(
-            col === UPDATED_AT_COLUMN ? [datePickerCellButton] : [],
+            COLUMNS[col]?.editor?.type === 'date' ? [datePickerCellButton] : [],
           );
           cell.tag(null);
         });
         renderedAttachmentCells.clear();
       };
 
-      const applyStableComments = () => {
-        activeRows.forEach((row, rowIndex) => {
+      const applyStableComments = (
+        startRow = 0,
+        rowCount = activeRows.length,
+      ) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+          const row = activeRows[rowIndex];
           COLUMNS.forEach((column, colIndex) => {
             const text = commentsRef.current.get(
               stableCellKey(row.id, column.field),
             );
             if (text) sheet.comments.add(rowIndex, colIndex, text);
           });
-        });
+        }
       };
 
       const refreshAttachmentIndicator = (row: number, col: number) => {
@@ -789,7 +701,8 @@ export function useSpreadsheetController(
         const count = attachmentsRef.current.get(key)?.length ?? 0;
         const cell = sheet.getCell(row, col);
         const buttons =
-          col === UPDATED_AT_COLUMN && getCellEditability(node, col).editable
+          column.editor?.type === 'date' &&
+          getCellEditability(node, col).editable
             ? [datePickerCellButton]
             : [];
         if (count) {
@@ -823,28 +736,17 @@ export function useSpreadsheetController(
         cell.cellButtons(buttons);
       };
 
-      const applyStableAttachmentIndicators = () => {
-        activeRows.forEach((row, rowIndex) => {
+      const applyStableAttachmentIndicators = (
+        startRow = 0,
+        rowCount = activeRows.length,
+      ) => {
+        const endRow = Math.min(activeRows.length, startRow + rowCount);
+        for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+          const row = activeRows[rowIndex];
           COLUMNS.forEach((column, colIndex) => {
             if (attachmentsRef.current.has(stableCellKey(row.id, column.field)))
               refreshAttachmentIndicator(rowIndex, colIndex);
           });
-        });
-      };
-
-      const styleStatusCells = (
-        startRow = 0,
-        rowCount = Math.min(activeRows.length, STRESS_PAGE_SIZE),
-      ) => {
-        const endRow = Math.min(activeRows.length, startRow + rowCount);
-        for (let row = startRow; row < endRow; row += 1) {
-          const status = activeRows[row].status;
-          const cell = sheet.getCell(row, STATUS_COLUMN);
-          if (status === '已核验')
-            cell.backColor('#e6f5ef').foreColor('#19715d');
-          else if (status === '异常')
-            cell.backColor('#fee9e8').foreColor('#b13b3b');
-          else cell.backColor('#fff4da').foreColor('#8a5a16');
         }
       };
 
@@ -856,14 +758,13 @@ export function useSpreadsheetController(
             const cell = sheet.getCell(row, col);
             cell.locked(!editability.editable);
             if (
-              col < REVENUE_COLUMN ||
-              col === STATUS_COLUMN ||
-              col === VERIFIED_COLUMN
+              isHierarchyField(COLUMNS[col].field) ||
+              COLUMNS[col].field === 'functionalAttribute' ||
+              COLUMNS[col].editor?.type === 'select' ||
+              COLUMNS[col].editor?.type === 'checkbox'
             )
               continue;
-            if (editability.editable) {
-              cell.backColor('#fff').foreColor('#1f2937');
-            } else {
+            if (!editability.editable) {
               cell.backColor('#f5f6f8').foreColor('#667085');
             }
           }
@@ -876,8 +777,9 @@ export function useSpreadsheetController(
         const accepted: Array<{
           request: CellEditRequest;
           projectionRowId: string;
+          recordId: string;
           field: BusinessField;
-          coordinate: BusinessCellCoordinate;
+          dimension: BusinessCellDimension;
         }> = [];
         const rejected: Array<{
           request: CellEditRequest;
@@ -898,30 +800,22 @@ export function useSpreadsheetController(
             rejected.push({ request, reason: editability.reason });
             return;
           }
-          const coordinate = toBusinessCellCoordinate(
-            row,
-            request.col,
-            activeDataMode,
-          );
-          if (!coordinate) {
+          const dimension = toBusinessCellDimension(row, request.col);
+          if (!dimension) {
             rejected.push({
               request,
-              reason: '无法将当前投影转换为唯一业务单元格坐标',
+              reason: '无法将当前投影转换为唯一业务维度',
             });
             return;
           }
-          let nextValue = request.requestedValue;
-          if (
-            column.field === 'adjustmentFactor' &&
-            typeof nextValue === 'number'
-          )
-            nextValue = roundToTwoDecimals(nextValue);
+          const nextValue = request.requestedValue;
           updateBusinessNode(editability.sourceNode, column.field, nextValue);
           accepted.push({
             request: { ...request, requestedValue: nextValue },
             projectionRowId: row.id,
+            recordId: editability.sourceNode.id,
             field: column.field,
-            coordinate,
+            dimension,
           });
         });
 
@@ -962,9 +856,6 @@ export function useSpreadsheetController(
             stableCellKey(projectionRowId, field),
           ),
         );
-        const directRowIds = new Set(
-          accepted.map(({ projectionRowId }) => projectionRowId),
-        );
         const changes: VisibleCellChange[] = [];
         nextRows.forEach((nextRow, row) => {
           const beforeRow = beforeById.get(nextRow.id);
@@ -985,11 +876,7 @@ export function useSpreadsheetController(
               fieldLabel: column.label,
               oldValue,
               newValue,
-              kind: directKeys.has(key)
-                ? '直接修改'
-                : directRowIds.has(nextRow.id)
-                ? '字段联动'
-                : '汇总联动',
+              kind: directKeys.has(key) ? '直接修改' : '投影同步',
             });
           });
         });
@@ -1023,8 +910,7 @@ export function useSpreadsheetController(
                 activeDataMode !== 'stress' ||
                 loadedStressPages.has(
                   Math.floor(change.row / STRESS_PAGE_SIZE),
-                ) ||
-                loadedStressRows.has(change.row);
+                );
               if (!stressRowLoaded) return;
               if (
                 change.kind === '直接修改' &&
@@ -1035,7 +921,6 @@ export function useSpreadsheetController(
               changedRows.add(change.row);
             });
             changedRows.forEach((row) => {
-              styleStatusCells(row, 1);
               applyCellEditability(row, 1);
             });
           } finally {
@@ -1069,26 +954,52 @@ export function useSpreadsheetController(
         });
         syncProjectionSnapshot();
 
-        accepted.forEach(({ request, projectionRowId, coordinate }) => {
-          if (historyValuesEqual(request.oldValue, request.requestedValue))
-            return;
-          const payload: BusinessCellChangePayload = {
-            coordinate,
-            coordinateKey: businessCellCoordinateKey(coordinate),
-            spreadsheet: {
-              sheetName: sheet.name(),
-              address: `${columnName(request.col)}${request.row + 1}`,
-              projectionRowId,
-            },
-            change: {
-              source: request.source,
-              oldValue: request.oldValue,
-              newValue: request.requestedValue,
-            },
-          };
-          onBusinessCellChangeRef.current?.(payload);
-          logCellChange(payload);
-        });
+        accepted.forEach(
+          ({ request, projectionRowId, recordId, field, dimension }) => {
+            const nextRowIndex = nextRowIndexById.get(projectionRowId);
+            const nextValue =
+              nextRowIndex === undefined
+                ? request.requestedValue
+                : viewRowCellValue(nextRows[nextRowIndex], request.col);
+            const oldValue = viewRowCellValue(
+              beforeById.get(projectionRowId) ?? beforeRows[request.row],
+              request.col,
+            );
+            if (historyValuesEqual(oldValue, nextValue)) return;
+            const payload: BusinessCellChangePayload = {
+              recordId,
+              field,
+              oldValue,
+              newValue: nextValue,
+              dimension,
+            };
+            const callback = onBusinessCellChangeRef.current;
+            if (callback) {
+              try {
+                void Promise.resolve(callback(payload)).catch((error) => {
+                  console.error('[SpreadJS] 业务单元格保存失败', error);
+                  if (!cancelled)
+                    notify(
+                      `${columnName(request.col)}${
+                        request.row + 1
+                      } 的修改未保存，请重试`,
+                      'error',
+                    );
+                });
+              } catch (error) {
+                console.error('[SpreadJS] 业务单元格保存失败', error);
+                notify(
+                  `${columnName(request.col)}${
+                    request.row + 1
+                  } 的修改未保存，请重试`,
+                  'error',
+                );
+              }
+            }
+            logCellChange(payload);
+          },
+        );
+        scheduleCommandAvailabilitySync();
         return Math.max(historyCount, changes.length);
       };
 
@@ -1194,49 +1105,39 @@ export function useSpreadsheetController(
       const configureCellTypes = (startRow: number, rowCount: number) => {
         const endRow = Math.min(activeRows.length, startRow + rowCount);
         for (let row = startRow; row < endRow; row += 1) {
-          const statusEditable = getCellEditability(
-            activeRows[row],
-            STATUS_COLUMN,
-          ).editable;
-          const verifiedEditable = getCellEditability(
-            activeRows[row],
-            VERIFIED_COLUMN,
-          ).editable;
-          const dateEditable = getCellEditability(
-            activeRows[row],
-            UPDATED_AT_COLUMN,
-          ).editable;
-          sheet
-            .getCell(row, STATUS_COLUMN)
-            .cellType(statusEditable ? statusCellType : null);
-          sheet
-            .getCell(row, VERIFIED_COLUMN)
-            .cellType(verifiedEditable ? verifiedCellType : null);
-          const updatedAtCell = sheet.getCell(row, UPDATED_AT_COLUMN);
-          updatedAtCell.cellButtons(dateEditable ? [datePickerCellButton] : []);
-          updatedAtCell.dropDowns(
-            dateEditable
-              ? [
-                  {
-                    type: GC.Spread.Sheets.DropDownType.dateTimePicker,
-                    option: {
-                      showTime: false,
-                      calendarPage: GC.Spread.Sheets.CalendarPage.day,
-                      startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+          COLUMNS.forEach((column, col) => {
+            const editable = getCellEditability(activeRows[row], col).editable;
+            const cell = sheet.getCell(row, col);
+            cell.cellType(editable ? columnCellTypes[col] : undefined);
+            const dateEditable = editable && column.editor?.type === 'date';
+            cell.cellButtons(dateEditable ? [datePickerCellButton] : []);
+            cell.dropDowns(
+              dateEditable
+                ? [
+                    {
+                      type: GC.Spread.Sheets.DropDownType.dateTimePicker,
+                      option: {
+                        showTime: false,
+                        calendarPage: GC.Spread.Sheets.CalendarPage.day,
+                        startDay: GC.Spread.Sheets.CalendarStartDay.monday,
+                      },
                     },
-                  },
-                ]
-              : [],
-          );
+                  ]
+                : [],
+            );
+          });
         }
-        sheet.setDataValidator(
-          startRow,
-          DECIMAL_COLUMN,
-          rowCount,
-          1,
-          decimalValidator,
-          GC.Spread.Sheets.SheetArea.viewport,
-        );
+        COLUMNS.forEach((column, col) => {
+          if (column.format !== 'decimal') return;
+          sheet.setDataValidator(
+            startRow,
+            col,
+            rowCount,
+            1,
+            decimalValidator,
+            GC.Spread.Sheets.SheetArea.viewport,
+          );
+        });
       };
 
       const styleDataRows = (
@@ -1244,35 +1145,43 @@ export function useSpreadsheetController(
         rowCount: number,
         columnCount: number,
       ) => {
-        sheet
-          .getRange(startRow, REVENUE_COLUMN, rowCount, 3)
-          .formatter('¥#,##0');
-        sheet.getRange(startRow, ORDERS_COLUMN, rowCount, 3).formatter('#,##0');
-        sheet
-          .getRange(startRow, AVG_ORDER_COLUMN, rowCount, 1)
-          .formatter('¥#,##0');
-        sheet
-          .getRange(startRow, COMPLETION_COLUMN, rowCount, 1)
-          .formatter('0.0%');
-        sheet
-          .getRange(startRow, UPDATED_AT_COLUMN, rowCount, 1)
-          .formatter('yyyy-mm-dd');
-        sheet.getRange(startRow, DECIMAL_COLUMN, rowCount, 1).formatter('0.00');
+        const formatters: Record<ColumnFormat, string> = {
+          currency: '¥#,##0',
+          integer: '#,##0',
+          percent: '0.0%',
+          date: 'yyyy-mm-dd',
+          decimal: '0.00',
+        };
+        COLUMNS.forEach((column, col) => {
+          const formatter = column.format
+            ? formatters[column.format]
+            : undefined;
+          if (formatter)
+            sheet.getRange(startRow, col, rowCount, 1).formatter(formatter);
+          if (column.dataType === 'boolean' || column.dataType === 'date')
+            sheet
+              .getRange(startRow, col, rowCount, 1)
+              .hAlign(GC.Spread.Sheets.HorizontalAlign.center);
+        });
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
-          .font('12px Arial, PingFang SC');
+          .font('400 12px Arial, PingFang SC');
         sheet
           .getRange(startRow, PRODUCT_HIERARCHY_COLUMN, rowCount, 1)
-          .backColor('#edf8f2')
-          .foreColor('#19704f');
-        sheet
-          .getRange(startRow, 1, rowCount, 1)
-          .backColor('#fff8e9')
-          .foreColor('#875c18');
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
         sheet
           .getRange(startRow, REGION_HIERARCHY_COLUMN, rowCount, 1)
-          .backColor('#f1effd')
-          .foreColor('#6045b8');
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
+        sheet
+          .getRange(startRow, PRODUCT_ATTRIBUTE_COLUMN, rowCount, 1)
+          .backColor('#93c5f3')
+          .foreColor('#172b3a');
+        sheet
+          .getRange(startRow, ANNUAL_TOTAL_COLUMN, rowCount, 1)
+          .backColor('#fff2cc')
+          .foreColor('#2f2f2f');
         sheet
           .getRange(startRow, 0, rowCount, columnCount)
           .vAlign(GC.Spread.Sheets.VerticalAlign.center);
@@ -1285,18 +1194,32 @@ export function useSpreadsheetController(
           sheet
             .getCell(row, REGION_HIERARCHY_COLUMN)
             .textIndent(node.regionDepth);
-          if (node.productIsGroup || node.regionIsGroup) {
+          const isSummaryRow =
+            node.sourceNodes.length !== 1 ||
+            node.regionDepth === 0 ||
+            node.sourceNodes.some((sourceNode) =>
+              sourceNode.name.includes('合计'),
+            );
+          if (isSummaryRow) {
             sheet
               .getRange(row, 0, 1, columnCount)
               .font('600 12px Arial, PingFang SC');
+            sheet
+              .getRange(
+                row,
+                ANNUAL_TOTAL_COLUMN,
+                1,
+                columnCount - ANNUAL_TOTAL_COLUMN,
+              )
+              .backColor('#fff2cc');
           }
           if (
             activeDataMode === 'stress' &&
             node.productBlockStart &&
             node.productRowSpan > 1
           ) {
-            // 常规数据块只有几行，居中阅读更自然；压力数据的产品块
-            // 最长跨 1,000 行，顶部对齐才能让产品与首个区域同时出现。
+            // 常规组织块只有几行，居中阅读更自然；压力数据块较长，
+            // 顶部对齐才能让组织与首个科目同时出现。
             sheet
               .getRange(row, PRODUCT_HIERARCHY_COLUMN, 1, 2)
               .vAlign(GC.Spread.Sheets.VerticalAlign.top);
@@ -1304,62 +1227,30 @@ export function useSpreadsheetController(
         }
       };
 
-      const writeStressPage = (pageIndex: number) => {
-        if (activeDataMode !== 'stress' || loadedStressPages.has(pageIndex))
-          return;
-        const startRow = pageIndex * STRESS_PAGE_SIZE;
-        if (startRow < 0 || startRow >= activeRows.length) return;
-        const rowCount = Math.min(
-          STRESS_PAGE_SIZE,
-          activeRows.length - startRow,
-        );
-        let segmentStart = 0;
-        for (let localRow = 0; localRow <= rowCount; localRow += 1) {
-          const preserveExistingRow =
-            localRow === rowCount || loadedStressRows.has(startRow + localRow);
-          if (!preserveExistingRow) continue;
-          if (localRow > segmentStart) {
-            const segmentValues = activeRows
-              .slice(startRow + segmentStart, startRow + localRow)
-              .map((row) => viewRowValues(row, sheet.getColumnCount()));
-            sheet.setArray(startRow + segmentStart, 0, segmentValues);
-          }
-          segmentStart = localRow + 1;
-        }
-        styleDataRows(startRow, rowCount, sheet.getColumnCount());
-        configureCellTypes(startRow, rowCount);
-        styleStatusCells(startRow, rowCount);
-        applyCellEditability(startRow, rowCount);
-        loadedStressPages.add(pageIndex);
-        for (let row = startRow; row < startRow + rowCount; row += 1)
-          loadedStressRows.delete(row);
-      };
-
-      const writeStressRow = (row: number) => {
-        const page = Math.floor(row / STRESS_PAGE_SIZE);
+      const writeStressPage = (page: StressProjectionPage) => {
         if (
-          row < 0 ||
-          row >= activeRows.length ||
-          loadedStressPages.has(page) ||
-          loadedStressRows.has(row)
+          activeDataMode !== 'stress' ||
+          page.projectionVersion !== activeStressProjectionVersion ||
+          loadedStressPages.has(page.pageIndex) ||
+          !page.rows.length
         )
           return;
-        sheet.setArray(row, 0, [
-          viewRowValues(activeRows[row], sheet.getColumnCount()),
-        ]);
-        styleDataRows(row, 1, sheet.getColumnCount());
-        configureCellTypes(row, 1);
-        styleStatusCells(row, 1);
-        applyCellEditability(row, 1);
-        loadedStressRows.add(row);
+        sheet.setArray(
+          page.startRow,
+          0,
+          page.rows.map((row) => viewRowValues(row, sheet.getColumnCount())),
+        );
+        styleDataRows(page.startRow, page.rows.length, sheet.getColumnCount());
+        configureCellTypes(page.startRow, page.rows.length);
+        applyCellEditability(page.startRow, page.rows.length);
+        applyStableComments(page.startRow, page.rows.length);
+        applyStableAttachmentIndicators(page.startRow, page.rows.length);
+        loadedStressPages.add(page.pageIndex);
       };
 
       // 滚动到已加载数据边界时，先在这批行里打一个“正在加载…”占位提示，
       // 让用户能感知到这是一次异步的分批请求，而不是瞬间完成。
-      const writeStressLoadingPlaceholder = (
-        pageIndices: number[],
-        rowIndices: number[],
-      ) => {
+      const writeStressLoadingPlaceholder = (pageIndices: number[]) => {
         const rows = new Set<number>();
         pageIndices.forEach((page) => {
           const startRow = page * STRESS_PAGE_SIZE;
@@ -1370,7 +1261,6 @@ export function useSpreadsheetController(
           for (let row = startRow; row < startRow + rowCount; row += 1)
             rows.add(row);
         });
-        rowIndices.forEach((row) => rows.add(row));
         if (!rows.size) return;
         sheet.suspendPaint();
         spread.suspendEvent();
@@ -1385,10 +1275,21 @@ export function useSpreadsheetController(
         spread.repaint();
       };
 
-      const loadStressData = (
-        pageIndices: Iterable<number>,
-        rowIndices: Iterable<number> = [],
-      ) => {
+      const updateStressLoadProgress = () => {
+        const loadedRows = [...loadedStressPages].reduce((total, page) => {
+          const startRow = page * STRESS_PAGE_SIZE;
+          return (
+            total + Math.min(STRESS_PAGE_SIZE, activeRows.length - startRow)
+          );
+        }, 0);
+        setDatasetLabel(
+          `${stressDatasetSummary()} · 当前投影 ${activeRows.length.toLocaleString(
+            'zh-CN',
+          )} 行 · 已按需载入 ${loadedRows.toLocaleString('zh-CN')} 行`,
+        );
+      };
+
+      const loadStressData = (pageIndices: Iterable<number>) => {
         if (activeDataMode !== 'stress') return;
         const maxPage = Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1;
         const unloadedPages = [...new Set(pageIndices)].filter(
@@ -1398,45 +1299,41 @@ export function useSpreadsheetController(
             !loadedStressPages.has(page) &&
             !pendingStressPages.has(page),
         );
-        const pagesBeingLoaded = new Set([
-          ...unloadedPages,
-          ...pendingStressPages,
-        ]);
-        const unloadedRows = [...new Set(rowIndices)].filter(
-          (row) =>
-            row >= 0 &&
-            row < activeRows.length &&
-            !pagesBeingLoaded.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressPages.has(Math.floor(row / STRESS_PAGE_SIZE)) &&
-            !loadedStressRows.has(row) &&
-            !pendingStressRows.has(row),
-        );
-        if (!unloadedPages.length && !unloadedRows.length) return;
+        if (!unloadedPages.length) return;
 
         unloadedPages.forEach((page) => pendingStressPages.add(page));
-        unloadedRows.forEach((row) => pendingStressRows.add(row));
-        writeStressLoadingPlaceholder(unloadedPages, unloadedRows);
+        writeStressLoadingPlaceholder(unloadedPages);
 
-        // 模拟一次真实的分批后端请求：数据早已在内存中就绪，
-        // 但要等这段延迟结束才把结果写进表格，制造滚动到底部
-        // 触发下一批加载的真实观感。
+        // 本地页源与生产接口使用相同的异步边界。真实接入只需把
+        // fetchPage 换成带游标、取消信号和版本号的后端分页请求。
         const epoch = stressSessionEpoch;
-        void simulateStressBackendDelay().then(() => {
-          unloadedPages.forEach((page) => pendingStressPages.delete(page));
-          unloadedRows.forEach((row) => pendingStressRows.delete(row));
+        void Promise.allSettled(
+          unloadedPages.map((page) => stressPageSource.fetchPage(page)),
+        ).then((results) => {
           if (
             cancelled ||
             activeDataMode !== 'stress' ||
             epoch !== stressSessionEpoch
           )
             return;
+          unloadedPages.forEach((page) => pendingStressPages.delete(page));
+          const pages = results.flatMap((result) =>
+            result.status === 'fulfilled' ? [result.value] : [],
+          );
+          const failed = results.some(
+            (result) =>
+              result.status === 'rejected' &&
+              !(
+                result.reason instanceof DOMException &&
+                result.reason.name === 'AbortError'
+              ),
+          );
           sheet.suspendPaint();
           sheet.suspendCalcService(false);
           sheet.suspendDirty();
           spread.suspendEvent();
           try {
-            unloadedPages.forEach(writeStressPage);
-            unloadedRows.forEach(writeStressRow);
+            pages.forEach(writeStressPage);
           } finally {
             spread.resumeEvent();
             sheet.resumeDirty();
@@ -1444,6 +1341,22 @@ export function useSpreadsheetController(
             sheet.resumePaint();
           }
           spread.repaint();
+          const activeRow = sheet.getActiveRowIndex();
+          const activeCol = sheet.getActiveColumnIndex();
+          if (
+            pages.some(
+              (page) =>
+                activeRow >= page.startRow &&
+                activeRow < page.startRow + page.rows.length,
+            )
+          ) {
+            updateSelected(activeRow, activeCol);
+            const selection = sheet.getSelections().at(-1);
+            if (selection) calculateSelection(sheet, selection);
+          }
+          updateStressLoadProgress();
+          if (failed)
+            notify('部分数据加载失败，滚动到该区域时将自动重试', 'error');
         });
       };
 
@@ -1457,45 +1370,30 @@ export function useSpreadsheetController(
           activeRows.length - 1,
           viewportBottom >= topRow ? viewportBottom : topRow + STRESS_PAGE_SIZE,
         );
-        const visibleRowsByPage = new Map<number, number[]>();
+        const visiblePages = new Set<number>();
         for (let row = topRow; row <= bottomRow; row += 1) {
-          const page = Math.floor(row / STRESS_PAGE_SIZE);
-          const rows = visibleRowsByPage.get(page) ?? [];
-          rows.push(row);
-          visibleRowsByPage.set(page, rows);
+          visiblePages.add(Math.floor(row / STRESS_PAGE_SIZE));
         }
-        if (!visibleRowsByPage.size) {
-          visibleRowsByPage.set(Math.floor(topRow / STRESS_PAGE_SIZE), [
-            topRow,
-          ]);
-        }
-
-        const fullPages: number[] = [];
-        const sparseRows: number[] = [];
-        visibleRowsByPage.forEach((rows, page) => {
-          if (rows.length >= STRESS_FULL_PAGE_VISIBLE_ROWS)
-            fullPages.push(page);
-          else sparseRows.push(...rows);
-        });
+        if (!visiblePages.size)
+          visiblePages.add(Math.floor(topRow / STRESS_PAGE_SIZE));
 
         // Prefetch the next physical page for continuous scrolling. The visible
         // projection has no hidden Outline ranges, so page adjacency is stable.
-        const nextRow = bottomRow + 1;
+        const lastVisiblePage = Math.floor(bottomRow / STRESS_PAGE_SIZE);
+        const nextPage = lastVisiblePage + 1;
         if (
           bottomRow - topRow < STRESS_PAGE_SIZE * 2 &&
-          nextRow < activeRows.length &&
-          sheet.getRowVisible(nextRow, GC.Spread.Sheets.SheetArea.viewport)
-        ) {
-          fullPages.push(Math.floor(nextRow / STRESS_PAGE_SIZE));
-        }
-        loadStressData(fullPages, sparseRows);
+          nextPage <= Math.ceil(activeRows.length / STRESS_PAGE_SIZE) - 1
+        )
+          visiblePages.add(nextPage);
+        loadStressData(visiblePages);
       };
 
       const ensureStressRowLoaded = (row: number) => {
         if (activeDataMode !== 'stress') return;
         const page = Math.floor(row / STRESS_PAGE_SIZE);
-        if (loadedStressPages.has(page) || loadedStressRows.has(row)) return;
-        loadStressData([], [row]);
+        if (loadedStressPages.has(page)) return;
+        loadStressData([page]);
       };
 
       const scheduleStressViewportLoad = (topRow: number) => {
@@ -1587,6 +1485,9 @@ export function useSpreadsheetController(
       ) => {
         activeRows = rows;
         activeDataMode = stress ? 'stress' : 'regular';
+        activeStressProjectionVersion = stressPageSource.replaceProjection(
+          stress ? rows : [],
+        );
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
         sheet.suspendPaint();
@@ -1608,9 +1509,7 @@ export function useSpreadsheetController(
               ),
             );
           loadedStressPages.clear();
-          loadedStressRows.clear();
           pendingStressPages.clear();
-          pendingStressRows.clear();
           stressSessionEpoch += 1;
           if (!stress) {
             sheet.setArray(
@@ -1627,50 +1526,22 @@ export function useSpreadsheetController(
               row.productRowSpan,
               1,
             );
-            sheet.addSpan(rowIndex, 1, row.productRowSpan, 1);
           });
 
           const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
           sheet.getSpans(undefined, headerArea).forEach((span) => {
             sheet.removeSpan(span.row, span.col, headerArea);
           });
-          sheet.setRowCount(3, headerArea);
-
-          const allHeaders = COLUMNS.map((column) => column.label);
-          allHeaders.forEach((header, col) => {
-            sheet.setValue(0, col, null, headerArea);
-            sheet.setValue(1, col, null, headerArea);
-            sheet.setValue(2, col, header, headerArea);
-          });
-
-          COLUMN_HEADER_GROUPS.forEach(
-            ({ label, startCol, colCount: groupColumnCount }) => {
-              sheet.setValue(1, startCol, label, headerArea);
-              if (groupColumnCount > 1)
-                sheet.addSpan(1, startCol, 1, groupColumnCount, headerArea);
-            },
-          );
-
-          COLUMN_HEADER_SECTIONS.forEach(
-            ({ label, startCol, colCount: sectionColumnCount }) => {
-              // Sections without a real second-level breakdown (e.g. the
-              // hierarchy columns) span both group rows so the header reads
-              // as a single label instead of leaving row 1 blank.
-              const hasSubGroups = COLUMN_HEADER_GROUPS.some(
-                (group) =>
-                  group.startCol >= startCol &&
-                  group.startCol < startCol + sectionColumnCount,
-              );
-              const rowSpan = hasSubGroups ? 1 : 2;
-              sheet.setValue(0, startCol, label, headerArea);
-              if (sectionColumnCount > 1 || rowSpan > 1)
-                sheet.addSpan(
-                  0,
-                  startCol,
-                  rowSpan,
-                  sectionColumnCount,
-                  headerArea,
-                );
+          sheet.setRowCount(COLUMN_HEADER_ROW_COUNT, headerArea);
+          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1) {
+            for (let col = 0; col < colCount; col += 1)
+              sheet.setValue(row, col, null, headerArea);
+          }
+          COLUMN_HEADER_CELLS.forEach(
+            ({ row, startCol, rowCount, colCount, label }) => {
+              sheet.setValue(row, startCol, label, headerArea);
+              if (rowCount > 1 || colCount > 1)
+                sheet.addSpan(row, startCol, rowCount, colCount, headerArea);
             },
           );
           COLUMNS.forEach((column, col) =>
@@ -1679,40 +1550,62 @@ export function useSpreadsheetController(
 
           if (!stress) styleDataRows(0, rowCount, colCount);
           sheet
-            .getRange(0, 0, 3, colCount, headerArea)
-            .backColor('#f4f6fa')
-            .foreColor('#344054')
+            .getRange(0, 0, COLUMN_HEADER_ROW_COUNT, colCount, headerArea)
+            .backColor('#93c5f3')
+            .foreColor('#172b3a')
             .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
             .vAlign(GC.Spread.Sheets.VerticalAlign.center)
             .font('600 12px Arial, PingFang SC');
-          sheet
-            .getRange(1, 0, 1, colCount, headerArea)
-            .backColor('#f7f5ff')
-            .foreColor('#67569e')
-            .font('650 12px Arial, PingFang SC');
+          if (COLUMN_HEADER_ROW_COUNT > 2)
+            sheet
+              .getRange(1, 0, COLUMN_HEADER_ROW_COUNT - 2, colCount, headerArea)
+              .backColor('#f7f5ff')
+              .foreColor('#67569e')
+              .font('650 12px Arial, PingFang SC');
           sheet
             .getRange(0, 0, 1, colCount, headerArea)
-            .backColor('#e9e3fb')
-            .foreColor('#513b9d')
+            .backColor('#93c5f3')
+            .foreColor('#172b3a')
             .font('700 12px Arial, PingFang SC');
           sheet
-            .getRange(2, PRODUCT_HIERARCHY_COLUMN, 1, 1, headerArea)
-            .backColor('#e8f6ee')
-            .foreColor('#19704f');
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              PRODUCT_HIERARCHY_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
           sheet
-            .getRange(2, 1, 1, 1, headerArea)
-            .backColor('#fff4dc')
-            .foreColor('#875c18');
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              PRODUCT_ATTRIBUTE_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
           sheet
-            .getRange(2, REGION_HIERARCHY_COLUMN, 1, 1, headerArea)
-            .backColor('#eeeafd')
-            .foreColor('#6045b8');
-          sheet.setRowHeight(0, 27, headerArea);
-          sheet.setRowHeight(1, 27, headerArea);
-          sheet.setRowHeight(2, 34, headerArea);
+            .getRange(
+              COLUMN_HEADER_ROW_COUNT - 1,
+              REGION_HIERARCHY_COLUMN,
+              1,
+              1,
+              headerArea,
+            )
+            .backColor('#93c5f3')
+            .foreColor('#172b3a');
+          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1)
+            sheet.setRowHeight(
+              row,
+              row === COLUMN_HEADER_ROW_COUNT - 1 ? 34 : 27,
+              headerArea,
+            );
           if (!stress) configureCellTypes(0, rowCount);
 
-          // 常规与大数据模式都由产品列、区域列分别维护独立状态并
+          // 常规与大数据模式都由组织列、科目列分别维护独立状态并
           // 重建可见投影。大数据模式只在单元格写入阶段按视口分页，
           // 不再使用会把两列可见性绑在一起的整行 Outline。
           sheet.showRowOutline(false);
@@ -1736,7 +1629,6 @@ export function useSpreadsheetController(
           if (!stress) {
             applyStableComments();
             applyStableAttachmentIndicators();
-            styleStatusCells(0, rowCount);
             applyCellEditability(0, rowCount);
           }
 
@@ -1778,20 +1670,20 @@ export function useSpreadsheetController(
         );
         setDatasetLabel(
           stress
-            ? `${stressSourceRows.length.toLocaleString(
+            ? `${stressDatasetSummary()} · 当前投影 ${rowCount.toLocaleString(
                 'zh-CN',
-              )} 条底层记录（当前显示 ${rowCount.toLocaleString(
-                'zh-CN',
-              )} 行） × ${colCount} 列`
+              )} 行 · 等待按视口载入`
             : `${rowCount.toLocaleString('zh-CN')} 行 × ${colCount} 列`,
         );
         if (stress) {
           scheduleStressViewportLoad(nextRow);
         }
         setReady(true);
+        spread.undoManager().clear();
+        syncCommandAvailability();
         if (!stress && !regularSourceLoggedRef.current) {
           regularSourceLoggedRef.current = true;
-          logRegularSourceData();
+          logRegularBackendData();
         }
       };
 
@@ -1812,6 +1704,8 @@ export function useSpreadsheetController(
                 stressSourceRows,
                 productExpanded,
                 regionExpandedByProduct,
+                activeRows.length,
+                stressSummaryRecords,
               )
             : getBusinessProjectionSummary(
                 activeView,
@@ -1847,7 +1741,7 @@ export function useSpreadsheetController(
           });
         } else if (expanded) {
           currentProductIds().forEach((productId) => {
-            const state = extensionStateFor(productId);
+            const state = subjectExpansionFor(productId);
             currentRegionGroupIds(productId).forEach((regionId) =>
               state.add(regionId),
             );
@@ -1857,7 +1751,7 @@ export function useSpreadsheetController(
         }
         renderProjectionRows();
         notify(
-          `${dimension === 'product' ? '产品树' : '区域树'}已全部${
+          `${dimension === 'product' ? '组织树' : '科目树'}已全部${
             expanded ? '展开' : '收起'
           }`,
         );
@@ -1876,8 +1770,11 @@ export function useSpreadsheetController(
         productExpanded.clear();
         INITIAL_PRODUCT_EXPANDED.forEach((id) => productExpanded.add(id));
         regionExpandedByProduct.clear();
+        createInitialRegionExpansion(activeView).forEach((state, productId) =>
+          regionExpandedByProduct.set(productId, state),
+        );
         renderProjectionRows();
-        notify('已恢复默认折叠组合');
+        notify('已恢复费用预算表默认展开状态');
       };
 
       const openPanelForSelection = (nextPanel: Exclude<PanelName, null>) => {
@@ -1963,11 +1860,11 @@ export function useSpreadsheetController(
           if (expanded) productExpanded.add(node.productId);
           else productExpanded.delete(node.productId);
           renderProjectionRows();
-          notify(`已${expanded ? '展开' : '收起'}${node.productLabel}产品`);
+          notify(`已${expanded ? '展开' : '收起'}组织 ${node.productLabel}`);
           return;
         }
         if (col === REGION_HIERARCHY_COLUMN && node.regionIsGroup) {
-          const state = extensionStateFor(node.productId);
+          const state = subjectExpansionFor(node.productId);
           const expanded = !state.has(node.regionId);
           if (expanded) state.add(node.regionId);
           else state.delete(node.regionId);
@@ -1975,7 +1872,7 @@ export function useSpreadsheetController(
           notify(
             `已${expanded ? '展开' : '收起'}${node.productLabel}的${
               node.regionLabel
-            }区域`,
+            }科目`,
           );
         }
       };
@@ -1993,6 +1890,7 @@ export function useSpreadsheetController(
               nodeId: row.id,
               productId: row.productId,
               productParentId: row.productParentId,
+              productAncestorIds: row.productAncestorIds,
               regionRootId: row.regionRootId,
               regionDepth: row.regionDepth,
               col,
@@ -2087,7 +1985,7 @@ export function useSpreadsheetController(
           expandedHierarchy = true;
         }
         if (!source.productIsGroup && source.regionDepth > 0) {
-          const state = extensionStateFor(source.productId);
+          const state = subjectExpansionFor(source.productId);
           if (!state.has(source.regionRootId)) {
             state.add(source.regionRootId);
             expandedHierarchy = true;
@@ -2118,15 +2016,13 @@ export function useSpreadsheetController(
 
       const revealRegularSearchMatch = (match: RegularSearchMatch) => {
         let expandedHierarchy = false;
-        if (
-          match.productParentId &&
-          !productExpanded.has(match.productParentId)
-        ) {
-          productExpanded.add(match.productParentId);
+        match.productAncestorIds.forEach((ancestorId) => {
+          if (productExpanded.has(ancestorId)) return;
+          productExpanded.add(ancestorId);
           expandedHierarchy = true;
-        }
+        });
         if (match.regionDepth > 0) {
-          const state = extensionStateFor(match.productId);
+          const state = subjectExpansionFor(match.productId);
           if (!state.has(match.regionRootId)) {
             state.add(match.regionRootId);
             expandedHierarchy = true;
@@ -2147,64 +2043,49 @@ export function useSpreadsheetController(
       };
 
       /**
-       * 使用后端回传的业务坐标定位单元格。定位前只展开目标所需的
-       * 产品和区域祖先；常规模式若处于下钻页，会回到全量投影重试。
+       * 使用后端回传的行维和列维定位单元格。定位前只展开目标所需的
+       * 组织和科目祖先；常规模式若处于下钻页，会回到全量投影重试。
        */
-      const locateBusinessCell = (coordinate: BusinessCellCoordinate) => {
-        if (!isBusinessCellCoordinate(coordinate)) {
-          notify('后端返回的业务单元格坐标不完整', 'error');
-          return false;
-        }
-        if (coordinate.dataset !== activeDataMode) {
-          notify(
-            `坐标属于${
-              coordinate.dataset === 'stress' ? '10 万行' : '常规'
-            }模式，请先切换到对应数据集`,
-            'error',
-          );
+      const locateBusinessCell = (dimension: BusinessCellDimension) => {
+        if (!isBusinessCellDimension(dimension)) {
+          notify('后端返回的行维或列维不完整', 'error');
           return false;
         }
 
         if (activeDataMode === 'stress') {
-          const col = COLUMNS.findIndex(
-            (column) => column.field === coordinate.metric.field,
+          const source = resolveBusinessCellDimension(
+            stressSourceRows,
+            dimension,
           );
-          const sourceRow = stressSourceRows.findIndex(
-            (row) =>
-              row.id === coordinate.record.id &&
-              row.productId === coordinate.dimensions.product.id &&
-              row.regionBusinessId === coordinate.dimensions.region.id,
-          );
-          if (col < 0 || sourceRow < 0) {
+          if (!source) {
             notify('当前 10 万行数据中未找到该业务单元格', 'error');
             return false;
           }
-          const located = revealStressSearchMatch(sourceRow, col);
+          const located = revealStressSearchMatch(source.row, source.col);
           if (!located) {
-            notify('业务坐标存在，但无法投影到当前表格', 'error');
+            notify('业务维度存在，但无法投影到当前表格', 'error');
             return false;
           }
           notify(
-            `已定位 ${coordinate.dimensions.product.label} / ${
-              coordinate.dimensions.region.member?.label ??
-              coordinate.dimensions.region.label
-            } · ${columnName(col)}${located.row + 1}`,
+            `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+              source.col,
+            )}${located.row + 1}`,
           );
           return true;
         }
 
         let viewReset = false;
-        let target = resolveBusinessCellCoordinate(
+        let target = resolveBusinessCellDimension(
           buildFullyExpandedRegularRows(),
-          coordinate,
+          dimension,
         );
         if (!target && activeView.length) {
           activeView = [];
           setView([]);
           viewReset = true;
-          target = resolveBusinessCellCoordinate(
+          target = resolveBusinessCellDimension(
             buildFullyExpandedRegularRows(),
-            coordinate,
+            dimension,
           );
         }
         if (!target) {
@@ -2213,17 +2094,15 @@ export function useSpreadsheetController(
         }
 
         let hierarchyExpanded = viewReset;
-        if (
-          target.productParentId &&
-          !productExpanded.has(target.productParentId)
-        ) {
-          productExpanded.add(target.productParentId);
+        getProductAncestorIds(target.productId).forEach((ancestorId) => {
+          if (productExpanded.has(ancestorId)) return;
+          productExpanded.add(ancestorId);
           hierarchyExpanded = true;
-        }
-        if (target.regionDepth > 0) {
-          const state = extensionStateFor(target.productId);
-          if (!state.has(target.regionRootId)) {
-            state.add(target.regionRootId);
+        });
+        if (target.subjectDepth > 0) {
+          const state = subjectExpansionFor(target.productId);
+          if (!state.has(target.subjectRootId)) {
+            state.add(target.subjectRootId);
             hierarchyExpanded = true;
           }
         }
@@ -2236,17 +2115,16 @@ export function useSpreadsheetController(
           syncProjectionSnapshot();
         }
 
-        const visible = resolveBusinessCellCoordinate(activeRows, coordinate);
+        const visible = resolveBusinessCellDimension(activeRows, dimension);
         if (!visible) {
-          notify('业务坐标存在，但目标行未能正确展开', 'error');
+          notify('业务维度存在，但目标行未能正确展开', 'error');
           return false;
         }
         revealSearchMatch(visible.row, visible.col);
         notify(
-          `已定位 ${coordinate.dimensions.product.label} / ${
-            coordinate.dimensions.region.member?.label ??
-            coordinate.dimensions.region.label
-          } · ${columnName(visible.col)}${visible.row + 1}`,
+          `已定位 ${describeBusinessCellDimension(dimension)} · ${columnName(
+            visible.col,
+          )}${visible.row + 1}`,
         );
         return true;
       };
@@ -2461,6 +2339,7 @@ export function useSpreadsheetController(
         const succeeded = runHistoryCommand('撤销', () =>
           spread.undoManager().undo(),
         );
+        syncCommandAvailability();
         notify(
           succeeded ? '已撤销上一次单元格操作' : '撤销失败',
           succeeded ? 'success' : 'error',
@@ -2476,6 +2355,7 @@ export function useSpreadsheetController(
         const succeeded = runHistoryCommand('重做', () =>
           spread.undoManager().redo(),
         );
+        syncCommandAvailability();
         notify(
           succeeded ? '已重做上一次单元格操作' : '重做失败',
           succeeded ? 'success' : 'error',
@@ -2595,7 +2475,7 @@ export function useSpreadsheetController(
           if (collapse) regionExpandedByProduct.clear();
           else {
             currentProductIds().forEach((productId) => {
-              const state = extensionStateFor(productId);
+              const state = subjectExpansionFor(productId);
               currentRegionGroupIds(productId).forEach((regionId) =>
                 state.add(regionId),
               );
@@ -2635,6 +2515,8 @@ export function useSpreadsheetController(
           setSearchQuery('');
           window.clearTimeout(stressLoadTimer);
           stressLoadTimer = 0;
+          window.clearTimeout(stressIndexWarmupTimer);
+          stressIndexWarmupTimer = 0;
           if (mode === 'regular') {
             setDataMode('regular');
             activeView = [];
@@ -2642,21 +2524,32 @@ export function useSpreadsheetController(
             setView([]);
             renderProjectionRows();
             stressSourceRows = [];
-            releaseStressRecords();
+            stressSummaryRecords = new Map();
+            releaseStressDataset();
             notify('已恢复常规业务数据');
             return;
           }
           setDataMode('loading');
+          setDatasetLabel('正在构建真实化预算数据… 0%');
           setPanel(null);
           stressLoadTimer = window.setTimeout(() => {
             stressLoadTimer = 0;
             if (cancelled) return;
             const startedAt = performance.now();
-            void getStressRecordsAsync()
-              .then((rows) => {
+            void getStressDatasetAsync((loaded, total) => {
+              if (cancelled) return;
+              setDatasetLabel(
+                `正在构建真实化预算数据… ${Math.round(
+                  (loaded / total) * 100,
+                )}%`,
+              );
+            })
+              .then((dataset) => {
                 if (cancelled) return;
+                const rows = dataset.detailRows;
                 activeView = [];
                 stressSourceRows = rows;
+                stressSummaryRecords = dataset.summaryRecords;
                 getStressProductGroupIds(rows).forEach((id) =>
                   productExpanded.delete(id),
                 );
@@ -2668,8 +2561,20 @@ export function useSpreadsheetController(
                 renderRows(buildStressRows(), true);
                 syncProjectionSnapshot();
                 setDataMode('stress');
+                stressIndexWarmupTimer = window.setTimeout(() => {
+                  stressIndexWarmupTimer = 0;
+                  if (
+                    cancelled ||
+                    activeDataMode !== 'stress' ||
+                    stressSourceRows !== rows
+                  )
+                    return;
+                  prepareBusinessCellLocationIndex(rows);
+                });
                 notify(
-                  `10 万行已载入，用时 ${Math.round(
+                  `10 万条明细与 ${stressSummaryRecords.size.toLocaleString(
+                    'zh-CN',
+                  )} 条后台汇总已就绪，均可编辑 · ${Math.round(
                     performance.now() - startedAt,
                   )} ms`,
                 );
@@ -2678,6 +2583,7 @@ export function useSpreadsheetController(
                 console.error('[SpreadJS] 压力数据生成失败', error);
                 if (cancelled) return;
                 setDataMode('regular');
+                setDatasetLabel(INITIAL_DATASET_LABEL);
                 notify('压力数据生成失败，请重试', 'error');
               });
           }, 40);
@@ -2726,14 +2632,16 @@ export function useSpreadsheetController(
             0,
           );
           const accepted: File[] = [];
+          const signatures = new Set(
+            current.map(
+              (attachment) =>
+                `${attachment.name}:${attachment.size}:${attachment.lastModified}`,
+            ),
+          );
           let rejected = 0;
           files.forEach((file) => {
-            const duplicate = current.some(
-              (attachment) =>
-                attachment.name === file.name &&
-                attachment.size === file.size &&
-                attachment.lastModified === file.lastModified,
-            );
+            const signature = `${file.name}:${file.size}:${file.lastModified}`;
+            const duplicate = signatures.has(signature);
             if (
               !isAcceptedAttachment(file) ||
               file.size > MAX_ATTACHMENT_SIZE ||
@@ -2744,6 +2652,7 @@ export function useSpreadsheetController(
               return;
             }
             accepted.push(file);
+            signatures.add(signature);
           });
           if (!accepted.length) {
             notify(
@@ -2920,12 +2829,14 @@ export function useSpreadsheetController(
             }`,
             'error',
           );
-          console.info('[SpreadJS Demo][编辑已阻止]', {
-            cell: `${columnName(args.col)}${args.row + 1}`,
-            rowId: activeRows[args.row]?.id,
-            field: COLUMNS[args.col]?.field,
-            reason: editability.reason,
-          });
+          if (process.env.NODE_ENV !== 'production') {
+            console.info('[SpreadJS Demo][编辑已阻止]', {
+              cell: `${columnName(args.col)}${args.row + 1}`,
+              rowId: activeRows[args.row]?.id,
+              field: COLUMNS[args.col]?.field,
+              reason: editability.reason,
+            });
+          }
         },
       );
       sheet.bind(
@@ -2987,14 +2898,16 @@ export function useSpreadsheetController(
               }：${readonlyTarget.reason}`,
               'error',
             );
-            console.warn('[SpreadJS Demo][粘贴已阻止]', {
-              cell: `${columnName(readonlyTarget.col)}${
-                readonlyTarget.row + 1
-              }`,
-              reason: readonlyTarget.reason,
-              pasteRowCount,
-              pasteColCount,
-            });
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('[SpreadJS Demo][粘贴已阻止]', {
+                cell: `${columnName(readonlyTarget.col)}${
+                  readonlyTarget.row + 1
+                }`,
+                reason: readonlyTarget.reason,
+                pasteRowCount,
+                pasteColCount,
+              });
+            }
             return;
           }
           clipboardHistorySnapshot = captureClipboardHistory(
@@ -3095,7 +3008,7 @@ export function useSpreadsheetController(
             );
           }
           if (blockedReadonlyChange)
-            notify('已跳过不可编辑的汇总、派生或层级单元格', 'error');
+            notify('已跳过只读或无法映射的单元格', 'error');
           updateSelected(
             sheet.getActiveRowIndex(),
             sheet.getActiveColumnIndex(),
@@ -3108,7 +3021,7 @@ export function useSpreadsheetController(
       sheet.bind(
         GC.Spread.Sheets.Events.ValidationError,
         (_sender: unknown, args: ValidationErrorArgs) => {
-          if (args.col !== DECIMAL_COLUMN) return;
+          if (COLUMNS[args.col]?.format !== 'decimal') return;
 
           args.validationResult =
             GC.Spread.Sheets.DataValidation.DataValidationResult.discard;
@@ -3201,6 +3114,7 @@ export function useSpreadsheetController(
                 : undefined,
             );
             updateSelected(args.row, args.col);
+            scheduleCommandAvailabilitySync();
             return;
           }
           commitBusinessCellValue(
@@ -3216,6 +3130,7 @@ export function useSpreadsheetController(
               : undefined,
           );
           updateSelected(args.row, args.col);
+          scheduleCommandAvailabilitySync();
         },
       );
       sheet.bind(
@@ -3314,7 +3229,7 @@ export function useSpreadsheetController(
             if (range) calculateSelection(sheet, range);
           }
           if (blockedReadonlyChange)
-            notify('已跳过不可编辑的汇总、派生或层级单元格', 'error');
+            notify('已跳过只读或无法映射的单元格', 'error');
         },
       );
       sheet.bind(
@@ -3350,14 +3265,17 @@ export function useSpreadsheetController(
       window.clearTimeout(toastTimer);
       window.clearTimeout(stressLoadTimer);
       window.clearTimeout(stressViewportTimer);
+      window.clearTimeout(stressIndexWarmupTimer);
       window.clearTimeout(validationFlashTimer);
       window.clearTimeout(clipboardHistoryTimer);
+      window.clearTimeout(commandStateTimer);
       clipboardHistorySnapshot = null;
       trackedHistoryCells.clear();
       cellFormulaState.clear();
       actionsRef.current = null;
+      stressPageSource.dispose();
       workbook?.destroy();
-      releaseStressRecords();
+      releaseStressDataset();
     };
   }, [initializationAttempt]);
 
@@ -3371,6 +3289,8 @@ export function useSpreadsheetController(
     hostRef,
     actionsRef,
     ready,
+    canUndo,
+    canRedo,
     initializationError,
     retryInitialization,
     view,
@@ -3405,7 +3325,10 @@ export function useSpreadsheetController(
     toast,
     datasetLabel,
     aggregateValue,
+    licenseConfigured: Boolean(process.env.UMI_APP_SPREADJS_LICENSE_KEY),
     openPanel,
     tableBusy,
   };
 }
+
+export type SpreadsheetController = ReturnType<typeof useSpreadsheetController>;

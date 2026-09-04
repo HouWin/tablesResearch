@@ -1,5 +1,4 @@
-# README
+# 企业级表格组件调研与 Demo
 
-`@umijs/max` 模板项目，更多功能参考 [Umi Max 简介](https://umijs.org/docs/max/introduce)
-
+基于 Umi Max 4 和 React 18 的企业级 Web 表格能力验证项目。项目用可运行的业务场景对比多种表格引擎，重点验证大数据、层级数据、编辑、审计、附件与业务扩展能力。
 

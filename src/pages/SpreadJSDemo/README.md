@@ -1,564 +1,136 @@
-# SpreadJS 经营数据表
+# SpreadJS 费用预算表
 
-本目录实现了 `/spreadjs-demo/business` 页面。它以普通 SpreadJS Worksheet 为内核，在其上增加业务层级投影、双列独立折叠、单元格审计、附件和 10 万行压力数据等能力。
+`/spreadjs-demo/business` 是一个可直接演示和继续接入后端的费用预算工作台。页面以普通 SpreadJS Worksheet 为内核，将 `费用预算表-行维度展开示例.xlsx` 的组织、科目和年度月份结构投影为可编辑二维表格，并提供搜索定位、列管理、审计、附件、统计和 10 万行压力模式。
 
-这不是 SpreadJS PivotTable。页面先将树形业务数据投影为二维 `ViewRow[]`，再写入 Worksheet；产品树和区域树的展开状态由应用层单独维护。
+## 快速验收
 
-## 快速定位
-
-- 路由配置：[`../../../.umirc.ts`](../../../.umirc.ts)
-- 页面入口：[`index.tsx`](./index.tsx)
-- React 通用界面：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)
-- 数据模型与二维投影：[`spreadsheet/model.ts`](./spreadsheet/model.ts)
-- SpreadJS 初始化、渲染和事件：[`spreadsheet/use-spreadsheet-controller.ts`](./spreadsheet/use-spreadsheet-controller.ts)
-- 剪贴板回调适配：[`spreadsheet/clipboard.ts`](./spreadsheet/clipboard.ts)
-- 页面样式：[`index.less`](./index.less)
-- SpreadJS 类型补充：[`typings.d.ts`](./typings.d.ts)
-
-页面的主调用链如下：
-
-```text
-.umirc.ts 路由
-    ↓
-SpreadJSDemoPage（React 页面）
-    ↓ useSpreadsheetController()
-创建 SpreadJS Workbook，并注册命令与事件
-    ↓
-BUSINESS_DATA + 产品展开状态 + 区域展开状态
-    ↓ createBusinessProjectionRows()
-ViewRow[]
-    ↓ viewRowValues() / renderRows()
-SpreadJS Worksheet
-    ↓ EnterCell / CellClick / CellChanged / RangeChanged 等事件
-业务数据、历史记录和 React 面板状态同步更新
+```bash
+pnpm typecheck:spreadjs
+pnpm build
+pnpm dev
 ```
 
----
+打开终端输出的 `/spreadjs-demo/business` 地址。首次加载 SpreadJS 引擎可能需要几秒；页面会显示明确的初始化状态，失败时可在页面内重试。
 
-## 1. 表格实现的功能
+## 数据与表格结构
 
-### 1.1 业务维度和双列独立折叠
+- 页面运行时数据源：[`spreadsheet/model.ts`](./spreadsheet/model.ts) 中的 `BUSINESS_DATA`，它本身就是后台返回形态的类型化示例，不再维护重复静态副本。
+- 列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts) 中的 `BUSINESS_COLUMN_DATA`。组织、科目、功能属性是顶层叶子列，2025 年是包含全年合计及 1—12 月的顶层分组，与 Excel 表头结构直接对应；列树的叶子、顶层分组及中间分组都必须提供全树唯一的 `field`。
+- Excel 原始样例：[`费用预算表-行维度展开示例.xlsx`](./费用预算表-行维度展开示例.xlsx)。
+- 页面包含 3 个行维度：组织、科目、功能属性；数值列为全年合计和 1 月至 12 月。
+- 常规样例完全展开后为 36 行 × 16 列。
+- 10 万行模式从常规组织和“办公费 / 电费 / 水费”科目继续扩展，补充区域经营单元、成本中心、人力、研发、制造、供应链、信息化、质量、折旧等真实预算科目；月度数值带有确定性波动和季节性，全年合计严格等于 12 个月之和。除 10 万条明细外，还模拟后台返回 1,100 条带稳定 ID 的“组织 × 科目”汇总记录。
+- 列分组默认以第一个叶子列作为收起后保留列，因此“2025年”收起后会自动保留“全年合计”，不需要额外配置。
 
-前三列是业务维度：
+`BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。组织节点通过 `children` 保存下级组织，通过 `subjects` 保存当前组织的科目树；科目树内部继续使用 `children` 表达合计与明细。科目树不保留额外的“费用汇总”层，日常费用合计、管理费用合计等后台汇总记录直接作为可折叠节点，其费用明细向右缩进一级。前端编辑明细时不会重新计算或覆盖这些汇总记录。
 
-| 列 | 内容 | 行为 |
-| --- | --- | --- |
-| 产品层级 | 产品大类、产品子类或事业群、产品线 | 维护产品树的展开状态 |
-| 产品属性 | 产品的业务属性 | 跟随产品块纵向合并，不参与折叠 |
-| 区域层级 | 大区、城市或区域明细 | 每个产品分别维护自己的区域展开状态 |
+`BUSINESS_DATA` 不再保存 `hierarchyRole`。组织与科目由所在容器区分：根节点和组织节点的 `children` 都是下级组织，组织节点的 `subjects` 是科目树；科目节点是否可折叠则直接由其 `children` 判断。层级和汇总身份均由树结构推导，避免后台同时维护“结构”和“角色”两套可能冲突的信息。
 
-常规模式通过两个彼此独立的数据结构维护展开状态：
+## 层级投影
+
+页面维护两套互不干扰的展开状态：
 
 ```ts
-productExpanded: Set<string>
-regionExpandedByProduct: Map<productId, Set<regionId>>
+organizationExpanded: Set<string>
+subjectExpandedByOrganization: Map<organizationId, Set<subjectId>>
 ```
 
-因此，展开“家具”的“华东”不会改变其他产品的区域状态；收起产品树也不会清空已经保存的区域选择。
+组织列支持集团、公司、部门多级展开；每个组织分别维护自己的科目展开状态。`createBusinessProjectionRows()` 根据两套状态生成当前可见的 `ViewRow[]`，再由控制器写入 SpreadJS。
 
-`createBusinessProjectionRows()` 根据这两个状态重新计算当前可见的 `ViewRow[]`。同一产品对应的产品名称和属性使用 `productRowSpan` 纵向合并，区域行则在第三列独立展开。
+组织和科目名称是层级投影字段，只能通过展开/收起操作改变；功能属性、全年合计及各月份值均可直接编辑。这条规则同时适用于明细和汇总：汇总行是后台独立记录，修改汇总不会由前端自动分摊到明细，修改明细也不会在前端重算汇总。编辑结果根据后台记录 ID 和完整业务坐标写回对应记录，并进入撤销、重做与历史记录链路。
 
-常规模式和 10 万行模式都采用“重新投影并渲染当前可见数据”，不使用 SpreadJS 原生行 Outline。两种模式共享同一套交互语义：
+## 单元格双向业务坐标
 
-- 产品列只读写 `productExpanded`；
-- 区域列只读写 `regionExpandedByProduct`；
-- 展开或收起任意一列，都不会改写另一列的状态；
-- 10 万行模式仅扩展底层数据规模，并在单元格写入阶段增加按视口分页。
-
-因此，两种模式不仅布局相同，节点箭头、可点击位置、展开层级和状态保持行为也相同。
-
-### 1.2 多级表头、冻结列和列分组
-
-`COLUMNS` 定义 16 个业务字段；`COLUMN_HEADER_SECTIONS` 和 `COLUMN_HEADER_GROUPS` 生成三级表头：
-
-- 业务维度；
-- 核心经营指标；
-- 业务治理。
-
-前三列被冻结。收入、订单和治理明细使用 SpreadJS 原生 Column Outline，可以统一展开或收起，同时保留汇总列。
-
-### 1.3 下钻和上钻
-
-常规模式支持从产品大类下钻到下一级产品数据，并通过面包屑或“返回上级”恢复视图。
-
-```text
-当前 ViewRow
-    ↓ viewForNode()
-DrillView 路径
-    ↓ rootsForView()
-当前层级的业务根节点
-    ↓ createBusinessProjectionRows()
-新的二维表格
-```
-
-10 万行模式同样使用产品树和区域树的独立投影，但不提供页面级下钻，避免在压力数据上同时维护两套导航语义。
-
-### 1.4 单元格编辑和字段控件
-
-表格按字段配置不同交互：
-
-- 金额、订单、百分比和小数格式；
-- 核验状态下拉框；
-- “已核验”复选框；
-- 更新日期选择器；
-- 调整系数数值校验；
-- 状态与“已核验”字段联动；
-- 收入、商品收入、服务收入与客单价保持计算一致；
-- 订单数、线上订单、线下订单与客单价保持计算一致；
-- 层级列、产品属性、自动计算的客单价和所有汇总数据只读。
-
-`getCellEditability()` 是唯一的可编辑策略入口。只有能够唯一映射到一个底层叶子明细的业务单元格才允许编辑；区域汇总、产品汇总以及由多个明细合并出的城市数据都不能直接改写。控制器同时使用 SpreadJS 单元格锁定、`EditStarting` 和粘贴前校验执行这套规则，不能只依赖灰色样式。
-
-所有业务值修改最终批量进入 `commitBusinessCellValues()`：
-
-```text
-单格编辑 / 粘贴 / 清空 / 撤销 / 重做
-  ↓ getCellEditability()
-定位唯一底层 BusinessNode 叶子
-  ↓ toBusinessCellCoordinate()
-生成产品 + 区域 + 底层记录 + 指标字段的后端业务坐标
-  ↓ updateBusinessNode()
-更新直接字段及收入、订单、状态等同级联动字段
-  ↓ createBusinessProjectionRows() / createStressProjectionRows()
-常规模式重新读取 BUSINESS_DATA；压力模式重新生成当前投影
-  ↓ 比较修改前后的 ViewRow[]
-刷新直接修改和同级字段联动，并写入历史
-```
-
-具体规则如下：
-
-- 修改净收入：按修改前占比同步分摊商品收入和服务收入，并重算客单价；
-- 修改商品收入或服务收入：重算净收入和客单价；
-- 修改订单数：按修改前占比同步分摊线上和线下订单，并重算客单价；
-- 修改线上订单或线下订单：重算订单数和客单价；
-- 修改状态或“已核验”：双向同步另一字段；
-- 常规模式的产品、子类和区域汇总指标由后端直接返回，Demo 将这些静态值明确保存在 `BUSINESS_DATA`。`regionSummaries` 保存产品大类下的区域汇总，`detailIds` 只声明展开后对应哪些明细；前端不再根据明细执行求和、平均值或状态归并。因此编辑明细只改变该明细及其同级派生字段，不会擅自修改后端汇总值。
-
-#### 前后端业务单元格坐标
-
-不要把 Worksheet 行号或 `ViewRow.id` 传给后端。它们都属于当前可见投影，折叠、展开、下钻或切换数据集后可能改变。编辑回调改用 `BusinessCellCoordinate`：
+单元格坐标由行维和列维组成。行维只保存当前组织和科目的稳定 ID；列维只保存 `BUSINESS_COLUMN_DATA` 从顶层到叶子列的 `field` 数组。定位不依赖中文名称、树节点角色或 Worksheet 物理行列号，因此业务名称和展开状态变化不会导致坐标失效。组织 ID、科目 ID 需在各自业务域内保持全局唯一，列树中的每个 `field` 也必须唯一。
 
 ```ts
 {
-  schema: 'business-cell/v1',
-  dataset: 'regular',
-  dimensions: {
-    product: {
-      id: 'furniture-bookcases',
-      parentId: 'furniture',
-      label: '书柜',
-      level: 'subcategory'
-    },
-    region: {
-      id: 'bookcases-east',
-      label: '华东',
-      level: 'detail',
-      member: { id: 'bookcases-shanghai', label: '上海' }
-    }
+  row: {
+    organizationId: 'huajing-sales',
+    subjectId: 'huajing-sales-office',
   },
-  record: { id: 'bookcases-shanghai', role: 'detail' },
-  metric: { field: 'revenue', label: '净收入' }
+  column: ['budget2025', 'january'],
 }
 ```
 
-其中只有 ID、层级和字段参与定位，中文标签只用于日志和排查。区域维度同时区分区域根 `华东` 和当前成员 `上海`；汇总行的 `member` 为 `null`。`regionBusinessId` 专门保存后端区域维度 ID，`regionRootId` 仍只负责前端区域树的展开状态，两者不能混用。
+- Worksheet → 后端：`toBusinessCellDimension()` 生成业务坐标；`onBusinessCellChange` 回调发送 `recordId`、`field`、新旧值和完整 `dimension`。
+- 后端 → Worksheet：`resolveBusinessCellDimension()` 根据相同坐标，通过缓存的行维索引和列维索引查找投影行、叶子列；`locateBusinessCell()` 会自动展开必要的组织、科目祖先后选中目标单元格。10 万行模式会在载入时预热行维索引。
 
-转换方向如下：
+## 模块边界
 
-```text
-表格行列位置
-  ↓ toBusinessCellCoordinate(row, col, dataMode)
-BusinessCellCoordinate（请求后端）
-  ↓ 后端原样返回 coordinate
-isBusinessCellCoordinate() 运行时校验
-  ↓ resolveBusinessCellCoordinate()
-全展开投影中的目标及祖先
-  ↓ actionsRef.current.locateBusinessCell(coordinate)
-只展开必要产品/区域，选中并滚动到实际单元格
-```
+- 路由与菜单：[`../../../.umirc.ts`](../../../.umirc.ts)
+- 页面入口：[`index.tsx`](./index.tsx)
+- 页面和工具栏：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)、[`components/spreadsheet-toolbar.tsx`](./components/spreadsheet-toolbar.tsx)
+- 层级控制：[`components/outline-controls.tsx`](./components/outline-controls.tsx)
+- 数据模型与投影：[`spreadsheet/model.ts`](./spreadsheet/model.ts)
+- 多级表头与列定义：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts)
+- SpreadJS 渲染与事件：[`spreadsheet/use-spreadsheet-controller.ts`](./spreadsheet/use-spreadsheet-controller.ts)
+- 大数据生成、分页契约与本地页源：[`spreadsheet/stress-data-source.ts`](./spreadsheet/stress-data-source.ts)
+- 生产分批加载方案：[`LARGE_DATA_STRATEGY.md`](./LARGE_DATA_STRATEGY.md)
+- 业务坐标：[`spreadsheet/business-cell-coordinate.ts`](./spreadsheet/business-cell-coordinate.ts)
+- 附件策略与展示：[`spreadsheet/attachments.ts`](./spreadsheet/attachments.ts)
+- 选区统计：[`spreadsheet/selection-statistics.ts`](./spreadsheet/selection-statistics.ts)
+- 通用常量：[`spreadsheet/constants.ts`](./spreadsheet/constants.ts)
+- 弹层定位与关闭：[`components/use-anchored-popover.ts`](./components/use-anchored-popover.ts)
 
-真实接口可通过控制器回调接入：
+`useSpreadsheetController()` 是 SpreadJS 与 React 的适配边界：React 组件只读取控制器状态并调用 `actionsRef`；Worksheet 实例、事件绑定、物理行列和增量加载细节不会泄漏到展示组件。附件校验、选区统计、列模型与业务坐标均保持为独立纯逻辑模块，便于单独替换或测试。
 
-```ts
-useSpreadsheetController({
-  onBusinessCellChange(payload) {
-    // payload.coordinate 是业务主坐标；payload.change 是新旧值和操作来源。
-    void saveCellChange(payload);
+## 保留的交互能力
+
+- 组织、科目两套独立展开/收起和恢复默认；
+- 业务层级下钻、上钻与面包屑导航；
+- 快速搜索和按完整业务维度 JSON 精确定位；
+- 年度列组展开/收起、列管理、冻结行列和自适应列宽；
+- 单元格编辑、撤销、重做、复制、历史、批注、数据追踪和附件；
+- 自定义统计、全屏和 10 万行压力模式。
+
+## 后端接入
+
+页面默认直接更新内存中的 `BUSINESS_DATA`，并在开发环境打印回调载荷。接入保存接口时，在页面入口传入回调即可：
+
+```tsx
+const controller = useSpreadsheetController({
+  onBusinessCellChange: async (payload) => {
+    await saveBudgetCell(payload);
   },
 });
 ```
 
-后端响应中的坐标可反向定位：
+回调载荷包含后台 `recordId`、叶子列 `field`、新旧值和完整 `dimension`。生产接入建议由请求层负责乐观更新失败后的回滚、权限错误和并发版本冲突；不要在展示组件里直接拼装行列坐标。
 
-```ts
-actionsRef.current?.locateBusinessCell(response.coordinate);
-```
+批注、历史与附件当前保存在浏览器内存中，刷新后清空。它们已经使用稳定单元格 ID 关联，接入持久化时可以直接以该键或业务 `dimension` 作为服务端关联依据。附件限制统一定义在 `spreadsheet/attachments.ts`：支持图片、PDF、Word、Excel，单文件 5 MiB，每格最多 10 个。
 
-`businessCellCoordinateKey()` 生成不依赖中文名称的稳定序列化键，可用作接口幂等键或日志关联键。
+### 10 万行与真实后端分页
 
-### 1.5 撤销、重做和单元格历史
+独立 Demo 没有后端，因此会在浏览器中分块生成 10 万条确定性明细记录和 1,100 条独立汇总记录，用于完整验证层级、编辑、搜索和统计。两类记录都模拟后台返回的稳定 ID 与预算字段；表格不使用临时前端聚合行代替可编辑汇总。进入 Worksheet 后不会一次写入全部单元格：控制器监听 SpreadJS `TopRowChanged`，只请求当前可视页并预取下一页，每页 400 行，通过 `setArray` 批量写入；切换层级投影会取消旧页请求并丢弃过期响应。
 
-页面在 SpreadJS 原生 UndoManager 外增加了一层业务历史。以下修改都会记录旧值、新值、来源和时间：
+生产环境不应把 10 万条源记录一次返回前端。`spreadsheet/stress-data-source.ts` 已定义 `BudgetPageGateway`，推荐后端提供 manifest、游标 page、search、locate 四类接口，把全表搜索、过滤、排序、跨页统计和业务坐标定位留在服务端。完整接口、缓存、一致性与技术选型见 [`LARGE_DATA_STRATEGY.md`](./LARGE_DATA_STRATEGY.md)。
 
-- 直接编辑；
-- 公式编辑；
-- 复制、剪切和外部粘贴；
-- 清空；
-- 拖拽填充、拖放移动；
-- 撤销和重做；
-- 同级字段联动（如净收入 ↔ 商品/服务收入）。
+## 交互约定
 
-区域、产品及事业群等汇总行不再随明细编辑联动变化（详见 1.4 节），因此不会产生“汇总联动”历史记录。
+- 组织和科目名称由投影维护，只能通过展开、收起或钻取改变视图；功能属性、全年合计和月份值可编辑。
+- `Ctrl/⌘ + F` 打开页面级全表搜索；Enter / Shift + Enter 切换下一个 / 上一个结果。
+- 展开、收起、钻取或切换数据模式会重建可见投影，并清理依赖物理行号的撤销栈，防止旧坐标作用到另一条业务记录。
+- 所有工具栏按钮在窄屏隐藏文字后仍保留可访问名称；弹层支持 Escape、点击外部关闭并将焦点还给触发按钮。
+- 10 万行模式按视口分页写入 Worksheet，并显示已载入行数；本地 Demo 搜索完整的确定性源数据，生产模式则应替换为服务端搜索。
 
-粘贴场景在 `ClipboardPasting` 中保存操作前快照，在 `ClipboardPasted` 中比较新旧值。批量范围操作由 `RangeChanged` 兜底。
-
-开发环境中，每个直接修改都会输出 `[SpreadJS Demo][单元格修改]`。日志包含 `coordinate`、稳定的 `coordinateKey`、操作来源、新旧值，以及仅用于前端排查的 Sheet 名称、A1 地址和 `projectionRowId`。后端身份只认 `coordinate`，不能使用 A1 地址或 `projectionRowId`。生产构建不会输出这些调试日志；正式接入使用 `onBusinessCellChange` 回调。
-
-### 1.6 快速搜索
-
-搜索范围包含当前业务层级内的已折叠内容：
-
-- 常规模式先构造“全部展开”的投影视图，搜索稳定业务 ID 对应的单元格；
-- 命中隐藏行时，只展开命中项所需的产品和区域祖先；
-- 命中隐藏列时自动展开列组或恢复该列；
-- 展示匹配总数、当前位置和 A1 地址；
-- 支持上一个、下一个匹配；
-- 数据变化后主动使旧搜索结果失效。
-
-10 万行模式直接搜索全部底层 `ViewRow`，命中后展开必要的事业群、产品线和区域节点，再定位到投影后的稳定行。扫描过程中每 5,000 行让出一次主线程，使搜索可以取消，并避免长时间冻结页面。
-
-### 1.7 批注、附件和数据追踪
-
-批注、附件和历史不以 `A1` 地址作为持久身份，而是使用：
-
-```ts
-stableCellKey(node.id, column.field)
-```
-
-即“业务行 ID + 字段 ID”。展开、折叠和下钻可能改变行号，但不会改变业务单元格身份。
-
-- **批注**：使用 SpreadJS 原生 Comment 展示，同时用稳定 ID 保存内容；
-- **附件**：附件与单元格值分开保存，通过单元格按钮显示回形针和数量；
-- **数据追踪**：对净收入、客单价、目标达成等字段展示来源和计算规则；
-- **历史**：按稳定单元格 ID 展示所有值变化。
-
-当前附件和历史都是 Demo 级浏览器内存实现，刷新后不会持久化。数据追踪中的来源规则也是前端演示数据，不代表真实后端血缘。
-
-### 1.8 选区统计
-
-选区变化后计算：
-
-- 单元格数量；
-- 数值数量和忽略数量；
-- SUM、AVG、COUNT、MIN、MAX；
-- 两种受控自定义表达式；
-- 金额、百分比、小数等结果格式。
-
-为避免超大选区阻塞主线程，最多检查 200,000 个单元格，并在结果中提示截断状态。
-
-### 1.9 10 万行压力模式
-
-压力模式生成固定的 100,000 个底层 `ViewRow`，数据层级为：
-
-```text
-10 个事业群
-  └─ 100 条产品线
-       └─ 1,000 个产品线区域组
-            └─ 经营明细
-```
-
-事业群还会按区域聚合出 100 个父级区域节点，因此界面统计的可展开区域节点总数为 1,100。初始状态只投影 10 个事业群各自的 10 个区域汇总，共 100 行；展开事业群后再加入对应产品线，展开区域后再加入该区域的明细。
-
-主要性能策略：
-
-- 数据按 5,000 行异步生成并让出主线程；
-- 使用 `WeakMap` 缓存 10 万条底层记录的产品、区域索引；
-- 折叠时只生成当前可见的业务投影，不把 10 万行全部写入 Worksheet；
-- 产品树与区域树复用常规模式的独立状态集合；
-- 当前投影按每页 400 行物化，且每一批都会先模拟一次带延迟（`STRESS_PAGE_FETCH_DELAY_MS`）的后端分页请求：滚动接近已加载数据边界时先在该批行写入“正在加载…”占位提示，请求“返回”后才把真实数据写入表格，制造真实的分批加载观感；
-- `TopRowChanged` 后仅加载可视区附近数据；
-- 单元格类型和验证器复用；
-- 批量操作期间暂停绘制、事件和计算服务；
-- 退出压力模式或重新加载时，会递增内部“会话代次”使尚未返回的分页请求失效，避免过期数据回写到错误的行；
-- 退出压力模式时释放缓存。
-
----
-
-## 2. 代码组织结构
-
-### 2.1 `index.tsx`：React 页面编排
-
-该文件负责“界面是什么样”，不直接操作 SpreadJS Workbook。
-
-主要内容：
-
-- 页面标题和工具栏；
-- 搜索、列管理和折叠控制；
-- 下钻路径；
-- 公式栏外观；
-- SpreadJS 挂载容器；
-- 批注、历史、附件、数据追踪、统计等抽屉；
-- 加载、错误、Toast 和状态栏。
-
-页面通过下面两个引用连接 SpreadJS：
-
-```ts
-const { hostRef, actionsRef, ...uiState } = useSpreadsheetController();
-```
-
-- `hostRef` 是 Workbook 的 DOM 挂载点；
-- `actionsRef` 是 React 按钮调用 SpreadJS 命令的桥梁；
-- `uiState` 是需要触发 React 渲染的选中项、搜索结果、面板状态等。
-
-例如工具栏“撤销”只调用 `actionsRef.current?.undo()`，具体命令和历史处理都在控制器中完成。
-
-### 2.2 `components/spreadsheet-ui.tsx`：通用 React 组件
-
-这里包含不依赖 Workbook 实例的展示组件：
-
-- `DemoHeader`；
-- `SearchPopover`；
-- `ColumnVisibilityPopover`；
-- `SheetStatusBar`；
-- `ToastMessage`；
-- `Drawer`。
-
-这些组件通过 props 接收状态和回调。新增纯界面功能时优先放在这里，不要把 Workbook 操作传入组件内部。
-
-### 2.3 `spreadsheet/model.ts`：业务数据和纯计算
-
-该文件应尽量保持为“不依赖 React、不直接操作 SpreadJS”的模型层，主要负责：
-
-- 业务类型：`BusinessNode`、`ViewRow`、`SelectedCell` 等；
-- 列定义和列号常量；
-- 常规演示数据；
-- 后端汇总节点与明细节点的二维投影；
-- 产品和区域投影；
-- 下钻路径计算；
-- 10 万行数据生成、聚合索引和可见行投影；
-- 行到单元格值的转换；
-- 搜索文本和数字格式；
-- 业务字段更新；
-- 选区统计结果计算。
-
-阅读该文件时建议从以下链路入手：
-
-```text
-BUSINESS_DATA
-  ↓ getVisibleProducts()
-可见产品
-  ↓ getVisibleRegions()
-按 regionSummaries / detailIds 找到后端节点
-  ↓ createBusinessProjectionRows()
-直接复制节点指标得到 ViewRow[]（不做前端聚合）
-  ↓ viewRowValues()
-SpreadJS 二维数组
-```
-
-### 2.4 `spreadsheet/use-spreadsheet-controller.ts`：命令式核心
-
-这是页面最核心的文件，管理 Workbook 的完整生命周期。
-
-#### 初始化阶段
-
-`useEffect → start()` 完成：
-
-1. 动态加载 SpreadJS 和中文资源；
-2. 设置许可证和文化信息；
-3. 创建 Workbook 和 Worksheet；
-4. 创建下拉框、复选框、日期按钮和验证器；
-5. 注册自定义命令、快捷键和右键菜单；
-6. 绑定 SpreadJS 事件；
-7. 首次执行 `renderRows(buildRegularRows(), false)`。
-
-使用动态 import 是为了避免服务端环境访问浏览器 API，并减少页面入口的同步加载成本。
-
-#### 渲染阶段
-
-`renderRows()` 是统一渲染入口：
-
-```text
-ViewRow[]
-  ├─ 设置行列数
-  ├─ 写入二维数据
-  ├─ 生成三级表头
-  ├─ 合并产品和属性块
-  ├─ 配置格式、控件、验证器
-  ├─ 建立列 Outline
-  ├─ 恢复批注、附件和列显隐
-  └─ 恢复选区并更新 React 状态
-```
-
-常规模式和压力模式都调用 `renderProjectionRows()` 重新计算当前可见行；压力模式随后只物化当前需要的页。
-
-#### 事件阶段
-
-控制器监听的关键事件包括：
-
-| 事件 | 作用 |
-| --- | --- |
-| `EnterCell` | 更新当前单元格和抽屉内容 |
-| `SelectionChanged` | 重算选区统计 |
-| `CellClick` | 处理产品列和区域列折叠 |
-| `EditStarting` | 按统一策略阻止汇总、派生和层级字段编辑 |
-| `ClipboardPasting` | 校验整个目标区域并保存粘贴前快照 |
-| `ClipboardPasted` | 提交粘贴结果并记录历史 |
-| `ValidationError` | 拦截非法调整系数 |
-| `CellChanged` | 提交单格编辑和公式变化 |
-| `RangeChanged` | 处理清空、拖拽填充等范围修改 |
-| `RangeGroupStateChanged` | 同步 Outline 工具栏状态 |
-| `TopRowChanged` | 压力模式按视口加载数据 |
-
-#### 清理阶段
-
-effect cleanup 负责：
-
-- 清理所有定时器；
-- 取消未完成搜索或压力数据任务；
-- 清空历史跟踪临时状态；
-- 销毁 Workbook；
-- 释放 10 万行缓存。
-
-任何新增长任务、事件或 Blob URL 都应在相应清理阶段释放。
-
-### 2.5 `spreadsheet/clipboard.ts`：剪贴板边界
-
-该文件将制表符文本转换为矩阵，并统一输出复制、粘贴前回调信息。目前回调只用于 Demo 控制台观察；如果以后接入权限校验、脱敏或操作审计，应从这里或控制器中的粘贴事件扩展。
-
-### 2.6 `index.less`：页面视觉和响应式布局
-
-样式文件负责页面壳、工具栏、表格容器、弹层、抽屉、附件和状态栏。SpreadJS 单元格内部颜色、格式和控件样式主要仍在控制器的 `styleDataRows()`、`configureCellTypes()` 等函数中设置。
-
-修改视觉时先判断目标属于：
-
-- React DOM：修改 `index.less`；
-- SpreadJS 单元格、表头、Outline：修改控制器中的 SpreadJS 样式 API。
-
----
-
-## 状态由谁管理
-
-理解状态所有权可以避免 React 和 SpreadJS 互相覆盖。
-
-| 状态类型 | 保存位置 | 示例 |
-| --- | --- | --- |
-| 需要更新 React UI 的状态 | React `useState` | 当前选中项、搜索结果、抽屉、Toast |
-| React 事件需要读取但不应触发渲染 | React `useRef` | `actionsRef`、附件、历史、批注 |
-| 仅属于 Workbook 生命周期的可变状态 | `useEffect` 闭包 | `activeRows`、展开集合、已加载压力页 |
-| 表格引擎内部状态 | SpreadJS | 单元格值、选区、UndoManager、Outline |
-
-不要把 Workbook 放进 React State，也不要让 React 组件直接调用大量 Worksheet API。页面通过 `actionsRef` 发出命令，控制器统一操作 SpreadJS，再将需要显示的结果同步回 React。
-
----
-
-## 常见修改方式
-
-### 新增一个业务列
-
-至少检查以下位置：
-
-1. `BusinessNode` / `BusinessField`；
-2. `COLUMNS`；
-3. 列号常量；
-4. `viewRowCellValue()`；
-5. 表头 Section / Group；
-6. 格式化和单元格类型；
-7. 搜索字段；
-8. `updateBusinessNode()`；
-9. 选区统计显示类型；
-10. 数据追踪或历史是否需要支持。
-
-不要只在 `COLUMNS` 末尾加一项，因为当前部分逻辑仍依赖明确列号。
-
-### 新增一个工具栏功能
-
-推荐路径：
-
-```text
-SpreadsheetActions 增加方法
-  ↓
-actionsRef.current 实现 SpreadJS 操作
-  ↓
-控制器同步必要 React State
-  ↓
-index.tsx 增加按钮或面板
-```
-
-纯展示组件放入 `components/spreadsheet-ui.tsx`；不要在按钮组件中自行查找 Workbook。
-
-### 修改产品或区域折叠逻辑
-
-常规模式优先修改 `model.ts` 的投影函数和展开状态，不要直接隐藏 Worksheet 行。还要确认：
-
-- 产品和属性合并范围；
-- 选中单元格恢复；
-- 稳定单元格 ID；
-- 搜索命中后的祖先展开；
-- 批注、附件和历史重挂载；
-- 下钻视图是否仍有数据。
-
-压力模式还需同步检查 `createStressProjectionRows()`、`getStressProjectionSummary()`、可见行统计和懒加载范围。不要为压力模式新增独立的整行 Outline 语义，否则产品列和区域列会重新耦合。
-
-### 接入真实后端
-
-建议将下面几类内存 Map 抽象成单独的数据仓库或 API 层：
-
-- `BUSINESS_DATA` / 压力数据叶子节点：业务明细；
-- `BusinessCellCoordinate`：编辑接口的产品、区域、记录和指标坐标；
-- `commentsRef`：批注；
-- `historyRef`：审计历史；
-- `attachmentsRef`：附件元数据。
-
-生产环境中，历史记录应由服务端生成操作者、服务端时间、版本和请求 ID；附件应上传对象存储并执行权限校验、类型验证、病毒扫描和受控下载。
-
----
-
-## 开发与调试
-
-启动项目：
+## 验证
 
 ```bash
-npm run dev
+pnpm typecheck:spreadjs
+pnpm build
 ```
 
-访问：
+生产构建完成后，至少回归以下路径：
 
-```text
-http://localhost:8000/spreadjs-demo/business
-```
+1. 默认数据为 36 × 16，组织和科目可独立展开、收起与恢复默认。
+2. 搜索“办公费”可在 9 个结果间前后切换，并自动展开命中路径。
+3. 使用 README 中的业务维度 JSON 可以定位到对应月份单元格。
+4. 编辑数值或功能属性后，撤销、重做、历史与回调载荷一致。
+5. 隐藏月份列后仍能通过搜索或“全部显示”恢复；全年合计在年度列组收起后保留。
+6. 批注和附件跟随稳定业务单元格，不因折叠或钻取串位。
+7. 10 万行模式展示真实组织、科目和季节性月度金额；首次进入期间有进度提示，滚动时按 400 行分页并预取下一页。
+8. 10 万行模式下的后台汇总行和明细行都可编辑；汇总修改在展开/收起后保留，撤销/重做、复制、搜索、列管理、统计、批注、附件均可用。
+9. 1280 px 桌面宽度和 620 px 以下窄屏均无页面级横向溢出，键盘焦点清晰可见。
 
-建议按以下顺序设置断点并操作页面：
-
-1. `start()`：观察 Workbook 初始化；
-2. `renderRows()`：观察二维数据进入 Worksheet；
-3. `toggleHierarchyRow()`：点击产品或区域箭头；
-4. `getCellEditability()`：确认目标单元格是否允许编辑；
-5. `commitBusinessCellValues()`：提交明细值并观察同级字段联动；
-6. `CellChanged` / `RangeChanged`：观察单格和批量修改；
-7. `search()`：搜索一个处于折叠状态的区域明细；
-8. `loadVisibleStressRows()`：滚动 10 万行模式。
-
-正式部署前需要配置：
-
-```text
-NEXT_PUBLIC_SPREADJS_LICENSE_KEY
-```
-
-未配置许可证时只适合本地评估，并会显示 SpreadJS 评估水印。
-
-## 修改后的回归清单
-
-- 常规模式产品和区域可以分别展开、收起；
-- 一个产品的区域状态不会影响另一个产品；
-- 下钻、上钻后选区和稳定单元格功能仍正确；
-- 搜索能命中折叠内容并只展开必要祖先；
-- 编辑、粘贴、清空、撤销、重做都有历史；
-- 汇总、派生和层级单元格不能编辑或粘贴覆盖；
-- 收入、订单、客单价以及状态字段的同级联动正确；
-- 修改城市明细后，后端汇总静态值保持不变；
-- 开发者控制台能输出直接修改的业务行 ID、字段和新旧值；
-- 批注和附件不会改写单元格值；
-- 列显隐、列 Outline 和自动列宽仍可用；
-- 10 万行模式的产品和区域节点与常规模式行为一致且互不干扰；
-- 10 万行模式切换、滚动、搜索和折叠保持响应；
-- 页面卸载或切换数据模式后没有残留定时器和 Object URL。
+未配置正式许可证时出现 SpreadJS 评估水印属于预期行为。正式部署请设置 `UMI_APP_SPREADJS_LICENSE_KEY`，具体见仓库根 README。

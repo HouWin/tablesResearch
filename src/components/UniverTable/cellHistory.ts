@@ -9,6 +9,7 @@
  * from/to 为字符串化显示值（含数字格式如 ¥20,000），非原始 number。
  */
 import type { ETableCellChangeRecord } from './types';
+import { clearAllDirtyMarks, markDirtyCell } from './cellDirtyMark';
 
 const columnName = (column: number): string => {
   let result = '';
@@ -77,11 +78,14 @@ export const setupCellHistory = (
   worksheet: any,
   options?: {
     maxRecords?: number;
+    /** 编辑后在单元格上打修改标记，默认 true */
+    markEditedCells?: boolean;
     onChange?: (record: ETableCellChangeRecord) => void;
     onSelectionChange?: (cell: string, row: number, column: number) => void;
   },
 ): ETableCellHistoryApi => {
   const maxRecords = options?.maxRecords ?? 200;
+  const markEditedCells = options?.markEditedCells !== false;
   const tracks: ETableCellChangeRecord[] = [];
   const tracksByCell = new Map<string, ETableCellChangeRecord[]>();
   const disposables: Array<{ dispose?: () => void }> = [];
@@ -153,6 +157,9 @@ export const setupCellHistory = (
       if (dropped) {
         removeFromCellIndex(dropped);
       }
+    }
+    if (markEditedCells) {
+      markDirtyCell(worksheet, row, column);
     }
     options?.onChange?.(record);
   };
@@ -242,6 +249,9 @@ export const setupCellHistory = (
         cancelAnimationFrame(selectionRaf);
         selectionRaf = 0;
       }
+      if (markEditedCells) {
+        clearAllDirtyMarks(worksheet);
+      }
       disposables.forEach((item) => {
         try {
           item.dispose?.();
@@ -255,6 +265,9 @@ export const setupCellHistory = (
     clear: () => {
       tracks.length = 0;
       tracksByCell.clear();
+      if (markEditedCells) {
+        clearAllDirtyMarks(worksheet);
+      }
     },
     recordChange: (row, column, from, to) => {
       push(row, column, from, to, 'api');

@@ -244,15 +244,8 @@ export const flattenTreeData = (
   const treeToggles: ETableTreeToggleBinding[] = [];
   const labelMode = config.labelMode ?? 'single';
   const treeUI = Boolean(config.treeUI);
-  const DEFAULT_ROW_BACKGROUNDS = ['#E8F3FF', '#F5FAFF', '#FFFFFF'];
-  const rowBackgrounds =
-    config.rowBackgrounds?.length
-      ? config.rowBackgrounds
-      : treeUI
-        ? DEFAULT_ROW_BACKGROUNDS
-        : [];
-  const regionDetailBackground =
-    config.regionDetailBackground ?? (treeUI ? '#FAFBFC' : undefined);
+  const rowBackgrounds = config.rowBackgrounds?.length ? config.rowBackgrounds : [];
+  const regionDetailBackground = config.regionDetailBackground;
 
   const isNodeCollapsed = (node: ETableTreeNode) =>
     node.collapsed ?? config.defaultCollapsed ?? true;
@@ -378,10 +371,67 @@ export const flattenTreeData = (
     return data;
   };
 
+  const normalizeDimensionValue = (
+    value: ETablePrimitive | ETableCell | undefined,
+  ): string => {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    if (typeof value === 'object' && 'value' in value) {
+      return String(value.value ?? '')
+        .replace(/^[▼▶]\s*/, '')
+        .trim();
+    }
+    return String(value).replace(/^[▼▶]\s*/, '').trim();
+  };
+
+  /** 展平时记录完整行维度，供 onCellChange 使用（不受明细行清空品类列影响） */
+  const buildDimensionContext = (
+    path: Record<string, ETablePrimitive>,
+    options?: {
+      organizationId?: string;
+      attributeGroupLabel?: string;
+      attributeGroupId?: string;
+      attributeDetailLabel?: string;
+      attributeDetailId?: string;
+    },
+  ): Record<string, ETablePrimitive> => {
+    const context: Record<string, ETablePrimitive> = {};
+    dimensionFields.forEach((field) => {
+      const value = normalizeDimensionValue(path[field] as ETablePrimitive | ETableCell);
+      if (value) {
+        context[field] = value;
+      }
+    });
+    const primaryDim = dimensionFields[0];
+    if (primaryDim && options?.organizationId) {
+      context[`${primaryDim}Id`] = options.organizationId;
+    }
+    if (attributeField && options?.attributeGroupLabel) {
+      context[attributeField] = normalizeDimensionValue(options.attributeGroupLabel);
+    }
+    if (attributeField && options?.attributeGroupId) {
+      context[`${attributeField}Id`] = options.attributeGroupId;
+    }
+    if (attributeField && options?.attributeDetailLabel) {
+      context[`${attributeField}Detail`] = normalizeDimensionValue(
+        options.attributeDetailLabel,
+      );
+    }
+    if (attributeField && options?.attributeDetailId) {
+      context[`${attributeField}DetailId`] = options.attributeDetailId;
+    }
+    return context;
+  };
+
   const emitAttribute = (
     attr: ETableTreeAttribute,
     path: Record<string, ETablePrimitive>,
-    options?: { clearCategory?: boolean; depth?: number },
+    options?: {
+      clearCategory?: boolean;
+      depth?: number;
+      organizationId?: string;
+    },
   ): ETableRowGroup | null => {
     const hasDetails = Boolean(attr.children?.length);
     const collapsed = attr.collapsed ?? config.collapseAttributes ?? true;
@@ -399,6 +449,11 @@ export const flattenTreeData = (
     rows.push({
       id: attr.id,
       data: buildData(path, displayLabel, attr.values),
+      dimensionContext: buildDimensionContext(path, {
+        organizationId: options?.organizationId,
+        attributeGroupLabel: attr.label,
+        attributeGroupId: attr.id,
+      }),
       style: resolveRowStyle(depth),
     });
     currentRow += 1;
@@ -410,13 +465,21 @@ export const flattenTreeData = (
     const headerRow = currentRow - 1;
     const detailStart = currentRow;
     attr.children!.forEach((detail) => {
+      const detailDepth = detail.depth ?? 1;
       rows.push({
         id: detail.id,
         data: buildData(
           detailPath,
-          treeUI ? formatTreeLabel(detail.label, 1) : detail.label,
+          treeUI ? formatTreeLabel(detail.label, detailDepth) : detail.label,
           detail.values,
         ),
+        dimensionContext: buildDimensionContext(path, {
+          organizationId: options?.organizationId,
+          attributeGroupLabel: attr.label,
+          attributeGroupId: attr.id,
+          attributeDetailLabel: detail.label,
+          attributeDetailId: detail.id,
+        }),
         style: resolveRowStyle(depth, { regionDetail: true }),
       });
       currentRow += 1;
@@ -508,6 +571,11 @@ export const flattenTreeData = (
             ...primary.values,
             ...node.values,
           }),
+          dimensionContext: buildDimensionContext(path, {
+            organizationId: node.id,
+            attributeGroupLabel: primary.label,
+            attributeGroupId: primary.id,
+          }),
           style: resolveRowStyle(depth),
         });
         currentRow += 1;
@@ -542,6 +610,11 @@ export const flattenTreeData = (
             ...primary.values,
             ...node.values,
           }),
+          dimensionContext: buildDimensionContext(path, {
+            organizationId: node.id,
+            attributeGroupLabel: primary.label,
+            attributeGroupId: primary.id,
+          }),
           style: resolveRowStyle(depth),
         });
         currentRow += 1;
@@ -565,9 +638,16 @@ export const flattenTreeData = (
             id: detail.id,
             data: buildData(
               regionPath,
-              formatTreeLabel(detail.label, 1),
+              formatTreeLabel(detail.label, detail.depth ?? 1),
               detail.values,
             ),
+            dimensionContext: buildDimensionContext(path, {
+              organizationId: node.id,
+              attributeGroupLabel: primary.label,
+              attributeGroupId: primary.id,
+              attributeDetailLabel: detail.label,
+              attributeDetailId: detail.id,
+            }),
             style: resolveRowStyle(depth, { regionDetail: true }),
           });
           currentRow += 1;
@@ -579,6 +659,7 @@ export const flattenTreeData = (
           const attrGroup = emitAttribute(attr, path, {
             clearCategory: true,
             depth,
+            organizationId: node.id,
           });
           if (attrGroup) {
             childGroups.push(attrGroup);
@@ -687,6 +768,11 @@ export const flattenTreeData = (
         data: buildData(path, regionLabel, summaryValues),
         // 有子节点的分组汇总行禁止编辑
         readonly: true,
+        dimensionContext: buildDimensionContext(path, {
+          organizationId: node.id,
+          attributeGroupLabel: primaryRegion?.label,
+          attributeGroupId: primaryRegion?.id,
+        }),
         style: resolveRowStyle(depth),
       });
       currentRow += 1;
@@ -703,20 +789,20 @@ export const flattenTreeData = (
           if (dimensionFields[0]) {
             regionPath[dimensionFields[0]] = '';
           }
-          if (node.data) {
-            Object.keys(node.data).forEach((key) => {
-              if (key !== labelField && fieldColumnIndex.has(key)) {
-                regionPath[key] = '';
-              }
-            });
-          }
           rows.push({
             id: detail.id,
             data: buildData(
               regionPath,
-              formatTreeLabel(detail.label, 1),
+              formatTreeLabel(detail.label, detail.depth ?? 1),
               detail.values,
             ),
+            dimensionContext: buildDimensionContext(path, {
+              organizationId: node.id,
+              attributeGroupLabel: primaryRegion.label,
+              attributeGroupId: primaryRegion.id,
+              attributeDetailLabel: detail.label,
+              attributeDetailId: detail.id,
+            }),
             style: resolveRowStyle(depth, { regionDetail: true }),
           });
           currentRow += 1;
@@ -725,6 +811,7 @@ export const flattenTreeData = (
           const attrGroup = emitAttribute(attr, path, {
             clearCategory: true,
             depth,
+            organizationId: node.id,
           });
           if (attrGroup) {
             regionNested.push(attrGroup);
@@ -760,7 +847,9 @@ export const flattenTreeData = (
         }
       } else if (!treeUI && hasAttributes) {
         node.attributes!.forEach((attr) => {
-          const attrGroup = emitAttribute(attr, path);
+          const attrGroup = emitAttribute(attr, path, {
+            organizationId: node.id,
+          });
           if (attrGroup) {
             childGroups.push(attrGroup);
           }

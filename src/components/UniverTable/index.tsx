@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, } from 'react';
 import { createUniver, LocaleType, mergeLocales, } from '@univerjs/presets';
+import { BooleanNumber, VerticalAlign } from '@univerjs/core';
 import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
@@ -7,7 +8,10 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
-import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights } from './renderer';
+import { enrichCellChangeRecord, resolveCellDimensions } from './cellChangeContext';
+import { resolveDimensionCellLocator } from './dimensionLocate';
+import { resolveReadonlyLayout } from './cellTone';
+import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights, applyHeaderCenterAlign, applyVerticalMiddleAlign } from './renderer';
 import { buildHeaderLayout } from './layout';
 import { flattenGroupedData } from './groupData';
 import { flattenTreeData } from './tree';
@@ -20,7 +24,7 @@ import {
   TREE_VIEWPORT_WINDOW_SIZE,
 } from './treeViewport';
 import type { TreeViewportStats } from './treeViewport';
-import type { ETableFlattenResult } from './types';
+import type { ETableCellChangeRecord, ETableFlattenResult } from './types';
 import { setupReadonlyCells } from './readonly';
 import { applyColumnTypes } from './columnTypes';
 import {
@@ -55,21 +59,25 @@ import {
 } from './attachment';
 import { buildTableExportData } from './exportData';
 import { mergeTreeDataWithRows } from './treeMerge';
-import { getCellValueFromTable, getRowValueFromTable, setCellValueOnTable, setRowValueOnTable } from './cellValue';
+import { getCellValueFromTable, getRowValueFromTable, setCellValueOnTable, setCellValuesOnTable, setRowValueOnTable } from './cellValue';
 import { registerAllIcons } from './icons';
 import { customizeColumnHeaders } from './header';
 import type {
   ETableAttachmentFile,
   ETableCell,
   ETableCellLocator,
+  ETableCellDimensionsResult,
+  ETableCellValuePatch,
   ETableColumn,
   ETableDataTraceNode,
+  ETableDimensionCellLocator,
   ETableExportData,
   ETableGetTableDataOptions,
   ETableGetCellValueOptions,
   ETableGetCellValueResult,
   ETableGetRowValueOptions,
   ETableGetRowValueResult,
+  ETableOptions,
   ETablePrimitive,
   ETableProps,
   ETableRef,
@@ -77,6 +85,7 @@ import type {
   ETableRowLocator,
   ETableSetCellValueOptions,
   ETableSetCellValueResult,
+  ETableSetCellValuesResult,
   ETableSetRowValueResult,
   ETableTreeConfig,
   ETableTreeNode,
@@ -218,7 +227,24 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   useEffect(() => {
     treeDataRef.current = treeData;
     treeConfigRef.current = treeConfig;
-  }, [treeData, treeConfig]);
+    groupConfigRef.current = groupConfig;
+  }, [treeData, treeConfig, groupConfig]);
+
+  const notifyCellChange = (record: ETableCellChangeRecord) => {
+    const enriched = enrichCellChangeRecord(record, {
+      headerDepth: headerDepthRef.current,
+      columns: columnsRef.current,
+      leafColumns: leafColumnsRef.current,
+      rows: rowsRef.current,
+      treeConfig: treeConfigRef.current,
+      groupConfig: groupConfigRef.current,
+      getLogicalDataRow: (dataRow) =>
+        logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+      getRowPath: (logicalRow) =>
+        treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
+    });
+    onCellChangeRef.current?.(enriched);
+  };
 
   // 统一数据源：展平结果优先，否则使用 props 直接传入的二维表结构
   const columns = flattened?.columns ?? propsColumns;
@@ -245,13 +271,19 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     freezeColumns,
     // 是否自定义 Univer 原生列头
     customizeColumnHeader = true,
+    // 是否显示 A/B/C 列标、行号
+    showColumnHeader = true,
+    showRowHeader = true,
     // 虚拟滚动：Canvas 可视区绘制；大数据视口按页懒写入
     virtualScroll = true,
     // 扩展选项：自定义右键菜单项（不传则使用默认的 defaultContextMenuItems）
     contextMenuItems = defaultContextMenuItems,
     // 扩展选项：是否启用自定义右键菜单
     enableContextMenu = true,
+    // 编辑后单元格修改标记
+    markEditedCells = true,
   } = options as any;
+  const cellToneOption = (options as ETableOptions).cellTone;
 
   // --------------------------------------------------------------------------
   // 实例 Ref：贯穿初始化与对外 API，保存 Univer 与各子模块句柄
@@ -268,6 +300,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const logicalRowResolverRef = useRef<((projectedDataRow: number) => number | null) | null>(
     null,
   );
+  const projectedDataRowResolverRef = useRef<((logicalRow: number) => number | null) | null>(
+    null,
+  );
   const cellHistoryApiRef = useRef<ETableCellHistoryApi | null>(null);
   const leafColumnsRef = useRef<any[]>([]);
   const headerDepthRef = useRef(0);
@@ -275,6 +310,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
   const rowsRef = useRef<ETableRow[]>([]);
   const treeDataRef = useRef<ETableTreeNode[] | undefined>(undefined);
   const treeConfigRef = useRef<ETableTreeConfig | undefined>(undefined);
+  const groupConfigRef = useRef<typeof groupConfig>(undefined);
   const useTreeViewportRef = useRef(false);
   const virtualLoaderRef = useRef<VirtualDataLoader | null>(null);
   const treeViewportStatsRef = useRef<TreeViewportStats | null>(null);
@@ -706,10 +742,51 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         recordChange: cellHistoryApiRef.current?.recordChange,
         options,
       });
+    },
+    setCellValues(
+      patches: ETableCellValuePatch[],
+      options?: ETableSetCellValueOptions,
+    ): ETableSetCellValuesResult {
+      return setCellValuesOnTable({
+        patches,
+        leafColumns: leafColumnsRef.current,
+        headerDepth: headerDepthRef.current,
+        worksheet: worksheetRef.current,
+        rows: rowsRef.current,
+        useTreeViewport: useTreeViewportRef.current,
+        getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
+        treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
+        recordChange: cellHistoryApiRef.current?.recordChange,
+        options,
+      });
+    },
+    locateCellByDimensions(
+      locator: ETableDimensionCellLocator,
+    ): ETableSetCellValueResult {
+      const found = resolveDimensionCellLocator(
+        locator,
+        rowsRef.current,
+        leafColumnsRef.current,
+        headerDepthRef.current,
+      );
+      if (!found) {
+        return { success: false, appliedToSheet: false };
+      }
+      return {
+        success: true,
+        appliedToSheet: false,
+        cell: found.cell,
+        sheetRow: found.sheetRow,
+        column: found.column,
+        dataRow: found.dataRow,
+        field: found.field,
+      };
     },
     setRowValue(
       locator: ETableRowLocator,
@@ -725,6 +802,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         recordChange: cellHistoryApiRef.current?.recordChange,
         options,
@@ -742,6 +820,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         options,
       });
@@ -758,8 +837,23 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rows: rowsRef.current,
         useTreeViewport: useTreeViewportRef.current,
         getLogicalDataRow: logicalRowResolverRef.current ?? undefined,
+        getProjectedDataRow: projectedDataRowResolverRef.current ?? undefined,
         treeViewportWindowSize: TREE_VIEWPORT_WINDOW_SIZE,
         options,
+      });
+    },
+    getCellDimensions(locator: ETableCellLocator): ETableCellDimensionsResult {
+      return resolveCellDimensions(locator, {
+        headerDepth: headerDepthRef.current,
+        columns: columnsRef.current,
+        leafColumns: leafColumnsRef.current,
+        rows: rowsRef.current,
+        treeConfig: treeConfigRef.current,
+        groupConfig: groupConfigRef.current,
+        getLogicalDataRow: (dataRow) =>
+          logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+        getRowPath: (logicalRow) =>
+          treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
       });
     },
   }), []);
@@ -853,6 +947,19 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           name: name || 'Sheet1',
           rowCount: sheetRowCount,
           columnCount: sheetColCount,
+          // 空单元格也默认垂直居中
+          defaultStyle: {
+            vt: VerticalAlign.MIDDLE,
+          },
+          columnHeader: {
+            // 本版 Univer：_initViewports 用 `hidden` 决定列标是否占位；height 需保持 >0
+            height: 20,
+            hidden: showColumnHeader ? BooleanNumber.FALSE : BooleanNumber.TRUE,
+          },
+          rowHeader: {
+            width: 46,
+            hidden: showRowHeader ? BooleanNumber.FALSE : BooleanNumber.TRUE,
+          },
         },
       },
     });
@@ -869,6 +976,59 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       sheetRowCount,
       sheetColCount,
     );
+    // 0.1 原生 A/B/C、行号显隐
+    // - snapshot.hidden 需在 create 时生效；若被默认配置覆盖，这里再改底层 config
+    // - setColumnHeaderHeight 必须等 render 就绪，否则会空跑
+    const syncHeaderConfigHidden = () => {
+      try {
+        const raw =
+          (worksheet as any)?._worksheet ??
+          (worksheet as any)?.getSheet?.() ??
+          null;
+        const config = raw?.getConfig?.() ?? (worksheet as any)?.getConfig?.();
+        if (config) {
+          if (!showColumnHeader) {
+            config.columnHeader = {
+              ...(config.columnHeader || {}),
+              height: config.columnHeader?.height || 20,
+              hidden: BooleanNumber.TRUE,
+            };
+          }
+          if (!showRowHeader) {
+            config.rowHeader = {
+              ...(config.rowHeader || {}),
+              width: config.rowHeader?.width || 46,
+              hidden: BooleanNumber.TRUE,
+            };
+          }
+        }
+      } catch (error) {
+        console.warn('[Table] sync header config failed', error);
+      }
+    };
+    const applyNativeHeaderVisibility = () => {
+      try {
+        syncHeaderConfigHidden();
+        if (!showColumnHeader) {
+          worksheet.setColumnHeaderHeight?.(0);
+          const skeleton = worksheet.getSkeleton?.();
+          if (skeleton) {
+            skeleton.columnHeaderHeight = 0;
+          }
+        }
+        if (!showRowHeader) {
+          worksheet.setRowHeaderWidth?.(0);
+          const skeleton = worksheet.getSkeleton?.();
+          if (skeleton) {
+            skeleton.rowHeaderWidth = 0;
+          }
+        }
+        worksheet.refreshCanvas?.();
+      } catch (error) {
+        console.warn('[Table] hide native header failed', error);
+      }
+    };
+    applyNativeHeaderVisibility();
     // 1. 网格线
     worksheet.setHiddenGridlines(!showGridLines);
     // 2. 渲染业务多级表头
@@ -920,6 +1080,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     let disposeContextMenuBlock: (() => void) | undefined;
 
     const finishInit = async () => {
+      const readonlyLayout = resolveReadonlyLayout({
+        leafColumns,
+        rows,
+        treeUI,
+        treeConfig,
+        cellTone: cellToneOption,
+      });
+      const {
+        cellTone,
+        readonlyColumns,
+        editableOnReadonlyRowColumns,
+        readonlyDataRows: layoutReadonlyDataRows,
+      } = readonlyLayout;
+
       // ------ 6. 数据写入（四选一渲染路径）------
       if (useTreeViewport) {
         // 数据由 setupTreeViewport 按可见窗口写入，跳过全量 setValues
@@ -931,6 +1105,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           leafColumns,
           dataStartRow: maxDepth,
           defaultRowHeight,
+          cellTone,
         });
         virtualLoaderRef.current = virtualLoader;
         disposeVirtualLoader = () => {
@@ -940,24 +1115,21 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         renderData(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipWrite: true,
+          cellTone,
         });
       } else if (isAsyncRender) {
         await renderDataAsync(worksheet, rows, leafColumns, maxDepth, {
           virtualScroll,
           skipRowBackgrounds: Boolean(treeConfig?.liteMode) || isLargeData,
+          cellTone,
         });
       } else {
-        renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll });
+        renderData(worksheet, rows, leafColumns, maxDepth, { virtualScroll, cellTone });
       }
       if (cancelled) {
         return;
       }
-      const readonlyDataRows: number[] = [];
-      for (let index = 0; index < rows.length; index += 1) {
-        if (rows[index].readonly) {
-          readonlyDataRows.push(index);
-        }
-      }
+      const readonlyDataRows = layoutReadonlyDataRows;
       // 6.5 列类型：懒虚拟按页写入；树视口在投影时写入；其余路径一次性应用
       if (!useLazyVirtual && !useTreeViewport) {
         applyColumnTypes(univerAPI, worksheet, leafColumns, maxDepth, rows.length, {
@@ -976,6 +1148,20 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           await renderMergesAsync(worksheet, merges, maxDepth);
         } else {
           renderMerges(worksheet, merges, maxDepth);
+        }
+      }
+      // 8.5 数字格式 / merge 可能冲掉对齐：表头居中，数据区仅垂直居中
+      if (!useLazyVirtual && !useTreeViewport) {
+        if (maxDepth > 0) {
+          applyHeaderCenterAlign(worksheet, maxDepth, leafColumns.length);
+        }
+        if (rows.length > 0) {
+          applyVerticalMiddleAlign(
+            worksheet,
+            maxDepth,
+            rows.length,
+            leafColumns.length,
+          );
         }
       }
       if (cancelled) {
@@ -1015,6 +1201,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
             defaultRowHeight,
             merges,
             skipMerges: Boolean(treeConfig?.skipMerges) || lazyLiteMerges,
+            cellTone,
             onProjected: (stats) => {
               treeViewportStats = stats;
               treeViewportStatsRef.current = stats;
@@ -1023,11 +1210,13 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         );
         treeCollapseApiRef.current = api;
         logicalRowResolverRef.current = api.getLogicalDataRow;
+        projectedDataRowResolverRef.current = api.getProjectedDataRow;
         collapseReady = api.ready;
         disposeTreeCollapse = () => {
           api.dispose();
           treeCollapseApiRef.current = null;
           logicalRowResolverRef.current = null;
+          projectedDataRowResolverRef.current = null;
           treeViewportStatsRef.current = null;
         };
       } else if (treeUI && treeToggles.length) {
@@ -1063,32 +1252,9 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         treeCollapseApiRef.current = null;
         createRowOutlines(worksheet, rowGroups, maxDepth);
       }
-      // ------ 9.5 只读区域：表头 + 维度列 + 汇总行（BeforeSheetEditStart 拦截）------
-      const readonlyColumnSet = new Set(
-        leafColumns
-          .map((column, index) => (column.editable === false ? index : -1))
-          .filter((index) => index >= 0),
-      );
-      // treeUI 默认锁定 dimensions + attribute 对应列（列配置 editable: true 时除外）
-      if (treeUI && treeConfig) {
-        const lockFields = new Set([
-          ...treeConfig.dimensions.map((item) => item.field),
-          ...(treeConfig.attribute ? [treeConfig.attribute.field] : []),
-        ]);
-        leafColumns.forEach((column, index) => {
-          if (lockFields.has(column.id) && column.editable !== true) {
-            readonlyColumnSet.add(index);
-          }
-        });
-      }
-      const dimensionFieldSet = new Set(treeConfig?.dimensions.map((item) => item.field) ?? []);
-      const editableOnReadonlyRowColumns = leafColumns
-        .map((column, index) =>
-          column.editable === true && dimensionFieldSet.has(column.id) ? index : -1,
-        )
-        .filter((index) => index >= 0);
-      const readonlyColumns = [...readonlyColumnSet];
+      // ------ 9.5 只读区域：表头 + 维度列 + 汇总行（编辑态 + Backspace/Delete 清空）------
       disposeReadonly = setupReadonlyCells(univerAPI, {
+        worksheet,
         headerRowCount: maxDepth,
         readonlyColumns,
         editableOnReadonlyRowColumns,
@@ -1102,6 +1268,29 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
               return Boolean(rows[logical]?.readonly);
             }
           : undefined,
+        isReadonlyCell: (sheetRow, column) => {
+          if (sheetRow < maxDepth) {
+            return false;
+          }
+          const dataRow = sheetRow - maxDepth;
+          const logical = useTreeViewport
+            ? logicalRowResolverRef.current?.(dataRow)
+            : dataRow;
+          if (logical == null) {
+            return false;
+          }
+          const row = rows[logical];
+          const col = leafColumns[column];
+          if (!row || !col) {
+            return false;
+          }
+          const cell = row.data?.[col.id];
+          return (
+            cell !== null &&
+            typeof cell === 'object' &&
+            (cell as { editable?: boolean }).editable === false
+          );
+        },
       });
       // 10. 列分组
       createColumnOutlines(worksheet, columnGroups);
@@ -1112,6 +1301,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       }
 
       const renderMs = Math.round(performance.now() - renderStartedAt);
+      applyNativeHeaderVisibility();
       onReady?.({
         univerAPI,
         workbook,
@@ -1157,7 +1347,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         }
         // 13.5 单元格历史 / 数据追踪
         historyApi = setupCellHistory(univerAPI, worksheet, {
-          onChange: (record) => onCellChangeRef.current?.(record),
+          markEditedCells,
+          onChange: notifyCellChange,
           onSelectionChange: (cell, row, column) =>
             onSelectionChangeRef.current?.(cell, row, column),
         });
@@ -1257,6 +1448,27 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       } else {
         setupSecondaryFeatures();
       }
+
+      // 原生列标/行号：等 skeleton 就绪后轮询压掉（命令在 render 未就绪时会空跑）
+      if (!showColumnHeader || !showRowHeader) {
+        applyNativeHeaderVisibility();
+        let tries = 0;
+        const timer = window.setInterval(() => {
+          if (cancelled) {
+            window.clearInterval(timer);
+            return;
+          }
+          applyNativeHeaderVisibility();
+          tries += 1;
+          const colHeight = worksheet.getSkeleton?.()?.columnHeaderHeight;
+          const rowWidth = worksheet.getSkeleton?.()?.rowHeaderWidth;
+          const colOk = showColumnHeader || colHeight === 0;
+          const rowOk = showRowHeader || rowWidth === 0;
+          if ((colOk && rowOk && tries >= 2) || tries >= 30) {
+            window.clearInterval(timer);
+          }
+        }, 80);
+      }
     };
 
     void finishInit();
@@ -1309,6 +1521,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       workbookRef.current = null;
       worksheetRef.current = null;
       logicalRowResolverRef.current = null;
+      projectedDataRowResolverRef.current = null;
     };
   }, [needsFlatten, flattenPreparing, flattened]);
 
@@ -1372,13 +1585,17 @@ export type {
   ETableAttachmentFile,
   ETableComment,
   ETableCellChangeRecord,
+  ETableCellDimensionsResult,
+  ETableDimensionInfo,
   ETableCellLocator,
+  ETableCellValuePatch,
   ETableDataTraceNode,
   ETableExportData,
   ETableGetTableDataOptions,
   ETableGroupStatistics,
   ETableSetCellValueOptions,
   ETableSetCellValueResult,
+  ETableSetCellValuesResult,
   ETableSetRowValueResult,
   ETableRowLocator,
   ETableGetCellValueOptions,

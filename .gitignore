@@ -13,6 +13,7 @@
 
 # misc
 .DS_Store
+.~*.xlsx
 
 # turbopack缓存
 .turbopack/
@@ -24,3 +25,5 @@
 /src/.umi-production
 /src/.umi-test
 /.env.local
+
+AGENTS.md
