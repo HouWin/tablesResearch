@@ -23,7 +23,7 @@ pnpm dev
 - 10 万行模式从常规组织和“办公费 / 电费 / 水费”科目继续扩展，补充区域经营单元、成本中心、人力、研发、制造、供应链、信息化、质量、折旧等真实预算科目；月度数值带有确定性波动和季节性，全年合计严格等于 12 个月之和。除 10 万条明细外，还模拟后台返回 1,100 条带稳定 ID 的“组织 × 科目”汇总记录。
 - 列分组默认以第一个叶子列作为收起后保留列，因此“2025年”收起后会自动保留“全年合计”，不需要额外配置。
 
-`BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。每个组织、科目节点同时保存后台记录 `id` 和所属维度的 `memberCode`，两者不混用。组织节点通过 `children` 保存下级组织，通过 `subjects` 保存当前组织的科目树；科目树内部继续使用 `children` 表达合计与明细。科目树不保留额外的“费用汇总”层，日常费用合计、管理费用合计等后台汇总记录直接作为可折叠节点，其费用明细向右缩进一级。前端编辑明细时不会重新计算或覆盖这些汇总记录。
+`BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。每个组织、科目节点同时保存后台记录 `id` 和所属维度的 `memberCode`，两者不混用。科目成员属于共享主数据：例如不同组织下的“日常费用合计”都使用 `MEM_SUBJECT_DAILY_EXPENSE_TOTAL`，具体记录仍使用各自唯一的 `id`，并由“组织成员编码 + 科目成员编码”组成唯一行坐标。组织节点通过 `children` 保存下级组织，通过 `subjects` 保存当前组织的科目树；科目树内部继续使用 `children` 表达合计与明细。科目树不保留额外的“费用汇总”层，日常费用合计、管理费用合计等后台汇总记录直接作为可折叠节点，其费用明细向右缩进一级。前端编辑明细时不会重新计算或覆盖这些汇总记录。
 
 数值叶子的 `field`（如 `january`）只负责把当前前端记录映射到 Worksheet，不再承担业务坐标语义。生产接口不需要、也不应该解析 `FDG1374-...` 一类复合字段前缀；当前协议也不包含无实际用途的 `filters` 或 `context`。
 
@@ -91,7 +91,7 @@ subjectExpandedByOrganization: Map<organizationId, Set<subjectId>>
 {
   row: {
     DIM0090: 'MEM_ORG_HUAJING_SALES',
-    DIM0069: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
+    DIM0069: 'MEM_SUBJECT_OFFICE_EXPENSE',
   },
   column: {
     DIM0086: 'MEM_DATA_CATEGORY_BUDGET',
@@ -113,13 +113,13 @@ subjectExpandedByOrganization: Map<organizationId, Set<subjectId>>
   recordId: 'huajing-sales-office',
   row: {
     DIM0090: 'MEM_ORG_HUAJING_SALES',
-    DIM0069: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
+    DIM0069: 'MEM_SUBJECT_OFFICE_EXPENSE',
   },
   attribute: {
     code: 'ATTR000038',
     owner: {
       dimensionCode: 'DIM0069',
-      memberCode: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
+      memberCode: 'MEM_SUBJECT_OFFICE_EXPENSE',
     },
   },
   oldValue: '销售',
