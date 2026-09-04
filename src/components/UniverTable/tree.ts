@@ -360,7 +360,17 @@ export const flattenTreeData = (
         }
         if (config.liteMode) {
           if (value !== null && typeof value === 'object' && 'value' in value) {
-            data[key] = (value as { value?: ETablePrimitive }).value ?? '';
+            const cell = value as ETableCell;
+            // lite 下仍保留 editable:false，避免汇总行功能属性等被拆成可编辑纯值
+            if (cell.editable === false) {
+              data[key] = {
+                value: cell.value ?? '',
+                editable: false,
+                ...(cell.style ? { style: cell.style } : {}),
+              };
+              return;
+            }
+            data[key] = cell.value ?? '';
           } else {
             data[key] = value as ETablePrimitive;
           }

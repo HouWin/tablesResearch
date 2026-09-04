@@ -10,7 +10,7 @@
  * from/to 为字符串化显示值（含数字格式如 ¥20,000），非原始 number。
  */
 import type { ETableCellChangeRecord } from './types';
-import { clearAllDirtyMarks, markDirtyCell } from './cellDirtyMark';
+import { clearAllDirtyMarks, clearDirtyCell, markDirtyCell } from './cellDirtyMark';
 
 const SET_RANGE_VALUES_COMMAND_ID = 'sheet.command.set-range-values';
 const SET_RANGE_VALUES_MUTATION_ID = 'sheet.mutation.set-range-values';
@@ -276,6 +276,21 @@ export const setupCellHistory = (
     }
   };
 
+  const clearCellTracks = (cell: string) => {
+    const list = tracksByCell.get(cell);
+    if (!list?.length) {
+      tracksByCell.delete(cell);
+      return;
+    }
+    const ids = new Set(list.map((item) => item.id));
+    for (let index = tracks.length - 1; index >= 0; index -= 1) {
+      if (ids.has(tracks[index].id)) {
+        tracks.splice(index, 1);
+      }
+    }
+    tracksByCell.delete(cell);
+  };
+
   const push = (
     row: number,
     column: number,
@@ -296,9 +311,32 @@ export const setupCellHistory = (
     lastPushFingerprint = fingerprint;
     lastPushAt = now;
 
+    const cell = cellAddress(row, column);
+    const cellList = tracksByCell.get(cell) ?? [];
+    // 最早一条的 from 即编辑前基线；回撤回到基线时清历史与脏标记
+    const baseline = cellList.length ? cellList[cellList.length - 1].from : from;
+    if (to === baseline) {
+      clearCellTracks(cell);
+      rememberValue(row, column, to);
+      if (markEditedCells) {
+        clearDirtyCell(worksheet, row, column);
+      }
+      options?.onChange?.({
+        id: `${Date.now()}-${row}-${column}-undo`,
+        cell,
+        row,
+        column,
+        from,
+        to,
+        time: new Date().toLocaleTimeString(),
+        source,
+      });
+      return;
+    }
+
     const record: ETableCellChangeRecord = {
       id: `${Date.now()}-${row}-${column}-${Math.random().toString(36).slice(2, 7)}`,
-      cell: cellAddress(row, column),
+      cell,
       row,
       column,
       from,
@@ -307,9 +345,9 @@ export const setupCellHistory = (
       source,
     };
     tracks.unshift(record);
-    const cellList = tracksByCell.get(record.cell) ?? [];
-    cellList.unshift(record);
-    tracksByCell.set(record.cell, cellList);
+    const nextList = tracksByCell.get(record.cell) ?? [];
+    nextList.unshift(record);
+    tracksByCell.set(record.cell, nextList);
     if (tracks.length > maxRecords) {
       const dropped = tracks.pop();
       if (dropped) {
@@ -321,6 +359,31 @@ export const setupCellHistory = (
       markDirtyCell(worksheet, row, column);
     }
     options?.onChange?.(record);
+  };
+
+  /** 回撤/外部改值后：按基线重对脏标记（值已还原的清掉，仍脏的重打） */
+  const reconcileDirtyState = () => {
+    if (!markEditedCells) {
+      return;
+    }
+    const entries = [...tracksByCell.entries()];
+    entries.forEach(([cell, list]) => {
+      if (!list.length) {
+        tracksByCell.delete(cell);
+        return;
+      }
+      const { row, column } = list[0];
+      const baseline = list[list.length - 1].from;
+      const current = readCellValue(worksheet, row, column);
+      if (current === baseline) {
+        clearCellTracks(cell);
+        clearDirtyCell(worksheet, row, column);
+        rememberValue(row, column, current);
+        return;
+      }
+      markDirtyCell(worksheet, row, column);
+      rememberValue(row, column, current);
+    });
   };
 
   const captureDropdownWriteFrom = (commandParams: any) => {
@@ -570,5 +633,6 @@ export const setupCellHistory = (
     recordChange: (row, column, from, to) => {
       push(row, column, from, to, 'api');
     },
+    reconcileDirtyState,
   };
 };

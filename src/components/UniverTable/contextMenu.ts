@@ -642,14 +642,6 @@ export const defaultContextMenuItems: ETableContextMenuConfig[] = [
       onUndo?.();
     },
   },
-  {
-    id: 'etable-redo',
-    title: '重做',
-    icon: 'RedoIcon',
-    action: ({ onRedo }) => {
-      onRedo?.();
-    },
-  },
 ];
 
 /**

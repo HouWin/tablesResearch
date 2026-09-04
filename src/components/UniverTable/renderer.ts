@@ -1131,7 +1131,10 @@ export const breakApartProjectedMerges = (
 
 /**
  * 视口投影：将逻辑行 merge 映射到当前窗口内的物理行，并垂直居中。
- * 仅当 merge 覆盖的逻辑行在 slice 中连续出现时才应用。
+ *
+ * 折叠会隐藏部分逻辑行：不再要求 merge 覆盖的每一行都在 slice 中，
+ * 而是从锚点起取最长连续可见前缀（例如展开「费用汇总」仅露出「日常费用合计」时，
+ * 组织列仍纵向合并并上下居中）。
  */
 export const planProjectedMerges = (
   merges: ETableMerge[],
@@ -1176,16 +1179,23 @@ export const planProjectedMerges = (
       return;
     }
 
-    // 获取逻辑结束位置
+    // 从锚点起统计连续可见行（遇折叠隐藏则截断）
     const logicalEnd = merge.row + merge.rowSpan;
-    // 遍历逻辑行
-    for (let logicalRow = merge.row + 1; logicalRow < logicalEnd; logicalRow += 1) {
-      // 获取投影
+    let visibleSpan = 1;
+    for (
+      let logicalRow = merge.row + 1;
+      logicalRow < logicalEnd;
+      logicalRow += 1
+    ) {
       const projected = logicalToProjected.get(logicalRow);
-      // 如果投影不等于投影开始位置加上逻辑行减去合并行，则直接返回
-      if (projected !== projectedStart + (logicalRow - merge.row)) {
-        return;
+      if (projected !== projectedStart + visibleSpan) {
+        break;
       }
+      visibleSpan += 1;
+    }
+
+    if (visibleSpan <= 1) {
+      return;
     }
 
     // 添加已见集合
@@ -1194,7 +1204,7 @@ export const planProjectedMerges = (
     planned.push({
       row: projectedStart,
       column: merge.column,
-      rowSpan: merge.rowSpan,
+      rowSpan: visibleSpan,
       columnSpan: merge.columnSpan,
       logicalRow: merge.row,
     });
@@ -1258,6 +1268,8 @@ export const applyProjectedMerges = (
     const projectedMerge: ETableMerge = {
       ...sourceMerge,
       row: projectedRange.row,
+      rowSpan: projectedRange.rowSpan,
+      columnSpan: projectedRange.columnSpan,
     };
 
     try {

@@ -235,3 +235,90 @@ export const expenseBudgetTreeData: ETableTreeNode[] = [
  * 集团 + 本部 + 华晶 + 销售/财务/行政/研发 + 上华 + 上华销售 = 9
  */
 export const EXPENSE_BUDGET_ORG_COUNT = 9;
+
+/** 单个组织展平后行数：费用汇总同行 + 日常合计 + 办公/电/水 */
+export const EXPENSE_BUDGET_ORG_FLAT_ROWS = 5;
+
+/** 一整棵示例同构集团树展平行数（9 组织 × 5） */
+export const EXPENSE_BUDGET_GROUP_FLAT_ROWS =
+  EXPENSE_BUDGET_ORG_COUNT * EXPENSE_BUDGET_ORG_FLAT_ROWS;
+
+/**
+ * 生成与 expenseBudgetTreeData 完全同构的一棵集团树（用于压测复制）。
+ * 结构：集团 → 本部 / 华晶(四部门) / 上华(销售部)；每节点含费用汇总科目树。
+ */
+export const createExpenseBudgetGroupTree = (
+  replicaIndex: number,
+): ETableTreeNode => {
+  const p = `g${replicaIndex}`;
+  const tag = replicaIndex + 1;
+  const name = (base: string) =>
+    replicaIndex === 0 ? base : `${base} ${tag}`;
+
+  const feeNudge = (n: number): LeafFees => ({
+    office: DEFAULT_LEAF.office + (n % 7),
+    electric: DEFAULT_LEAF.electric + (n % 5),
+    water: DEFAULT_LEAF.water + (n % 3),
+  });
+
+  const leafFees = feeNudge(replicaIndex);
+  const hjDeptFees = leafFees;
+  const hjFees = scaleFees(hjDeptFees, 4);
+  const shFees = leafFees;
+  const hqFees = leafFees;
+  const groupFees = sumFees(hqFees, hjFees, shFees);
+
+  const hjSales = makeOrgNode(
+    `${p}-hj-sales`,
+    name('华晶公司-销售部'),
+    hjDeptFees,
+    '销售',
+    undefined,
+    { subtotalLabel: '管理费用合计' },
+  );
+  const hjFinance = makeOrgNode(
+    `${p}-hj-finance`,
+    name('华晶公司-财务部'),
+    hjDeptFees,
+    '销售',
+    undefined,
+    { subtotalLabel: '管理费用合计' },
+  );
+  const hjAdmin = makeOrgNode(
+    `${p}-hj-admin`,
+    name('华晶公司-行政部'),
+    hjDeptFees,
+    '管理',
+  );
+  const hjRd = makeOrgNode(
+    `${p}-hj-rd`,
+    name('华晶公司-研发部'),
+    hjDeptFees,
+    '研发',
+  );
+  const shSales = makeOrgNode(
+    `${p}-sh-sales`,
+    name('上华公司-销售部'),
+    shFees,
+    '销售',
+  );
+
+  return makeOrgNode(
+    `${p}-group`,
+    name('华润微电子集团'),
+    groupFees,
+    '管理',
+    [
+      makeOrgNode(`${p}-hq`, name('华润微电子本部'), hqFees, '管理', undefined, {
+        subtotalLabel: '管理费用合计',
+      }),
+      makeOrgNode(`${p}-hj`, name('华晶公司'), hjFees, '管理', [
+        hjSales,
+        hjFinance,
+        hjAdmin,
+        hjRd,
+      ]),
+      makeOrgNode(`${p}-sh`, name('上华公司'), shFees, '管理', [shSales]),
+    ],
+  );
+};

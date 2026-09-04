@@ -6,6 +6,7 @@
  * 演示 ETable 组件的能力：
  * - 费用预算表（默认）：FormSchema（columns/records）→ adaptFormSchemaToETable
  * - 费用预算 1万～100万行压测（generateScaledExpenseBudgetTreeData）
+ * - 组织科目 1万～100万行压测（generateScaledExpenseBudgetOrgTreeData）
  * - 三层多级表头（品类/子品类/区域 + 经营指标 + 业务治理）
  * - 树形数据 treeData + treeConfig（单元格内 ▶/▼ 折叠）
  * - 经营树 1万～100万行大数据压测（generateScaledTreeData + liteMode）
@@ -48,7 +49,6 @@ import {
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
   UndoOutlined,
-  RedoOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PlusOutlined,
@@ -65,6 +65,7 @@ import {
 } from './expenseBudgetData';
 import { expenseBudgetFormData } from './expenseBudgetFormData';
 import { generateScaledExpenseBudgetTreeData } from './expenseBudgetDataGenerator';
+import { generateScaledExpenseBudgetOrgTreeData } from './expenseBudgetOrgDataGenerator';
 import {
   expenseBudgetTreeConfig,
   EXPENSE_BUDGET_FREEZE_COLS,
@@ -95,6 +96,10 @@ const DATA_SCALE_OPTIONS = [
   { value: 'budget', label: '费用预算（表单 schema）' },
   { value: 'budget-org', label: '费用预算（组织科目）' },
   ...BUDGET_SCALE_ROWS.map((rows) => ({
+    value: `budget-org-${rows}` as const,
+    label: `组织科目 ${rows / 10000}万行`,
+  })),
+  ...BUDGET_SCALE_ROWS.map((rows) => ({
     value: `budget-${rows}` as const,
     label: `费用预算 ${rows / 10000}万行`,
   })),
@@ -112,11 +117,19 @@ const parseBudgetScaleRows = (value: DataScale): number | null => {
   if (typeof value !== 'string' || !value.startsWith('budget-')) {
     return null;
   }
-  // 排除 budget-org（旧版组织科目小样）
-  if (value === 'budget-org') {
+  // 排除 budget-org / budget-org-N（组织科目）
+  if (value === 'budget-org' || value.startsWith('budget-org-')) {
     return null;
   }
   const rows = Number(value.slice('budget-'.length));
+  return Number.isFinite(rows) && rows > 0 ? rows : null;
+};
+
+const parseBudgetOrgScaleRows = (value: DataScale): number | null => {
+  if (typeof value !== 'string' || !value.startsWith('budget-org-')) {
+    return null;
+  }
+  const rows = Number(value.slice('budget-org-'.length));
   return Number.isFinite(rows) && rows > 0 ? rows : null;
 };
 
@@ -801,7 +814,7 @@ const buildSavePayload = (
   };
 };
 
-/** 回撤/重做后同步 tracks，只保留仍与初始值不同的单元格 */
+/** 回撤后同步 tracks，只保留仍与初始值不同的单元格 */
 const syncTracksFromWorksheet = (
   records: ETableCellChangeRecord[],
   tableRef: RefObject<ETableRef | null>,
@@ -922,12 +935,18 @@ const UniverTablePage = () => {
   >(null);
 
   const budgetScaleRows = parseBudgetScaleRows(dataScale);
+  const budgetOrgScaleRows = parseBudgetOrgScaleRows(dataScale);
   const isBudgetForm = dataScale === 'budget';
-  const isBudgetOrg = dataScale === 'budget-org';
-  const isBudgetDemo = isBudgetForm || isBudgetOrg;
-  const isBudgetMode = isBudgetDemo || budgetScaleRows != null;
+  const isBudgetOrgSample = dataScale === 'budget-org';
+  const isBudgetOrg = isBudgetOrgSample || budgetOrgScaleRows != null;
+  const isBudgetDemo = isBudgetForm || isBudgetOrgSample;
+  const isBudgetMode =
+    isBudgetDemo || budgetScaleRows != null || budgetOrgScaleRows != null;
   const isDemoTree = dataScale === 'tree';
-  const targetRowCount = typeof dataScale === 'number' ? dataScale : budgetScaleRows ?? 0;
+  const targetRowCount =
+    typeof dataScale === 'number'
+      ? dataScale
+      : budgetOrgScaleRows ?? budgetScaleRows ?? 0;
 
   const budgetMeta = isBudgetForm
     ? budgetDemoAdapted.meta
@@ -935,8 +954,11 @@ const UniverTablePage = () => {
 
   // ---------- 派生数据：费用预算树 / 演示树 / 生成树 + 动态追加列 ----------
   const activeTreeData = useMemo(() => {
-    if (isBudgetOrg) {
+    if (isBudgetOrgSample) {
       return expenseBudgetTreeData;
+    }
+    if (budgetOrgScaleRows != null) {
+      return scaledTreeData ?? [];
     }
     if (isBudgetForm) {
       return budgetDemoAdapted.treeData;
@@ -950,7 +972,8 @@ const UniverTablePage = () => {
     }
     return enrichTreeWithColumns(base, addedColumns);
   }, [
-    isBudgetOrg,
+    isBudgetOrgSample,
+    budgetOrgScaleRows,
     isBudgetForm,
     isBudgetMode,
     isDemoTree,
@@ -961,6 +984,14 @@ const UniverTablePage = () => {
   /** 费用预算用专用 treeConfig；大数据启用 liteMode */
   const activeTreeConfig = useMemo(() => {
     if (isBudgetOrg) {
+      if (budgetOrgScaleRows != null) {
+        return {
+          ...expenseBudgetTreeConfig,
+          liteMode: true,
+          skipMerges: true,
+          defaultCollapsed: true,
+        };
+      }
       return expenseBudgetTreeConfig;
     }
     if (isBudgetMode) {
@@ -989,6 +1020,7 @@ const UniverTablePage = () => {
     };
   }, [
     isBudgetOrg,
+    budgetOrgScaleRows,
     isBudgetMode,
     isBudgetForm,
     isDemoTree,
@@ -1073,9 +1105,46 @@ const UniverTablePage = () => {
     }
   }, []);
 
+  const loadScaledBudgetOrgTree = useCallback(async (count: number) => {
+    if (count >= 500000) {
+      message.warning('数据量较大，生成与渲染可能较慢，请耐心等待');
+    }
+    setLoading(true);
+    setTableRendering(true);
+    setProgress(0);
+    setRenderMs(null);
+    try {
+      const {
+        treeData: generated,
+        flatRowCount: rows,
+        orgCount,
+      } = await generateScaledExpenseBudgetOrgTreeData(count, setProgress);
+      setScaledTreeData(generated);
+      setBudgetScaledConfig(null);
+      setBudgetScaledMeta(null);
+      setFlatRowCount(rows);
+      setTracks([]);
+      setTableKey((key) => key + 1);
+      message.success(
+        `成功生成组织科目树，约 ${orgCount.toLocaleString()} 个组织 / ${rows.toLocaleString()} 行（与示例同构）`,
+      );
+    } catch {
+      message.error('组织科目数据生成失败');
+      setTableRendering(false);
+    } finally {
+      setLoading(false);
+      setProgress(100);
+    }
+  }, []);
+
   const handleScaleChange = async (value: DataScale) => {
     const nextBudgetRows = parseBudgetScaleRows(value);
-    if (typeof value === 'number' || nextBudgetRows != null) {
+    const nextBudgetOrgRows = parseBudgetOrgScaleRows(value);
+    if (
+      typeof value === 'number' ||
+      nextBudgetRows != null ||
+      nextBudgetOrgRows != null
+    ) {
       setLoading(true);
       setTableRendering(true);
     }
@@ -1102,6 +1171,10 @@ const UniverTablePage = () => {
       setTableRendering(true);
       setTableKey((key) => key + 1);
       message.success('已切换到费用预算（组织 / 科目）示例');
+      return;
+    }
+    if (nextBudgetOrgRows != null) {
+      await loadScaledBudgetOrgTree(nextBudgetOrgRows);
       return;
     }
     if (nextBudgetRows != null) {
@@ -1134,6 +1207,11 @@ const UniverTablePage = () => {
           ? '已重新加载费用预算（组织科目）示例'
           : '已重新加载费用预算（表单 schema）示例',
       );
+      return;
+    }
+    const budgetOrgRows = parseBudgetOrgScaleRows(dataScale);
+    if (budgetOrgRows != null) {
+      await loadScaledBudgetOrgTree(budgetOrgRows);
       return;
     }
     const budgetRows = parseBudgetScaleRows(dataScale);
@@ -1177,14 +1255,21 @@ const UniverTablePage = () => {
 
   const stats = useMemo(() => {
     if (isBudgetOrg) {
-      const sheetRows = sheetRowCount || 0;
+      const sheetRows =
+        budgetOrgScaleRows != null
+          ? flatRowCount || sheetRowCount || 0
+          : sheetRowCount || 0;
       const totalCols = EXPENSE_BUDGET_FREEZE_COLS + EXPENSE_BUDGET_VALUE_COLS;
       return {
-        treeNodes: EXPENSE_BUDGET_ORG_COUNT,
+        treeNodes:
+          budgetOrgScaleRows != null
+            ? countNodes(activeTreeData)
+            : EXPENSE_BUDGET_ORG_COUNT,
         sheetRows,
         totalCols,
         totalCells: sheetRows * totalCols,
-        modeLabel: '组织科目预算',
+        modeLabel:
+          budgetOrgScaleRows != null ? '组织科目大数据' : '组织科目预算',
       };
     }
     if (isBudgetMode) {
@@ -1215,6 +1300,7 @@ const UniverTablePage = () => {
     };
   }, [
     isBudgetOrg,
+    budgetOrgScaleRows,
     isBudgetMode,
     isBudgetForm,
     activeTreeData,
@@ -1239,7 +1325,9 @@ const UniverTablePage = () => {
     return {
       ...defaultOptions,
       name: isBudgetOrg
-        ? '费用预算表-组织科目示例'
+        ? budgetOrgScaleRows != null
+          ? `费用预算表-组织科目 ${targetRowCount}`
+          : '费用预算表-组织科目示例'
         : isBudgetForm
           ? '费用预算表-表单schema示例'
           : isBudgetMode
@@ -1262,6 +1350,7 @@ const UniverTablePage = () => {
     contextMenu,
     virtualScroll,
     isBudgetOrg,
+    budgetOrgScaleRows,
     isBudgetMode,
     isBudgetForm,
     isDemoTree,
@@ -1338,16 +1427,6 @@ const UniverTablePage = () => {
     message[ok ? 'success' : 'info'](ok ? '已撤销上一步编辑' : '没有可撤销的操作');
   };
 
-  const handleRedo = async () => {
-    const ok = await tableRef.current?.redo();
-    if (ok) {
-      window.setTimeout(() => {
-        setTracks((prev) => syncTracksFromWorksheet(prev, tableRef));
-      }, 0);
-    }
-    message[ok ? 'success' : 'info'](ok ? '已重做' : '没有可重做的操作');
-  };
-
   const handleViewHistory = (cell: string) => {
     setFocusCell(cell);
     setSidePanelOpen(true);
@@ -1395,10 +1474,12 @@ const UniverTablePage = () => {
               </h2>
               <p style={{ margin: '4px 0 0 0', color: '#666' }}>
                 {isBudgetOrg
-                  ? '组织树折叠 · 科目费用汇总 · 功能属性 · 全年合计 · 2025年1–12月 · treeUI ▶/▼'
+                  ? budgetOrgScaleRows != null
+                    ? `组织树折叠 · 科目费用汇总 · 功能属性 · 支持 1万～100万行压测（当前约 ${targetRowCount.toLocaleString()} 行）`
+                    : '组织树折叠 · 科目费用汇总 · 功能属性 · 全年合计 · 2025年1–12月 · treeUI ▶/▼ · 可选 1万～100万行压测'
                   : isBudgetMode
                     ? '预算科目树 · 功能属性 · 实际数/预算数多级表头 · FormSchema → ETable · treeUI ▶/▼ · 支持 1万～100万行压测'
-                    : '三层表头 · 品类/区域树 · 上钻下钻 · 回撤重做 · 单元格历史 · 净收入 / 核验状态 / 日期'}
+                    : '三层表头 · 品类/区域树 · 上钻下钻 · 回撤 · 单元格历史 · 净收入 / 核验状态 / 日期'}
               </p>
             </Col>
             <Col>
@@ -1421,7 +1502,7 @@ const UniverTablePage = () => {
                 />
                 <Select
                   value={dataScale}
-                  style={{ width: 220 }}
+                  style={{ width: 240 }}
                   onChange={handleScaleChange}
                   options={DATA_SCALE_OPTIONS.map((item) => ({
                     value: item.value,
@@ -1554,11 +1635,6 @@ const UniverTablePage = () => {
                       <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
                         <Button icon={<UndoOutlined />} onClick={handleUndo}>
                           回撤
-                        </Button>
-                      </Tooltip>
-                      <Tooltip title="重做（Ctrl/Cmd+Y / Ctrl+Shift+Z）">
-                        <Button icon={<RedoOutlined />} onClick={handleRedo}>
-                          重做
                         </Button>
                       </Tooltip>
                       <Tooltip title="下钻：展开当前选中行组">
@@ -1893,7 +1969,7 @@ const UniverTablePage = () => {
                 <li><Tag color="green">单元格编辑：编辑后打修改标记（浅橙底 + 左侧色条），并实时 onCellChange</Tag></li>
                 <li><Tag color="green">保存：收集全部变更单元格，含 rowDimensions / columnDimensions；与 worksheet 对齐，回撤后自动过滤已撤销项</Tag></li>
                 <li><Tag color="green">无变更保存提示；侧栏展示最近 200 条变更记录</Tag></li>
-                <li><Tag color="green">回撤 / 重做：工具栏、右键菜单或 Ctrl/Cmd+Z、Ctrl/Cmd+Y</Tag></li>
+                <li><Tag color="green">回撤：工具栏、右键菜单或 Ctrl/Cmd+Z</Tag></li>
               </ul>
 
               <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>树形交互</div>
@@ -1925,14 +2001,14 @@ const UniverTablePage = () => {
               <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
                 <li><Tag color="green">单元格历史：右键查看单格编辑流水</Tag></li>
                 <li><Tag color="green">数据追踪：右键或侧栏打开血缘树（Modal / Drawer）</Tag></li>
-                <li><Tag color="green">数据规模切换：表单预算 / 组织科目预算 / 费用预算1万～100万行 / 树形演示 / 经营树1万～100万行；支持重新生成</Tag></li>
+                <li><Tag color="green">数据规模切换：表单预算 / 组织科目 / 组织科目1万～100万行 / 费用预算1万～100万行 / 树形演示 / 经营树1万～100万行；支持重新生成</Tag></li>
               </ul>
 
               <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>性能与扩展</div>
               <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0 0', margin: 0, listStyle: 'none' }}>
                 <li><Tag color="green">虚拟滚动：Canvas 仅绘制可视区；≥5000 行启用视口投影或按页懒写入</Tag></li>
                 <li><Tag color="green">渲染耗时 / 展平行数 / 变更条数 / 数据模式统计</Tag></li>
-                <li><Tag color="green">右键菜单：复制粘贴、批注、附件、历史、追踪、下钻、搜索、撤销重做</Tag></li>
+                <li><Tag color="green">右键菜单：复制粘贴、批注、附件、历史、追踪、下钻、搜索、撤销</Tag></li>
               </ul>
             </Col>
 
@@ -1968,7 +2044,7 @@ const UniverTablePage = () => {
                 <li><Tag color="cyan">树形：expandAllRows / collapseAllRows / drillDown / drillUp / getBreadcrumb</Tag></li>
                 <li><Tag color="cyan">数据：getTableData / getTreeData / getTracks / getCellHistory / getDataTrace</Tag></li>
                 <li><Tag color="cyan">读写：setCellValue / setRowValue / getCellValue / getRowValue / getCellDimensions</Tag></li>
-                <li><Tag color="cyan">搜索：openSearch / search；编辑：undo / redo</Tag></li>
+                <li><Tag color="cyan">搜索：openSearch / search；编辑：undo</Tag></li>
                 <li><Tag color="cyan">批注：addComment / getComments / deleteComment；附件：addAttachment / viewAttachments</Tag></li>
                 <li><Tag color="cyan">大纲：collapseRowGroup / expandRowGroup / collapseColumnGroup 等</Tag></li>
                 <li><Tag color="cyan">性能：getVirtualRenderStats / getTreeViewportStats；底层 getUniverAPI / getWorksheet</Tag></li>

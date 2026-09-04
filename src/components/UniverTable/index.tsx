@@ -702,7 +702,17 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         if (!api?.undo) {
           return false;
         }
-        return Boolean(await api.undo());
+        const ok = Boolean(await api.undo());
+        if (ok) {
+          // 等 Univer 回写完成后再清脏标记
+          await new Promise<void>((resolve) => {
+            window.setTimeout(() => {
+              cellHistoryApiRef.current?.reconcileDirtyState?.();
+              resolve();
+            }, 0);
+          });
+        }
+        return ok;
       } catch (error) {
         console.warn('[ETable] undo failed', error);
         return false;
@@ -714,7 +724,16 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         if (!api?.redo) {
           return false;
         }
-        return Boolean(await api.redo());
+        const ok = Boolean(await api.redo());
+        if (ok) {
+          await new Promise<void>((resolve) => {
+            window.setTimeout(() => {
+              cellHistoryApiRef.current?.reconcileDirtyState?.();
+              resolve();
+            }, 0);
+          });
+        }
+        return ok;
       } catch (error) {
         console.warn('[ETable] redo failed', error);
         return false;
@@ -1448,6 +1467,14 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           onUndo: async () => {
             try {
               const ok = await univerAPI?.undo?.();
+              if (ok) {
+                await new Promise<void>((resolve) => {
+                  window.setTimeout(() => {
+                    cellHistoryApiRef.current?.reconcileDirtyState?.();
+                    resolve();
+                  }, 0);
+                });
+              }
               message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
             } catch {
               message.warning('撤销失败');
