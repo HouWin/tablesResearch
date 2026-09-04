@@ -1,8 +1,9 @@
 /**
  * Jspreadsheet Data Grid · 预算费用表
- * 官方 Spreadsheet / Worksheet + nestedHeaders / mergeCells / rows
+ * 渲染对齐 SpreadJS Demo：createBusinessProjectionRows 投影可见行，
+ * 组织 / 科目各自维护展开状态，收起后重建数据（非 hideRow）。
  */
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Spreadsheet, Worksheet, jspreadsheet } from '@jspreadsheet/react';
 import { PageContainer } from '@ant-design/pro-components';
 import 'jsuites/dist/jsuites.css';
@@ -10,6 +11,14 @@ import 'jspreadsheet/dist/jspreadsheet.css';
 import '@jsuites/css/dist/style.css';
 import { zhCN } from '../dictionary';
 import '../index.less';
+import {
+  BUDGET_VALUE_FIELDS,
+  createBusinessProjectionRows,
+  createInitialRegionExpansion,
+  INITIAL_PRODUCT_EXPANDED,
+  type ExtensionExpansionState,
+  type ViewRow,
+} from '../../SpreadJSDemo/spreadsheet/model';
 
 jspreadsheet.setLicense('evaluation');
 jspreadsheet.setDictionary(zhCN);
@@ -29,71 +38,11 @@ const BUDGET_MONTHS = [
   '12月',
 ] as const;
 
-const BUDGET_SUBJECTS = [
-  { name: '费用汇总', attr: '-', kind: 'summary' as const },
-  { name: '日常费用合计', attr: '-', kind: 'subtotal' as const },
-  { name: '费用-办公费', attr: '管理', kind: 'detail' as const, share: 1 },
-  { name: '费用-电费', attr: '管理', kind: 'detail' as const, share: 2 },
-  { name: '费用-水费', attr: '管理', kind: 'detail' as const, share: 3 },
-] as const;
-
-type OrgNode = {
-  name: string;
-  monthly: number;
-  decimals?: boolean;
-  adjustJan?: boolean;
-  attr?: string;
-  subtotalName?: string;
-  children?: OrgNode[];
-};
-
-/** 金额对齐参考截图：各级科目块独立，不向上汇总 */
-const ORG_TREE: OrgNode[] = [
-  {
-    name: '华润微电子集团',
-    monthly: 3600,
-    decimals: true,
-    adjustJan: true,
-    children: [
-      {
-        name: '华润微电子本部',
-        monthly: 3600,
-        decimals: false,
-        adjustJan: true,
-        subtotalName: '管理费用合计',
-      },
-      {
-        name: '华晶公司',
-        monthly: 2400,
-        decimals: false,
-        children: [
-          { name: '华晶公司-销售部', monthly: 600, attr: '销售' },
-          { name: '华晶公司-财务部', monthly: 600 },
-          { name: '华晶公司-行政部', monthly: 600 },
-          { name: '华晶公司-研发部', monthly: 600, attr: '研发' },
-        ],
-      },
-      {
-        name: '上华公司',
-        monthly: 600,
-        decimals: false,
-        children: [{ name: '上华公司-销售部', monthly: 600, attr: '销售' }],
-      },
-    ],
-  },
-];
-
-const DIM_BG = 'background-color:#dceaf5;text-align:center;vertical-align:middle';
-const ORG_BG = `${DIM_BG};font-weight:600`;
+const DIM_BG = 'background-color:#93c5f3;text-align:center;vertical-align:middle';
+const ORG_BG = `${DIM_BG};font-weight:600;text-align:left`;
+const SUBJECT_BG =
+  'background-color:#93c5f3;text-align:left;vertical-align:middle';
 const ANNUAL_BG = 'background-color:#fff2cc;text-align:right';
-
-function round2(n: number) {
-  return Math.round(n * 100) / 100;
-}
-
-function fmt(n: number, decimals: boolean) {
-  return decimals ? round2(n) : Math.round(n);
-}
 
 function cellName(col: number, row: number) {
   let letters = '';
@@ -105,179 +54,93 @@ function cellName(col: number, row: number) {
   return `${letters}${row + 1}`;
 }
 
-function splitDetails(monthly: number, decimals: boolean) {
-  const shares = [1, 2, 3];
-  const parts = shares.map((s) => fmt((monthly * s) / 6, decimals));
-  const drift = fmt(monthly - parts.reduce((a, b) => a + Number(b), 0), decimals);
-  parts[2] = fmt(Number(parts[2]) + Number(drift), decimals);
-  return parts.map(Number);
-}
-
-function monthSeries(base: number, decimals: boolean, adjustJan: boolean) {
-  const rest = fmt(base, decimals);
-  const months = Array.from({ length: 12 }, () => Number(rest));
-  if (adjustJan && Number(rest) >= 1) {
-    months[0] = Number(fmt(Number(rest) - 1, decimals));
-  }
-  return months;
-}
-
-function sumMonths(list: number[][], decimals: boolean) {
-  return Array.from({ length: 12 }, (_, i) =>
-    fmt(list.reduce((s, m) => s + Number(m[i] || 0), 0), decimals),
-  );
-}
-
-function sumAnnual(months: Array<number | string>, decimals: boolean) {
-  let total = 0;
-  for (const v of months) total += Number(v) || 0;
-  return fmt(total, decimals);
-}
-
 type FoldMeta = {
   row: number;
-  col: number;
+  col: 0 | 1;
   label: string;
-  /** group 跨度（不含自身） */
-  span: number;
-  /** 缩进层级 */
   indent: number;
-  /** 是否显示箭头（叶子科目无箭头） */
   canFold: boolean;
+  expanded: boolean;
+  productId: string;
+  regionRootId?: string;
 };
 
 type BuiltSheet = {
+  viewRows: ViewRow[];
   data: any[][];
   columns: Array<Record<string, unknown>>;
-  nestedHeaders: Array<Array<{ title: string; colspan: number; align: 'center' }>>;
+  nestedHeaders: Array<
+    Array<{ title: string; colspan: number; align: 'center' }>
+  >;
   mergeCells: Record<string, [number, number]>;
   style: Record<string, string>;
-  rows: Record<number, { group: number; state: boolean }>;
   foldMetas: FoldMeta[];
 };
 
-function buildExpenseSheet(tree: OrgNode[]): BuiltSheet {
+function buildSheetFromProjection(viewRows: ViewRow[]): BuiltSheet {
   const data: any[][] = [];
   const mergeCells: Record<string, [number, number]> = {};
   const style: Record<string, string> = {};
-  const rows: Record<number, { group: number; state: boolean }> = {};
   const foldMetas: FoldMeta[] = [];
 
-  const append = (org: OrgNode, startRow: number, depth = 0): number => {
-    const decimals = !!org.decimals;
-    const adjustJan = !!org.adjustJan;
-    const bases = splitDetails(org.monthly, decimals);
-    const detailSeries = bases.map((b, i) => monthSeries(b, decimals, adjustJan && i === 0));
-    const rollup = sumMonths(detailSeries, decimals);
-    let r = startRow;
-    let detailIdx = 0;
-    const subjectStart = startRow;
+  viewRows.forEach((row, r) => {
+    data.push([
+      row.productBlockStart ? row.productLabel : '',
+      row.regionLabel,
+      row.functionalAttribute,
+      ...BUDGET_VALUE_FIELDS.map((field) => row[field]),
+    ]);
 
-    for (const subject of BUDGET_SUBJECTS) {
-      let subjectName = String(subject.name);
-      let attr = String(subject.attr);
-      let months: Array<number | string> = rollup;
-      let subjectIndent = 0;
-      let subjectCanFold = false;
-      let subjectSpan = 0;
+    style[cellName(0, r)] = ORG_BG;
+    style[cellName(1, r)] = SUBJECT_BG;
+    style[cellName(2, r)] = DIM_BG;
+    style[cellName(3, r)] = ANNUAL_BG;
 
-      if (subject.kind === 'summary') {
-        subjectName = '费用汇总';
-        attr = '-';
-        subjectIndent = 0;
-        subjectCanFold = true;
-        // 汇总下挂：合计 + 3 明细
-        subjectSpan = BUDGET_SUBJECTS.length - 1;
-      } else if (subject.kind === 'subtotal') {
-        subjectName = String(org.subtotalName || subject.name);
-        attr = '-';
-        subjectIndent = 1;
-        subjectCanFold = true;
-        // 合计下挂：3 明细
-        subjectSpan = 3;
-      } else {
-        attr = String(org.attr || subject.attr || '管理');
-        months = detailSeries[detailIdx++] || rollup;
-        subjectIndent = 2;
-        subjectCanFold = false;
+    if (row.productBlockStart) {
+      if (row.productRowSpan > 1) {
+        mergeCells[cellName(0, r)] = [1, row.productRowSpan];
       }
-
-      const showOrg = r === startRow ? org.name : '';
-      const annual = sumAnnual(months, decimals);
-      data.push([showOrg, subjectName, attr, annual, ...months]);
-
-      style[cellName(0, r)] = ORG_BG;
-      // 科目列左对齐（树形）
-      style[cellName(1, r)] =
-        'background-color:#dceaf5;text-align:left;vertical-align:middle';
-      style[cellName(2, r)] = DIM_BG;
-      style[cellName(3, r)] = ANNUAL_BG;
-
       foldMetas.push({
         row: r,
-        col: 1,
-        label: subjectName,
-        span: subjectSpan,
-        indent: subjectIndent,
-        canFold: subjectCanFold,
+        col: 0,
+        label: row.productLabel,
+        indent: row.productDepth,
+        canFold: row.productIsGroup,
+        expanded: row.productExpanded,
+        productId: row.productId,
       });
-
-      r += 1;
     }
 
-    const subjectRows = BUDGET_SUBJECTS.length;
-    let childRows = 0;
-    if (org.children?.length) {
-      let cursor = r;
-      for (const child of org.children) {
-        const span = append(child, cursor, depth + 1);
-        cursor += span;
-        childRows += span;
-      }
-    }
-
-    const totalSpan = subjectRows + childRows;
-    mergeCells[cellName(0, subjectStart)] = [1, subjectRows];
-
-    // 仅有下级组织时显示组织箭头；叶子组织无箭头（科目列仍可独立折叠）
-    const orgCanFold = childRows > 0;
-    if (orgCanFold) {
-      rows[subjectStart] = { group: totalSpan - 1, state: true };
-    }
     foldMetas.push({
-      row: subjectStart,
-      col: 0,
-      label: org.name,
-      span: orgCanFold ? totalSpan - 1 : 0,
-      indent: depth,
-      canFold: orgCanFold,
+      row: r,
+      col: 1,
+      label: row.regionLabel,
+      indent: row.regionDepth,
+      canFold: row.regionIsGroup,
+      expanded: row.regionExpanded,
+      productId: row.productId,
+      regionRootId: row.regionRootId,
     });
-
-    return totalSpan;
-  };
-
-  for (const root of tree) {
-    append(root, data.length, 0);
-  }
+  });
 
   const columns = [
     {
       type: 'text',
-      title: '\u00a0',
-      width: 200,
+      title: '',
+      width: 216,
       readOnly: true,
       align: 'left' as const,
     },
     {
       type: 'text',
-      title: '\u00a0',
-      width: 160,
+      title: '',
+      width: 194,
       align: 'left' as const,
     },
     {
       type: 'text',
-      title: '\u00a0',
-      width: 90,
+      title: '',
+      width: 154,
       align: 'center' as const,
     },
     {
@@ -310,53 +173,150 @@ function buildExpenseSheet(tree: OrgNode[]): BuiltSheet {
     ],
   ];
 
-  return { data, columns, nestedHeaders, mergeCells, style, rows, foldMetas };
+  return {
+    viewRows,
+    data,
+    columns,
+    nestedHeaders,
+    mergeCells,
+    style,
+    foldMetas,
+  };
 }
 
 function mergeDimHeaders(ws: any) {
   if (!ws || typeof document === 'undefined') return;
   try {
-    const thead: HTMLTableSectionElement | null =
-      ws.thead ||
-      ws.table?.tHead ||
-      ws.element?.querySelector?.('thead') ||
-      ws.el?.querySelector?.('thead') ||
-      null;
-    if (!thead) return;
+    const roots: HTMLElement[] = [];
+    const pushRoot = (el: HTMLElement | null | undefined) => {
+      if (el && !roots.includes(el)) roots.push(el);
+    };
+    pushRoot(ws.thead);
+    pushRoot(ws.table?.tHead);
+    pushRoot(ws.element?.querySelector?.('thead'));
+    pushRoot(ws.el?.querySelector?.('thead'));
+    const host = ws.element || ws.el || ws.content || ws.parent?.el;
+    host
+      ?.querySelectorAll?.('thead')
+      ?.forEach?.((node: Element) => pushRoot(node as HTMLElement));
 
-    const nestedRow = thead.querySelector('tr.jss_nested') as HTMLTableRowElement | null;
-    const headerRow = Array.from(thead.querySelectorAll('tr')).find((tr) => {
-      const el = tr as HTMLElement;
-      return !el.classList.contains('jss_nested') && !el.classList.contains('jss_filters');
-    }) as HTMLTableRowElement | undefined;
-    if (!nestedRow || !headerRow) return;
-    if (nestedRow.getAttribute('data-dim-merged') === '1') return;
-
-    // 第二行列头已有「组织/科目/功能属性」时，把文案提到 nested 并 rowspan
     const titles = ['组织', '科目', '功能属性'];
-    const cells = nestedRow.querySelectorAll('th[role="nested-header"]');
-    for (let i = 0; i < 3; i += 1) {
-      const cell = cells[i] as HTMLTableCellElement | undefined;
-      if (!cell) continue;
-      const headerCell = headerRow.querySelector(
-        `td[data-x="${i}"], th[data-x="${i}"]`,
-      ) as HTMLElement | null;
-      const title =
-        (headerCell?.textContent || '').trim() ||
-        (cell.textContent || '').trim() ||
-        titles[i];
-      cell.textContent = title;
-      cell.rowSpan = 2;
-      cell.style.verticalAlign = 'middle';
-      cell.classList.add('jss-outline-dim-header');
-    }
 
-    for (let x = 0; x < 3; x += 1) {
-      headerRow.querySelector(`td[data-x="${x}"], th[data-x="${x}"]`)?.remove();
-    }
-    nestedRow.setAttribute('data-dim-merged', '1');
+    roots.forEach((thead) => {
+      const table = thead.closest('table');
+      table?.classList.add('jss-outline-table');
+
+      const nestedRow = thead.querySelector(
+        'tr.jss_nested',
+      ) as HTMLTableRowElement | null;
+      const headerRow = Array.from(thead.querySelectorAll('tr')).find((tr) => {
+        const el = tr as HTMLElement;
+        return (
+          !el.classList.contains('jss_nested') &&
+          !el.classList.contains('jss_filters') &&
+          !el.classList.contains('jss_filter')
+        );
+      }) as HTMLTableRowElement | undefined;
+      if (!nestedRow || !headerRow) return;
+
+      const cells = Array.from(
+        nestedRow.querySelectorAll(
+          'th[role="nested-header"], th[data-x], td[data-x]',
+        ),
+      ) as HTMLTableCellElement[];
+      // nested 行可能带角落格，按 data-x 定位三维 + 2025年
+      const byX = (x: number) =>
+        cells.find((cell) => cell.getAttribute('data-x') === String(x));
+
+      for (let i = 0; i < 3; i += 1) {
+        const cell = byX(i);
+        if (!cell) continue;
+        cell.textContent = titles[i];
+        cell.colSpan = 1;
+        cell.rowSpan = 2;
+        cell.setAttribute('colspan', '1');
+        cell.setAttribute('rowspan', '2');
+        cell.style.verticalAlign = 'middle';
+        cell.classList.add('jss-outline-dim-header');
+      }
+
+      const yearCell = byX(3);
+      if (yearCell) {
+        yearCell.textContent = '2025年';
+        yearCell.colSpan = 1 + BUDGET_MONTHS.length;
+        yearCell.rowSpan = 1;
+        yearCell.setAttribute('colspan', String(1 + BUDGET_MONTHS.length));
+        yearCell.setAttribute('rowspan', '1');
+      }
+
+      // 先保证 rowspan，再删第二行前三格；否则全年合计会顶到组织列下
+      const dimOk = [0, 1, 2].every((x) => (byX(x)?.rowSpan ?? 0) >= 2);
+      if (dimOk) {
+        for (let x = 0; x < 3; x += 1) {
+          headerRow
+            .querySelector(`td[data-x="${x}"], th[data-x="${x}"]`)
+            ?.remove();
+        }
+      } else {
+        // rowspan 未生效时保留空单元格占位，避免叶子标题左移
+        for (let x = 0; x < 3; x += 1) {
+          const leaf = headerRow.querySelector(
+            `td[data-x="${x}"], th[data-x="${x}"]`,
+          ) as HTMLElement | null;
+          if (!leaf) continue;
+          leaf.textContent = '';
+          leaf.setAttribute('data-title', '');
+        }
+      }
+
+      nestedRow.setAttribute('data-dim-merged', '1');
+    });
   } catch {
     // ignore
+  }
+}
+
+function scheduleMergeDimHeaders(ws: any) {
+  const host = (ws.element ||
+    ws.el ||
+    ws.content ||
+    ws.parent?.el) as HTMLElement | null | undefined;
+
+  host
+    ?.querySelectorAll?.('thead tr.jss_nested')
+    ?.forEach?.((row: Element) => row.removeAttribute('data-dim-merged'));
+
+  mergeDimHeaders(ws);
+
+  const delays = [0, 50, 100, 200, 400, 800];
+  delays.forEach((ms) => window.setTimeout(() => mergeDimHeaders(ws), ms));
+
+  // Jspreadsheet / React 重绘表头会清掉 rowspan，短时间盯住补回
+  if (host && typeof MutationObserver !== 'undefined') {
+    let applying = false;
+    const observer = new MutationObserver(() => {
+      if (applying) return;
+      const sample = host.querySelector(
+        'thead tr.jss_nested th[data-x="0"], thead tr.jss_nested th[role="nested-header"]',
+      ) as HTMLTableCellElement | null;
+      const leaf0 = host.querySelector(
+        'thead tr:not(.jss_nested) th[data-x="0"], thead tr:not(.jss_nested) td[data-x="0"]',
+      );
+      if (sample && sample.rowSpan >= 2 && !leaf0) return;
+      applying = true;
+      try {
+        mergeDimHeaders(ws);
+      } finally {
+        applying = false;
+      }
+    });
+    observer.observe(host, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['rowspan', 'colspan'],
+    });
+    window.setTimeout(() => observer.disconnect(), 2500);
   }
 }
 
@@ -376,58 +336,16 @@ function getCellEl(ws: any, col: number, row: number): HTMLElement | null {
   }
   const root = ws.table || ws.element || ws.content || ws.el;
   return (
-    (root?.querySelector?.(`td[data-x="${col}"][data-y="${row}"]`) as HTMLElement | null) ||
-    null
+    (root?.querySelector?.(
+      `td[data-x="${col}"][data-y="${row}"]`,
+    ) as HTMLElement | null) || null
   );
 }
 
-function foldKey(meta: Pick<FoldMeta, 'col' | 'row'>) {
-  return `${meta.col}:${meta.row}`;
-}
-
-/** 任一折叠节点收起时，藏起其 span 内的子行 */
-function collectHiddenRows(sheet: BuiltSheet, openMap: Map<string, boolean>) {
-  const hidden = new Set<number>();
-  sheet.foldMetas.forEach((meta) => {
-    if (!meta.canFold || meta.span <= 0) return;
-    if (openMap.get(foldKey(meta)) === false) {
-      for (let i = meta.row + 1; i <= meta.row + meta.span; i += 1) {
-        hidden.add(i);
-      }
-    }
-  });
-  return hidden;
-}
-
-/** 科目是否被某个已收起的组织盖住（仅影响箭头显示，不改科目 openMap） */
-function isCoveredByClosedOrg(
-  meta: FoldMeta,
-  sheet: BuiltSheet,
-  openMap: Map<string, boolean>,
-) {
-  if (meta.col !== 1) return false;
-  return sheet.foldMetas.some(
-    (m) =>
-      m.col === 0 &&
-      m.canFold &&
-      openMap.get(foldKey(m)) === false &&
-      meta.row >= m.row &&
-      meta.row <= m.row + m.span,
-  );
-}
-
-function paintFoldToggle(
-  ws: any,
-  meta: FoldMeta,
-  sheet: BuiltSheet,
-  openMap: Map<string, boolean>,
-) {
+function paintFoldToggle(ws: any, meta: FoldMeta) {
   const cell = getCellEl(ws, meta.col, meta.row);
   if (!cell) return;
-  let open = meta.canFold ? openMap.get(foldKey(meta)) !== false : false;
-  // 组织收起时，范围内科目箭头显示 ▶，但不改科目真实状态（否则组织再展开会无效）
-  if (open && isCoveredByClosedOrg(meta, sheet, openMap)) open = false;
-  const icon = meta.canFold ? (open ? '▼' : '▶') : '';
+  const icon = meta.canFold ? (meta.expanded ? '▼' : '▶') : '';
   const step = meta.col === 1 ? 14 : 16;
   const pad = 8 + meta.indent * step;
   cell.classList.add('readonly', 'jss-outline-group-cell');
@@ -449,90 +367,110 @@ function paintFoldToggle(
   }
 }
 
-function recomputeFoldVisibility(
-  ws: any,
-  sheet: BuiltSheet,
-  openMap: Map<string, boolean>,
-) {
-  const total = sheet.data.length;
-  const hidden = collectHiddenRows(sheet, openMap);
+function applySheetToWorksheet(ws: any, sheet: BuiltSheet) {
+  try {
+    ws.setData?.(sheet.data);
+  } catch {
+    // ignore
+  }
 
-  if (!ws.rows) ws.rows = {};
-  // 引擎行组始终保持 open，语义收起只靠 hideRow（state=false / closeRowGroup 会导致 showRow 失效）
-  sheet.foldMetas
-    .filter((m) => m.col === 0 && m.canFold)
-    .forEach((meta) => {
-      ws.rows[meta.row] = { group: meta.span, state: true };
+  try {
+    // 清掉旧合并，避免投影行数变化后残留
+    if (typeof ws.destroyMerge === 'function') {
+      ws.destroyMerge();
+    } else if (typeof ws.removeMerge === 'function') {
+      Object.keys(sheet.mergeCells).forEach((name) => {
+        try {
+          ws.removeMerge(name);
+        } catch {
+          // ignore
+        }
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    Object.entries(sheet.mergeCells).forEach(([name, span]) => {
       try {
-        ws.openRowGroup?.(meta.row);
+        ws.setMerge?.(name, span[0], span[1]);
       } catch {
         // ignore
       }
     });
-
-  for (let i = 0; i < total; i += 1) {
-    try {
-      if (hidden.has(i)) ws.hideRow?.(i);
-      else ws.showRow?.(i);
-    } catch {
-      // ignore
-    }
+  } catch {
+    // ignore
   }
 
-  return hidden;
-}
+  try {
+    if (sheet.style && typeof ws.setStyle === 'function') {
+      Object.entries(sheet.style).forEach(([name, css]) => {
+        try {
+          ws.setStyle(name, css);
+        } catch {
+          // ignore
+        }
+      });
+    }
+  } catch {
+    // ignore
+  }
 
-function bindBudgetFolds(ws: any, sheet: BuiltSheet) {
-  const table =
-    ws.table ||
-    ws.element?.querySelector?.('table') ||
-    ws.content?.querySelector?.('table');
-  if (!table) return () => {};
+  try {
+    ws.setNestedHeaders?.(sheet.nestedHeaders);
+  } catch {
+    // ignore
+  }
 
-  table.classList.add('jss-outline-table');
+  scheduleMergeDimHeaders(ws);
 
-  const openMap = new Map<string, boolean>();
-  sheet.foldMetas.forEach((meta) => {
-    if (meta.canFold) openMap.set(foldKey(meta), true);
-  });
-
-  const paintAll = () => {
-    sheet.foldMetas.forEach((meta) => paintFoldToggle(ws, meta, sheet, openMap));
-  };
-
-  recomputeFoldVisibility(ws, sheet, openMap);
-  paintAll();
-
-  const onClick = (ev: MouseEvent) => {
-    const target = ev.target as HTMLElement | null;
-    const toggle = target?.closest?.('.jss-outline-toggle') as HTMLElement | null;
-    if (!toggle || !table.contains(toggle)) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    const row = Number(toggle.dataset.row);
-    const col = Number(toggle.dataset.col);
-    if (!Number.isFinite(row) || !Number.isFinite(col)) return;
-    const meta = sheet.foldMetas.find(
-      (m) => m.row === row && m.col === col && m.canFold,
-    );
-    if (!meta) return;
-
-    // 组织盖住时科目箭头是 ▶，但真实可能仍是展开：点击科目只切换科目自身
-    const key = foldKey(meta);
-    openMap.set(key, openMap.get(key) === false);
-
-    recomputeFoldVisibility(ws, sheet, openMap);
-    paintAll();
-  };
-
-  table.addEventListener('click', onClick);
-  return () => table.removeEventListener('click', onClick);
+  sheet.foldMetas.forEach((meta) => paintFoldToggle(ws, meta));
 }
 
 export default function JspreadsheetBudgetPage() {
   const spreadsheet = useRef<any>(null);
-  const sheet = useMemo(() => buildExpenseSheet(ORG_TREE), []);
-  const [mountId, setMountId] = React.useState(0);
+  const [mountId, setMountId] = useState(0);
+  const [productExpanded, setProductExpanded] = useState(
+    () => new Set<string>(INITIAL_PRODUCT_EXPANDED),
+  );
+  const [regionExpanded, setRegionExpanded] = useState<ExtensionExpansionState>(
+    () => createInitialRegionExpansion(),
+  );
+
+  const sheet = useMemo(() => {
+    const viewRows = createBusinessProjectionRows(
+      [],
+      productExpanded,
+      regionExpanded,
+    );
+    return buildSheetFromProjection(viewRows);
+  }, [productExpanded, regionExpanded]);
+
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+
+  const toggleFold = useCallback((meta: FoldMeta) => {
+    if (!meta.canFold) return;
+    if (meta.col === 0) {
+      setProductExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(meta.productId)) next.delete(meta.productId);
+        else next.add(meta.productId);
+        return next;
+      });
+      return;
+    }
+    if (!meta.regionRootId) return;
+    setRegionExpanded((prev) => {
+      const next = new Map(prev);
+      const current = new Set(next.get(meta.productId) ?? []);
+      if (current.has(meta.regionRootId!)) current.delete(meta.regionRootId!);
+      else current.add(meta.regionRootId!);
+      next.set(meta.productId, current);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -550,55 +488,46 @@ export default function JspreadsheetBudgetPage() {
         return;
       }
 
-      try {
-        if (typeof ws.setData === 'function' && sheet.data.length) {
-          ws.setData(sheet.data);
-        }
-      } catch {
-        // ignore
-      }
+      applySheetToWorksheet(ws, sheetRef.current);
 
-      try {
-        if (sheet.mergeCells && typeof ws.setMerge === 'function') {
-          Object.entries(sheet.mergeCells).forEach(([name, span]) => {
-            try {
-              ws.setMerge(name, span[0], span[1]);
-            } catch {
-              // ignore
-            }
-          });
-        }
-      } catch {
-        // ignore
-      }
+      const table =
+        ws.table ||
+        ws.element?.querySelector?.('table') ||
+        ws.content?.querySelector?.('table');
+      if (!table) return;
+      table.classList.add('jss-outline-table');
 
-      try {
-        ws.setNestedHeaders?.(sheet.nestedHeaders);
-      } catch {
-        // ignore
-      }
+      const onClick = (ev: MouseEvent) => {
+        const target = ev.target as HTMLElement | null;
+        const toggle = target?.closest?.(
+          '.jss-outline-toggle',
+        ) as HTMLElement | null;
+        if (!toggle || !table.contains(toggle)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const row = Number(toggle.dataset.row);
+        const col = Number(toggle.dataset.col);
+        if (!Number.isFinite(row) || !Number.isFinite(col)) return;
+        const meta = sheetRef.current.foldMetas.find(
+          (m) => m.row === row && m.col === col && m.canFold,
+        );
+        if (meta) toggleFold(meta);
+      };
 
-      const thead =
-        ws.thead ||
-        ws.table?.tHead ||
-        ws.element?.querySelector?.('thead');
-      thead?.querySelector?.('tr.jss_nested')?.removeAttribute?.('data-dim-merged');
-      mergeDimHeaders(ws);
-      window.setTimeout(() => mergeDimHeaders(ws), 60);
-
-      unbind = bindBudgetFolds(ws, sheet);
-    }, 120);
+      table.addEventListener('click', onClick);
+      unbind = () => table.removeEventListener('click', onClick);
+    }, 80);
 
     return () => {
       window.clearTimeout(timer);
       unbind?.();
     };
-  }, [sheet, mountId]);
+  }, [sheet, mountId, toggleFold]);
 
   return (
     <PageContainer
       title="Jspreadsheet Data Grid · 预算费用表"
-      subTitle={`▶/▼ 展开收起 · ${sheet.data.length} 行`}
+      subTitle={`渲染对齐 SpreadJS Demo 投影 · ▶/▼ 展开收起 · ${sheet.data.length} 行`}
     >
       <div className="jss-page">
         <div className="jss-page__body jss-page__body--side-collapsed">
@@ -618,7 +547,6 @@ export default function JspreadsheetBudgetPage() {
                 nestedHeaders={sheet.nestedHeaders}
                 mergeCells={sheet.mergeCells}
                 style={sheet.style}
-                rows={sheet.rows}
                 minDimensions={[sheet.columns.length, sheet.data.length]}
                 columnResize={true}
                 tableOverflow={true}

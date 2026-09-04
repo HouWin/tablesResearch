@@ -23,8 +23,6 @@ import {
   BUSINESS_COLUMN_DATA,
   COLUMNS,
   COLUMN_GROUPS,
-  COLUMN_HEADER_CELLS,
-  COLUMN_HEADER_ROW_COUNT,
   EMPTY_STATS,
   HIERARCHY_COLUMN_COUNT,
   INITIAL_PRODUCT_EXPANDED,
@@ -473,7 +471,7 @@ export function useSpreadsheetController(
       spread.options.highlightInvalidData = true;
       const sheet = spread.getActiveSheet();
       sheet.name('费用预算表');
-      sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
+      sheet.frozenColumnCount(0);
       sheet.options.protectionOptions = {
         allowSelectLockedCells: true,
         allowSelectUnlockedCells: true,
@@ -1490,6 +1488,77 @@ export function useSpreadsheetController(
         );
         const rowCount = rows.length;
         const colCount = COLUMNS.length;
+        const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
+        /**
+         * 参考图 / Excel：
+         *   组织 | 科目 | 功能属性 |              2025年
+         *   (各纵向合并两行)     | 全年合计 | 1月 | … | 12月
+         *
+         * 第二行前三格不得出现「全年合计/1月/2月」；它们必须从第 4 列起。
+         */
+        const paintBudgetColumnHeaders = () => {
+          const dimCount = 3;
+          const yearLabels = [
+            '全年合计',
+            '1月',
+            '2月',
+            '3月',
+            '4月',
+            '5月',
+            '6月',
+            '7月',
+            '8月',
+            '9月',
+            '10月',
+            '11月',
+            '12月',
+          ];
+          const wasProtected = sheet.options.isProtected;
+          if (wasProtected) sheet.options.isProtected = false;
+          // 冻结列 + 双行表头会把第二行左移 3 列，这里关掉冻结保对齐
+          sheet.frozenColumnCount(0);
+
+          try {
+            sheet.options.colHeaderAutoText =
+              GC.Spread.Sheets.HeaderAutoText.blank;
+            (sheet.getSpans(undefined, headerArea) || []).forEach((span) => {
+              sheet.removeSpan(span.row, span.col, headerArea);
+            });
+            sheet.setRowCount(2, headerArea);
+
+            for (let row = 0; row < 2; row += 1) {
+              for (let col = 0; col < colCount; col += 1) {
+                sheet.setValue(row, col, null, headerArea);
+              }
+            }
+
+            sheet.setValue(0, 0, '组织', headerArea);
+            sheet.setValue(0, 1, '科目', headerArea);
+            sheet.setValue(0, 2, '功能属性', headerArea);
+            sheet.setValue(0, dimCount, '2025年', headerArea);
+            yearLabels.forEach((label, i) => {
+              sheet.setValue(1, dimCount + i, label, headerArea);
+            });
+
+            for (let col = 0; col < dimCount; col += 1) {
+              sheet.addSpan(0, col, 2, 1, headerArea);
+            }
+            sheet.addSpan(0, dimCount, 1, yearLabels.length, headerArea);
+
+            sheet
+              .getRange(0, 0, 2, colCount, headerArea)
+              .backColor('#9ec9f5')
+              .foreColor('#000000')
+              .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
+              .vAlign(GC.Spread.Sheets.VerticalAlign.center)
+              .font('700 12px Arial, PingFang SC');
+            sheet.setRowHeight(0, 28, headerArea);
+            sheet.setRowHeight(1, 32, headerArea);
+          } finally {
+            if (wasProtected) sheet.options.isProtected = true;
+          }
+        };
+
         sheet.suspendPaint();
         sheet.suspendCalcService(false);
         sheet.suspendDirty();
@@ -1498,7 +1567,8 @@ export function useSpreadsheetController(
           clearOutlinesAndComments();
           sheet.setRowCount(rowCount);
           sheet.setColumnCount(colCount);
-          sheet.frozenColumnCount(HIERARCHY_COLUMN_COUNT);
+          // 双行表头下冻结列会导致第二行错位，交由 paintBudgetColumnHeaders 处理
+          sheet.frozenColumnCount(0);
           sheet
             .getSpans(undefined, GC.Spread.Sheets.SheetArea.viewport)
             .forEach((span) =>
@@ -1528,81 +1598,13 @@ export function useSpreadsheetController(
             );
           });
 
-          const headerArea = GC.Spread.Sheets.SheetArea.colHeader;
-          sheet.getSpans(undefined, headerArea).forEach((span) => {
-            sheet.removeSpan(span.row, span.col, headerArea);
-          });
-          sheet.setRowCount(COLUMN_HEADER_ROW_COUNT, headerArea);
-          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1) {
-            for (let col = 0; col < colCount; col += 1)
-              sheet.setValue(row, col, null, headerArea);
-          }
-          COLUMN_HEADER_CELLS.forEach(
-            ({ row, startCol, rowCount, colCount, label }) => {
-              sheet.setValue(row, startCol, label, headerArea);
-              if (rowCount > 1 || colCount > 1)
-                sheet.addSpan(row, startCol, rowCount, colCount, headerArea);
-            },
-          );
+          paintBudgetColumnHeaders();
+
           COLUMNS.forEach((column, col) =>
             sheet.setColumnWidth(col, column.width),
           );
 
           if (!stress) styleDataRows(0, rowCount, colCount);
-          sheet
-            .getRange(0, 0, COLUMN_HEADER_ROW_COUNT, colCount, headerArea)
-            .backColor('#93c5f3')
-            .foreColor('#172b3a')
-            .hAlign(GC.Spread.Sheets.HorizontalAlign.center)
-            .vAlign(GC.Spread.Sheets.VerticalAlign.center)
-            .font('600 12px Arial, PingFang SC');
-          if (COLUMN_HEADER_ROW_COUNT > 2)
-            sheet
-              .getRange(1, 0, COLUMN_HEADER_ROW_COUNT - 2, colCount, headerArea)
-              .backColor('#f7f5ff')
-              .foreColor('#67569e')
-              .font('650 12px Arial, PingFang SC');
-          sheet
-            .getRange(0, 0, 1, colCount, headerArea)
-            .backColor('#93c5f3')
-            .foreColor('#172b3a')
-            .font('700 12px Arial, PingFang SC');
-          sheet
-            .getRange(
-              COLUMN_HEADER_ROW_COUNT - 1,
-              PRODUCT_HIERARCHY_COLUMN,
-              1,
-              1,
-              headerArea,
-            )
-            .backColor('#93c5f3')
-            .foreColor('#172b3a');
-          sheet
-            .getRange(
-              COLUMN_HEADER_ROW_COUNT - 1,
-              PRODUCT_ATTRIBUTE_COLUMN,
-              1,
-              1,
-              headerArea,
-            )
-            .backColor('#93c5f3')
-            .foreColor('#172b3a');
-          sheet
-            .getRange(
-              COLUMN_HEADER_ROW_COUNT - 1,
-              REGION_HIERARCHY_COLUMN,
-              1,
-              1,
-              headerArea,
-            )
-            .backColor('#93c5f3')
-            .foreColor('#172b3a');
-          for (let row = 0; row < COLUMN_HEADER_ROW_COUNT; row += 1)
-            sheet.setRowHeight(
-              row,
-              row === COLUMN_HEADER_ROW_COUNT - 1 ? 34 : 27,
-              headerArea,
-            );
           if (!stress) configureCellTypes(0, rowCount);
 
           // 常规与大数据模式都由组织列、科目列分别维护独立状态并
@@ -1641,6 +1643,8 @@ export function useSpreadsheetController(
           sheet.resumeCalcService(false);
           sheet.resumePaint();
         }
+        // 列大纲 / resumePaint 之后再刷表头，避免合并与叶子标题被冲掉或错位
+        paintBudgetColumnHeaders();
         spread.invalidateLayout();
         spread.repaint();
         let nextRow = preferredCell

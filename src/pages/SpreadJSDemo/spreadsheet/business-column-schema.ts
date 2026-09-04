@@ -73,8 +73,9 @@ export type ColumnOutlineGroup = {
 /**
  * “费用预算表-行维度展开示例.xlsx”对应的后台列树。
  *
- * 前三列来自 Excel 的行维度，后十三列严格对应 2025 年全年合计与
- * 1—12 月。全年合计是列组折叠时保留的汇总列。
+ * 表头四个维度：组织 / 科目 / 功能属性 / 2025年
+ * 第二行（全年合计 + 1—12 月）全部挂在「2025年」下；前三维表头纵向合并。
+ * 全年合计是列组折叠时保留的汇总列。
  */
 export const BUSINESS_COLUMN_DATA = [
   {
@@ -256,16 +257,17 @@ export function buildBusinessColumnModel(roots: readonly BusinessColumnNode[]) {
   const visitHeader = (group: BusinessColumnGroup, row: number) => {
     const span = spanOf(group);
     const directLeaves = group.children.every(isColumnLeaf);
+    // 分组标题只占一行；子级（全年合计/月）写在下一行，保证第二行都在 2025年下
     headerCells.push({
       ...span,
       row,
-      rowCount: directLeaves ? lastHeaderRow - row : 1,
+      rowCount: 1,
       kind: 'group',
     });
     if (directLeaves) {
       group.children
         .filter(isColumnLeaf)
-        .forEach((column) => addLeafHeader(column, lastHeaderRow));
+        .forEach((column) => addLeafHeader(column, row + 1));
       return;
     }
     group.children.forEach((child) => {
