@@ -235,10 +235,15 @@ export function SearchPopover({
 const DIMENSION_LOCATOR_EXAMPLE = JSON.stringify(
   {
     row: {
-      organizationId: 'huajing-sales',
-      subjectId: 'huajing-sales-office',
+      DIM0090: 'MEM_ORG_HUAJING_SALES',
+      DIM0069: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
     },
-    column: ['budget2025', 'january'],
+    column: {
+      DIM0086: 'MEM_DATA_CATEGORY_BUDGET',
+      DIM0067: 'MEM_YEAR_2025',
+      DIM0068: 'MEM_PERIOD_01',
+      default_measure: 'MEM_MEASURE_AMOUNT',
+    },
   },
   null,
   2,
@@ -272,7 +277,7 @@ export function DimensionLocatorPopover({
       return;
     }
     if (!isBusinessCellDimension(parsed)) {
-      setError('必须包含有效的 row 行维和 column 列维路径。');
+      setError('row 和 column 必须是有效的“维度编码 → 成员编码”映射。');
       return;
     }
     if (!onLocate(parsed)) {

@@ -15,14 +15,58 @@ pnpm dev
 ## 数据与表格结构
 
 - 页面运行时数据源：[`spreadsheet/model.ts`](./spreadsheet/model.ts) 中的 `BUSINESS_DATA`，它本身就是后台返回形态的类型化示例，不再维护重复静态副本。
-- 列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts) 中的 `BUSINESS_COLUMN_DATA`。组织、科目、功能属性是顶层叶子列，2025 年是包含全年合计及 1—12 月的顶层分组，与 Excel 表头结构直接对应；列树的叶子、顶层分组及中间分组都必须提供全树唯一的 `field`。
+- 维度与属性编码：[`spreadsheet/business-dimensions.ts`](./spreadsheet/business-dimensions.ts) 集中定义组织、科目、预算类型、年度、期间、指标维度和功能属性编码。
+- 列配置：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts) 中的 `BUSINESS_COLUMN_DATA`。组织、科目是行维度列，功能属性是科目属性列；预算类型 → 年度 → 期间 → 指标构成四层列维度表头，每层节点都显式携带维度编码和成员编码。
 - Excel 原始样例：[`费用预算表-行维度展开示例.xlsx`](./费用预算表-行维度展开示例.xlsx)。
-- 页面包含 3 个行维度：组织、科目、功能属性；数值列为全年合计和 1 月至 12 月。
+- 页面包含 2 个行维度（组织、科目）和 1 个科目属性（功能属性）；数值列为全年合计和 1 月至 12 月。
 - 常规样例完全展开后为 36 行 × 16 列。
 - 10 万行模式从常规组织和“办公费 / 电费 / 水费”科目继续扩展，补充区域经营单元、成本中心、人力、研发、制造、供应链、信息化、质量、折旧等真实预算科目；月度数值带有确定性波动和季节性，全年合计严格等于 12 个月之和。除 10 万条明细外，还模拟后台返回 1,100 条带稳定 ID 的“组织 × 科目”汇总记录。
 - 列分组默认以第一个叶子列作为收起后保留列，因此“2025年”收起后会自动保留“全年合计”，不需要额外配置。
 
-`BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。组织节点通过 `children` 保存下级组织，通过 `subjects` 保存当前组织的科目树；科目树内部继续使用 `children` 表达合计与明细。科目树不保留额外的“费用汇总”层，日常费用合计、管理费用合计等后台汇总记录直接作为可折叠节点，其费用明细向右缩进一级。前端编辑明细时不会重新计算或覆盖这些汇总记录。
+`BUSINESS_DATA` 直接保存 Excel 中的明细和汇总值。每个组织、科目节点同时保存后台记录 `id` 和所属维度的 `memberCode`，两者不混用。组织节点通过 `children` 保存下级组织，通过 `subjects` 保存当前组织的科目树；科目树内部继续使用 `children` 表达合计与明细。科目树不保留额外的“费用汇总”层，日常费用合计、管理费用合计等后台汇总记录直接作为可折叠节点，其费用明细向右缩进一级。前端编辑明细时不会重新计算或覆盖这些汇总记录。
+
+数值叶子的 `field`（如 `january`）只负责把当前前端记录映射到 Worksheet，不再承担业务坐标语义。生产接口不需要、也不应该解析 `FDG1374-...` 一类复合字段前缀；当前协议也不包含无实际用途的 `filters` 或 `context`。
+
+列树的核心形态如下；实际配置由相同结构生成全年合计和 1—12 月：
+
+```ts
+[
+  { type: 'rowDim', dimensionCode: 'DIM0090', field: 'organizationHierarchy' },
+  { type: 'rowDim', dimensionCode: 'DIM0069', field: 'subjectHierarchy' },
+  {
+    type: 'attr',
+    attributeCode: 'ATTR000038',
+    ownerDimensionCode: 'DIM0069',
+    field: 'functionalAttribute',
+  },
+  {
+    type: 'colDim',
+    dimension: { code: 'DIM0086', memberCode: 'MEM_DATA_CATEGORY_BUDGET' },
+    children: [
+      {
+        type: 'colDim',
+        dimension: { code: 'DIM0067', memberCode: 'MEM_YEAR_2025' },
+        children: [
+          {
+            type: 'colDim',
+            dimension: { code: 'DIM0068', memberCode: 'MEM_PERIOD_01' },
+            children: [
+              {
+                type: 'value',
+                dimension: {
+                  code: 'default_measure',
+                  memberCode: 'MEM_MEASURE_AMOUNT',
+                },
+                field: 'january',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+]
+```
 
 `BUSINESS_DATA` 不再保存 `hierarchyRole`。组织与科目由所在容器区分：根节点和组织节点的 `children` 都是下级组织，组织节点的 `subjects` 是科目树；科目节点是否可折叠则直接由其 `children` 判断。层级和汇总身份均由树结构推导，避免后台同时维护“结构”和“角色”两套可能冲突的信息。
 
@@ -41,20 +85,47 @@ subjectExpandedByOrganization: Map<organizationId, Set<subjectId>>
 
 ## 单元格双向业务坐标
 
-单元格坐标由行维和列维组成。行维只保存当前组织和科目的稳定 ID；列维只保存 `BUSINESS_COLUMN_DATA` 从顶层到叶子列的 `field` 数组。定位不依赖中文名称、树节点角色或 Worksheet 物理行列号，因此业务名称和展开状态变化不会导致坐标失效。组织 ID、科目 ID 需在各自业务域内保持全局唯一，列树中的每个 `field` 也必须唯一。
+数值单元格坐标只由 `row` 和 `column` 组成，二者都是 `{ [维度编码]: 成员编码 }`。`default_measure` 也是普通维度键，只是它表示指标维度。定位不依赖复合 field、中文名称、树节点角色或 Worksheet 物理行列号，因此业务名称和展开状态变化不会导致坐标失效。
 
 ```ts
 {
   row: {
-    organizationId: 'huajing-sales',
-    subjectId: 'huajing-sales-office',
+    DIM0090: 'MEM_ORG_HUAJING_SALES',
+    DIM0069: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
   },
-  column: ['budget2025', 'january'],
+  column: {
+    DIM0086: 'MEM_DATA_CATEGORY_BUDGET',
+    DIM0067: 'MEM_YEAR_2025',
+    DIM0068: 'MEM_PERIOD_01',
+    default_measure: 'MEM_MEASURE_AMOUNT',
+  },
 }
 ```
 
-- Worksheet → 后端：`toBusinessCellDimension()` 生成业务坐标；`onBusinessCellChange` 回调发送 `recordId`、`field`、新旧值和完整 `dimension`。
+- Worksheet → 后端：`toBusinessCellDimension()` 仅为数值列生成上述业务坐标；`onBusinessCellChange` 以 `type: 'value'` 发送 `recordId`、新旧值和完整 `dimension`，不要求后端识别前端 field。
 - 后端 → Worksheet：`resolveBusinessCellDimension()` 根据相同坐标，通过缓存的行维索引和列维索引查找投影行、叶子列；`locateBusinessCell()` 会自动展开必要的组织、科目祖先后选中目标单元格。10 万行模式会在载入时预热行维索引。
+
+“功能属性”不是数值列维，修改时使用独立载荷：
+
+```ts
+{
+  type: 'attribute',
+  recordId: 'huajing-sales-office',
+  row: {
+    DIM0090: 'MEM_ORG_HUAJING_SALES',
+    DIM0069: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
+  },
+  attribute: {
+    code: 'ATTR000038',
+    owner: {
+      dimensionCode: 'DIM0069',
+      memberCode: 'MEM_SUBJECT_HUAJING_SALES_OFFICE',
+    },
+  },
+  oldValue: '销售',
+  newValue: '管理',
+}
+```
 
 ## 模块边界
 
@@ -63,11 +134,13 @@ subjectExpandedByOrganization: Map<organizationId, Set<subjectId>>
 - 页面和工具栏：[`components/spreadsheet-ui.tsx`](./components/spreadsheet-ui.tsx)、[`components/spreadsheet-toolbar.tsx`](./components/spreadsheet-toolbar.tsx)
 - 层级控制：[`components/outline-controls.tsx`](./components/outline-controls.tsx)
 - 数据模型与投影：[`spreadsheet/model.ts`](./spreadsheet/model.ts)
+- 维度编码：[`spreadsheet/business-dimensions.ts`](./spreadsheet/business-dimensions.ts)
 - 多级表头与列定义：[`spreadsheet/business-column-schema.ts`](./spreadsheet/business-column-schema.ts)
 - SpreadJS 渲染与事件：[`spreadsheet/use-spreadsheet-controller.ts`](./spreadsheet/use-spreadsheet-controller.ts)
 - 大数据生成、分页契约与本地页源：[`spreadsheet/stress-data-source.ts`](./spreadsheet/stress-data-source.ts)
 - 生产分批加载方案：[`LARGE_DATA_STRATEGY.md`](./LARGE_DATA_STRATEGY.md)
 - 业务坐标：[`spreadsheet/business-cell-coordinate.ts`](./spreadsheet/business-cell-coordinate.ts)
+- 编辑回调协议：[`spreadsheet/business-cell-change.ts`](./spreadsheet/business-cell-change.ts)
 - 附件策略与展示：[`spreadsheet/attachments.ts`](./spreadsheet/attachments.ts)
 - 选区统计：[`spreadsheet/selection-statistics.ts`](./spreadsheet/selection-statistics.ts)
 - 通用常量：[`spreadsheet/constants.ts`](./spreadsheet/constants.ts)
@@ -96,7 +169,7 @@ const controller = useSpreadsheetController({
 });
 ```
 
-回调载荷包含后台 `recordId`、叶子列 `field`、新旧值和完整 `dimension`。生产接入建议由请求层负责乐观更新失败后的回滚、权限错误和并发版本冲突；不要在展示组件里直接拼装行列坐标。
+数值回调载荷包含后台 `recordId`、新旧值和完整 `dimension`；属性回调使用独立的 `row + attribute` 结构。生产接入建议由请求层负责乐观更新失败后的回滚、权限错误和并发版本冲突；不要在展示组件里直接拼装行列坐标。
 
 批注、历史与附件当前保存在浏览器内存中，刷新后清空。它们已经使用稳定单元格 ID 关联，接入持久化时可以直接以该键或业务 `dimension` 作为服务端关联依据。附件限制统一定义在 `spreadsheet/attachments.ts`：支持图片、PDF、Word、Excel，单文件 5 MiB，每格最多 10 个。
 

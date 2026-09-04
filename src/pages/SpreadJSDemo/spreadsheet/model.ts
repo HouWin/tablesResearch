@@ -1,8 +1,16 @@
 import {
   COLUMNS,
+  getBusinessColumnDimension,
   PRODUCT_HIERARCHY_COLUMN,
   REGION_HIERARCHY_COLUMN,
 } from './business-column-schema';
+import {
+  BUSINESS_ATTRIBUTE_CODES,
+  BUSINESS_DIMENSION_CODES,
+  cloneDimensionMemberValues,
+  createDemoMemberCode,
+  dimensionMemberValuesKey,
+} from './business-dimensions';
 
 export {
   ANNUAL_TOTAL_COLUMN,
@@ -19,18 +27,29 @@ export {
   STRESS_TEXT_SEARCH_COLUMNS,
   getBusinessColumnDimension,
   getBusinessColumnIndex,
+  isValueColumn,
 } from './business-column-schema';
 export type {
   BusinessColumnDimension,
   BusinessColumnGroup,
   BusinessColumnLeaf,
   BusinessColumnNode,
+  BusinessAttributeColumn,
+  BusinessRowDimensionColumn,
+  BusinessValueColumn,
   ColumnDataType,
   ColumnDefinition,
   ColumnEditor,
   ColumnFormat,
   ColumnHeaderCell,
 } from './business-column-schema';
+
+export {
+  BUSINESS_ATTRIBUTE_CODES,
+  BUSINESS_DIMENSION_CODES,
+  createDemoMemberCode,
+} from './business-dimensions';
+export type { DimensionMemberValues } from './business-dimensions';
 
 export type PanelName =
   | 'comment'
@@ -75,6 +94,8 @@ export type BudgetValueField = (typeof BUDGET_VALUE_FIELDS)[number];
 type BusinessNodeBase = {
   /** 后台记录 ID；组织、科目汇总和科目明细记录都全局唯一。 */
   id: string;
+  /** 所属维度的稳定成员编码，不与后台记录 ID 混用。 */
+  memberCode: string;
   name: string;
 };
 
@@ -124,11 +145,14 @@ export type CellAttachment = {
 export type DrillPathItem = Pick<BusinessNode, 'id' | 'name'>;
 export type DrillView = readonly DrillPathItem[];
 
-/** 前后台共用的稳定行维；组织 ID 与科目 ID 唯一确定一条业务记录。 */
-export type BusinessRowDimension = {
-  organizationId: string;
-  subjectId: string;
-};
+type BusinessRowDimensionCode =
+  | typeof BUSINESS_DIMENSION_CODES.organization
+  | typeof BUSINESS_DIMENSION_CODES.subject;
+
+/** 前后台共用的稳定行坐标：维度编码 -> 成员编码。 */
+export type BusinessRowDimension = Readonly<
+  Record<BusinessRowDimensionCode, string>
+>;
 export type HierarchyField = 'organizationHierarchy' | 'subjectHierarchy';
 export type BusinessField = 'name' | 'functionalAttribute' | BudgetValueField;
 export type ColumnField = BusinessField | HierarchyField;
@@ -161,10 +185,10 @@ export type ViewRow = SubjectNode & {
 export type StressSummaryRecords = ReadonlyMap<string, SubjectNode>;
 
 export function stressSummaryRecordKey(
-  organizationId: string,
+  organizationRecordId: string,
   subjectLabel: string,
 ) {
-  return `${organizationId}\u0000${subjectLabel}`;
+  return `${organizationRecordId}\u0000${subjectLabel}`;
 }
 
 export type OutlineDimension = 'product' | 'region';
@@ -290,6 +314,7 @@ function makeBudgetNode(
 ): SubjectNode {
   return {
     id,
+    memberCode: createDemoMemberCode('SUBJECT', id),
     name,
     functionalAttribute,
     ...repeatedBudget(annualTotal, monthly),
@@ -345,6 +370,7 @@ function makeOrganization(
 ): OrganizationNode {
   return {
     id,
+    memberCode: createDemoMemberCode('ORG', id),
     name,
     children,
     subjects: [subjectTree],
@@ -452,13 +478,19 @@ function assertBusinessDataMatchesColumns(
   organizations: readonly OrganizationNode[],
 ) {
   const recordIds = new Set<string>();
+  const organizationMemberCodes = new Set<string>();
   const assertUniqueId = (node: BusinessNode) => {
     if (recordIds.has(node.id))
       throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
     recordIds.add(node.id);
+    if (!node.memberCode.trim())
+      throw new Error(`BUSINESS_DATA 记录缺少成员编码：${node.id}`);
   };
-  const visitSubject = (node: SubjectNode) => {
+  const visitSubject = (node: SubjectNode, subjectMemberCodes: Set<string>) => {
     assertUniqueId(node);
+    if (subjectMemberCodes.has(node.memberCode))
+      throw new Error(`同一组织存在重复科目成员编码：${node.memberCode}`);
+    subjectMemberCodes.add(node.memberCode);
     COLUMNS.forEach((column) => {
       if (isHierarchyField(column.field)) return;
       if (!(column.field in node))
@@ -471,10 +503,13 @@ function assertBusinessDataMatchesColumns(
           `BUSINESS_DATA 记录 ${node.id} 的 ${column.field} 应为 ${column.dataType}`,
         );
     });
-    node.children?.forEach(visitSubject);
+    node.children?.forEach((child) => visitSubject(child, subjectMemberCodes));
   };
   const visitOrganization = (node: OrganizationNode) => {
     assertUniqueId(node);
+    if (organizationMemberCodes.has(node.memberCode))
+      throw new Error(`BUSINESS_DATA 存在重复组织成员编码：${node.memberCode}`);
+    organizationMemberCodes.add(node.memberCode);
     COLUMNS.forEach((column) => {
       if (isHierarchyField(column.field)) return;
       if (column.field in node)
@@ -483,7 +518,10 @@ function assertBusinessDataMatchesColumns(
         );
     });
     node.children?.forEach(visitOrganization);
-    node.subjects?.forEach(visitSubject);
+    const subjectMemberCodes = new Set<string>();
+    node.subjects?.forEach((subject) =>
+      visitSubject(subject, subjectMemberCodes),
+    );
   };
   organizations.forEach(visitOrganization);
 }
@@ -491,7 +529,17 @@ function assertBusinessDataMatchesColumns(
 assertBusinessDataMatchesColumns(BUSINESS_DATA);
 
 export function businessRowDimensionKey(dimension: BusinessRowDimension) {
-  return JSON.stringify([dimension.organizationId, dimension.subjectId]);
+  return dimensionMemberValuesKey(dimension);
+}
+
+export function createBusinessRowDimension(
+  organizationMemberCode: string,
+  subjectMemberCode: string,
+): BusinessRowDimension {
+  return {
+    [BUSINESS_DIMENSION_CODES.organization]: organizationMemberCode,
+    [BUSINESS_DIMENSION_CODES.subject]: subjectMemberCode,
+  };
 }
 
 const BUSINESS_ROW_DIMENSION_BY_ID = new Map<string, BusinessRowDimension>();
@@ -500,18 +548,18 @@ const BUSINESS_NODE_BY_ROW_DIMENSION = new Map<string, SubjectNode>();
 function cloneBusinessRowDimension(
   dimension: BusinessRowDimension,
 ): BusinessRowDimension {
-  return { ...dimension };
+  return cloneDimensionMemberValues(dimension);
 }
 
 function indexSubjectRowDimensions(
   nodes: readonly SubjectNode[],
-  organizationId: string,
+  organizationMemberCode: string,
 ) {
   nodes.forEach((node) => {
-    const dimension: BusinessRowDimension = {
-      organizationId,
-      subjectId: node.id,
-    };
+    const dimension = createBusinessRowDimension(
+      organizationMemberCode,
+      node.memberCode,
+    );
     const key = businessRowDimensionKey(dimension);
     const duplicate = BUSINESS_NODE_BY_ROW_DIMENSION.get(key);
     if (duplicate)
@@ -521,14 +569,14 @@ function indexSubjectRowDimensions(
     BUSINESS_ROW_DIMENSION_BY_ID.set(node.id, dimension);
     BUSINESS_NODE_BY_ROW_DIMENSION.set(key, node);
     if (node.children?.length)
-      indexSubjectRowDimensions(node.children, organizationId);
+      indexSubjectRowDimensions(node.children, organizationMemberCode);
   });
 }
 
 function indexBusinessRowDimensions(nodes: readonly OrganizationNode[]) {
   nodes.forEach((node) => {
     if (node.subjects?.length)
-      indexSubjectRowDimensions(node.subjects, node.id);
+      indexSubjectRowDimensions(node.subjects, node.memberCode);
     if (node.children?.length) indexBusinessRowDimensions(node.children);
   });
 }
@@ -854,8 +902,17 @@ export function viewForNode(
   ];
 }
 
-export function stableCellKey(nodeId: string, field: string) {
-  return `${nodeId}::${field}`;
+export function stableCellKey(
+  rowDimension: BusinessRowDimension,
+  field: ColumnField,
+) {
+  const columnDimension = getBusinessColumnDimension(field);
+  const targetKey = columnDimension
+    ? `value:${dimensionMemberValuesKey(columnDimension)}`
+    : field === 'functionalAttribute'
+    ? `attribute:${BUSINESS_ATTRIBUTE_CODES.functionalAttribute}`
+    : `projection:${field}`;
+  return `${businessRowDimensionKey(rowDimension)}::${targetKey}`;
 }
 
 export function columnName(col: number) {
@@ -1006,15 +1063,19 @@ function projectStressProduct(
       ({
         ...fallback,
         id: `${product.id}:${region.id}:summary`,
+        memberCode: createDemoMemberCode(
+          'SUBJECT',
+          `stress-summary-${region.id}`,
+        ),
         name: region.label,
         ...aggregateBudgetNodes(region.facts, fallback),
         children: undefined,
       } satisfies SubjectNode);
     const expanded = expandedRegions.has(region.id);
-    const rowDimension: BusinessRowDimension = {
-      organizationId: product.id,
-      subjectId: summary.id,
-    };
+    const rowDimension = createBusinessRowDimension(
+      createDemoMemberCode('ORG', product.id),
+      summary.memberCode,
+    );
     const rootRow: ViewRow = {
       ...summary,
       id: `${product.id}::${region.id}`,
@@ -1054,6 +1115,10 @@ function projectStressProduct(
             ({
               ...childFallback,
               id: `${child.id}:${region.id}:summary`,
+              memberCode: createDemoMemberCode(
+                'SUBJECT',
+                `stress-summary-${region.id}`,
+              ),
               name: child.label,
               ...aggregateBudgetNodes(childRegion.facts, childFallback),
             } satisfies SubjectNode);
@@ -1061,10 +1126,10 @@ function projectStressProduct(
             {
               ...childSummary,
               id: `${product.id}::${region.id}::${childSummary.id}`,
-              rowDimension: {
-                organizationId: child.id,
-                subjectId: childSummary.id,
-              },
+              rowDimension: createBusinessRowDimension(
+                createDemoMemberCode('ORG', child.id),
+                childSummary.memberCode,
+              ),
               sourceNodes: childBackendSummary
                 ? [childBackendSummary]
                 : childRegion.facts,

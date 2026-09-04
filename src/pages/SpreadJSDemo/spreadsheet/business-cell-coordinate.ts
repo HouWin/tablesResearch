@@ -5,18 +5,19 @@ import {
   getBusinessColumnIndex,
   getCellSourceNode,
   getCellSourceRowDimension,
-  isHierarchyField,
+  isValueColumn,
+  BUSINESS_DIMENSION_CODES,
   type BusinessColumnDimension,
   type BusinessRowDimension,
   type ViewRow,
 } from './model';
+import { hasExactDimensionCodes } from './business-dimensions';
 
 /**
  * 前后台共用的业务单元格坐标。
  *
- * row 只包含 BUSINESS_DATA 的组织 ID 和科目 ID；column 是
- * BUSINESS_COLUMN_DATA 从顶层到叶子列的 field 路径。双向定位不依赖名称、
- * 树节点角色或 Worksheet 物理行列号。
+ * row 与 column 都只保存“维度编码 -> 成员编码”。双向定位不依赖复合
+ * field、中文名称、树节点角色或 Worksheet 物理行列号。
  */
 export type BusinessCellDimension = {
   row: BusinessRowDimension;
@@ -47,30 +48,27 @@ const BUSINESS_ROW_LOCATION_INDEX_CACHE = new WeakMap<
 export function isBusinessRowDimension(
   value: unknown,
 ): value is BusinessRowDimension {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const row = value as Record<string, unknown>;
-  const keys = Object.keys(row);
-  return (
-    keys.length === 2 &&
-    keys.every((key) => key === 'organizationId' || key === 'subjectId') &&
-    typeof row.organizationId === 'string' &&
-    Boolean(row.organizationId.trim()) &&
-    typeof row.subjectId === 'string' &&
-    Boolean(row.subjectId.trim())
-  );
+  return hasExactDimensionCodes(value, [
+    BUSINESS_DIMENSION_CODES.organization,
+    BUSINESS_DIMENSION_CODES.subject,
+  ]);
 }
 
 export function isBusinessColumnDimension(
   value: unknown,
 ): value is BusinessColumnDimension {
-  if (!Array.isArray(value) || !value.length) return false;
   if (
-    !value.every((field) => typeof field === 'string' && Boolean(field.trim()))
+    !hasExactDimensionCodes(value, [
+      BUSINESS_DIMENSION_CODES.dataCategory,
+      BUSINESS_DIMENSION_CODES.year,
+      BUSINESS_DIMENSION_CODES.period,
+      BUSINESS_DIMENSION_CODES.measure,
+    ])
   )
     return false;
-  const dimension = value as unknown as BusinessColumnDimension;
+  const dimension = value as BusinessColumnDimension;
   const col = getBusinessColumnIndex(dimension);
-  return col >= 0 && COLUMNS[col]?.field === dimension.at(-1);
+  return col >= 0 && isValueColumn(COLUMNS[col]);
 }
 
 /** Worksheet 单元格 -> 后台业务维度。 */
@@ -80,14 +78,13 @@ export function toBusinessCellDimension(
 ): BusinessCellDimension | null {
   const column = COLUMNS[col];
   const sourceNode = getCellSourceNode(row, col);
-  if (!row || !column || isHierarchyField(column.field) || !sourceNode)
-    return null;
+  if (!row || !column || !isValueColumn(column) || !sourceNode) return null;
   const columnDimension = getBusinessColumnDimension(column.field);
   const rowDimension = getCellSourceRowDimension(row, col);
   if (!columnDimension || !rowDimension) return null;
   return {
     row: rowDimension,
-    column: [...columnDimension],
+    column: { ...columnDimension },
   };
 }
 
@@ -102,17 +99,7 @@ export function isBusinessCellDimension(
   )
     return false;
   const col = getBusinessColumnIndex(dimension.column);
-  return col >= 0 && !isHierarchyField(COLUMNS[col].field);
-}
-
-function matchesCanonicalProjection(
-  row: ViewRow,
-  dimension: BusinessRowDimension,
-) {
-  return (
-    row.productId === dimension.organizationId &&
-    row.regionBusinessId === dimension.subjectId
-  );
+  return col >= 0 && isValueColumn(COLUMNS[col]);
 }
 
 function rowLocation(candidate: ViewRow, row: number): BusinessRowLocation {
@@ -136,12 +123,8 @@ export function prepareBusinessCellLocationIndex(rows: readonly ViewRow[]) {
     // 聚合投影同时对应多条后台记录，不应伪装成可定位、可编辑的业务行。
     if (candidate.sourceNodes.length !== 1) return;
     const key = businessRowDimensionKey(candidate.rowDimension);
-    const current = index.get(key);
-    if (
-      !current ||
-      matchesCanonicalProjection(candidate, candidate.rowDimension)
-    )
-      index.set(key, rowLocation(candidate, row));
+    // 同一记录若因投影重复出现，定位到首个可见实例，结果稳定且可预期。
+    if (!index.has(key)) index.set(key, rowLocation(candidate, row));
   });
   BUSINESS_ROW_LOCATION_INDEX_CACHE.set(rows, index);
   return index;
@@ -154,7 +137,7 @@ export function resolveBusinessCellDimension(
 ): BusinessCellLocation | null {
   if (!isBusinessCellDimension(dimension)) return null;
   const col = getBusinessColumnIndex(dimension.column);
-  if (col < 0 || isHierarchyField(COLUMNS[col].field)) return null;
+  if (col < 0 || !isValueColumn(COLUMNS[col])) return null;
   const rowLocation = prepareBusinessCellLocationIndex(rows).get(
     businessRowDimensionKey(dimension.row),
   );
@@ -165,8 +148,10 @@ export function describeBusinessCellDimension(
   dimension: BusinessCellDimension,
 ) {
   const col = getBusinessColumnIndex(dimension.column);
-  const columnLabel = col >= 0 ? COLUMNS[col].label : dimension.column.at(-1);
-  return [dimension.row.organizationId, dimension.row.subjectId, columnLabel]
-    .filter(Boolean)
-    .join(' / ');
+  const columnLabel = col >= 0 ? COLUMNS[col].label : '未知数值列';
+  return [
+    dimension.row[BUSINESS_DIMENSION_CODES.organization],
+    dimension.row[BUSINESS_DIMENSION_CODES.subject],
+    columnLabel,
+  ].join(' / ');
 }

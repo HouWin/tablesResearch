@@ -1,8 +1,12 @@
 import {
   BUDGET_VALUE_FIELDS,
   BUSINESS_DATA,
+  createBusinessRowDimension,
+  createDemoMemberCode,
   stressSummaryRecordKey,
   type BudgetValues,
+  type BusinessColumnDimension,
+  type BusinessRowDimension,
   type OrganizationNode,
   type StressSummaryRecords,
   type SubjectNode,
@@ -52,11 +56,15 @@ export interface BudgetPageGateway<Row> {
     pageSize: number;
     queryVersion: string;
     signal?: AbortSignal;
-  }): Promise<BudgetPageResponse<{ rowId: string; columnField: string }>>;
+  }): Promise<
+    BudgetPageResponse<{
+      row: BusinessRowDimension;
+      column: BusinessColumnDimension;
+    }>
+  >;
   locate?(request: {
-    organizationId: string;
-    subjectId: string;
-    columnField: string;
+    row: BusinessRowDimension;
+    column: BusinessColumnDimension;
     queryVersion: string;
     signal?: AbortSignal;
   }): Promise<{ rowIndex: number; pageCursor: string | null } | null>;
@@ -369,16 +377,17 @@ function createStressRecord(index: number): ViewRow {
   const regionRootId = `stress-subject-${productIndex}-${subjectIndex}`;
   const businessNode: SubjectNode = {
     id: `stress-record-${index}`,
+    memberCode: createDemoMemberCode('SUBJECT', `stress-record-${index}`),
     name: detailLabel,
     functionalAttribute: template.attribute,
     ...createBudgetValues(index, template),
   };
   const record: ViewRow = {
     ...businessNode,
-    rowDimension: {
-      organizationId: productId,
-      subjectId: businessNode.id,
-    },
+    rowDimension: createBusinessRowDimension(
+      createDemoMemberCode('ORG', productId),
+      businessNode.memberCode,
+    ),
     sourceNodes: [],
     productId,
     productParentId,
@@ -414,18 +423,25 @@ function createEmptyBudgetValues(): BudgetValues {
 async function createStressSummaryRecords(rows: readonly ViewRow[]) {
   const records = new Map<string, SubjectNode>();
   const accumulate = (
-    organizationId: string,
+    organizationRecordId: string,
     subjectLabel: string,
     source: ViewRow,
   ) => {
-    const key = stressSummaryRecordKey(organizationId, subjectLabel);
+    const key = stressSummaryRecordKey(organizationRecordId, subjectLabel);
     let summary = records.get(key);
     if (!summary) {
       const subjectIndex = STRESS_SUBJECTS.findIndex(
         (template) => template.summary === subjectLabel,
       );
       summary = {
-        id: `stress-summary:${organizationId}:${Math.max(subjectIndex, 0)}`,
+        id: `stress-summary:${organizationRecordId}:${Math.max(
+          subjectIndex,
+          0,
+        )}`,
+        memberCode: createDemoMemberCode(
+          'SUBJECT',
+          `stress-summary-${Math.max(subjectIndex, 0)}`,
+        ),
         name: subjectLabel,
         functionalAttribute: source.functionalAttribute,
         ...createEmptyBudgetValues(),

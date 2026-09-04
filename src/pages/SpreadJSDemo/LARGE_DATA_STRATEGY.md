@@ -15,7 +15,7 @@
 1. `manifest`：返回数据集版本、总行数、列定义与组织/科目层级摘要；可编辑的汇总必须作为带稳定记录 ID 的独立数据返回。
 2. `page`：按不可解析的游标返回一页当前投影行，并携带 `nextCursor`。
 3. `search`：服务端搜索，返回稳定业务坐标与命中总数，不在浏览器扫描全部行。
-4. `locate`：根据 `organizationId + subjectId + columnField` 返回目标投影位置或页游标。
+4. `locate`：根据 `row + column` 两组“维度编码 → 成员编码”返回目标投影位置或页游标，不解析前端字段名。
 
 明细与汇总编辑都使用现有业务坐标，通过独立 `PATCH` 接口提交，并携带数据集版本或记录版本处理并发冲突。前端不将汇总修改分摊到明细，也不在明细修改后自行重算汇总；如果后台需要联动重算，应在 PATCH 响应或后续版本刷新中返回最新汇总记录。
 
@@ -34,6 +34,19 @@ type BudgetPageResponse<Row> = {
   nextCursor: string | null;
   totalRows: number;
   datasetVersion: string;
+};
+
+type BudgetCellCoordinate = {
+  row: {
+    DIM0090: string; // 组织成员编码
+    DIM0069: string; // 科目成员编码
+  };
+  column: {
+    DIM0086: string; // 数据类型成员编码
+    DIM0067: string; // 年度成员编码
+    DIM0068: string; // 期间成员编码
+    default_measure: string; // 指标成员编码
+  };
 };
 ```
 
@@ -63,7 +76,7 @@ type BudgetPageResponse<Row> = {
 - 每个响应必须带 `datasetVersion`；版本不一致时清空页缓存并重新读取 manifest。
 - 页请求失败保留占位符，滚动回该区域自动重试，并提供手动重试入口。
 - 游标只能表示继续位置，不能承担鉴权；筛选、排序和权限条件变化后旧游标必须失效。
-- 后端按稳定、唯一排序生成游标，例如 `fiscalYear + organizationId + subjectId + recordId`。
+- 后端按稳定、唯一排序生成游标，例如 `年度成员编码 + 组织成员编码 + 科目成员编码 + recordId`。
 - 汇总行和明细行都以各自的记录 ID 独立修改；后台如果返回联动更新则同步刷新当前页，并发冲突返回新版本与服务端值，由页面提示用户选择覆盖或刷新。
 
 ## 参考资料
