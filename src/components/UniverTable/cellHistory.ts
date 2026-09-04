@@ -10,7 +10,13 @@
  * from/to 为字符串化显示值（含数字格式如 ¥20,000），非原始 number。
  */
 import type { ETableCellChangeRecord } from './types';
-import { clearAllDirtyMarks, clearDirtyCell, markDirtyCell } from './cellDirtyMark';
+import {
+  bindDirtyMarkHost,
+  clearAllDirtyMarks,
+  clearDirtyCell,
+  markDirtyCell,
+  runSheetWriteWithoutUndo,
+} from './cellDirtyMark';
 
 const SET_RANGE_VALUES_COMMAND_ID = 'sheet.command.set-range-values';
 const SET_RANGE_VALUES_MUTATION_ID = 'sheet.mutation.set-range-values';
@@ -180,6 +186,12 @@ export interface ETableCellHistoryApi {
   getTracks: () => ETableCellChangeRecord[];
   getCellHistory: (cell: string) => ETableCellChangeRecord[];
   clear: () => void;
+  /**
+   * 仅回撤最近一次单元格值修改（不走 Univer 全局 undo，避免撤到折叠/样式等操作）。
+   */
+  undoLastCellEdit: () => boolean;
+  /** 回撤后按基线重对脏标记 */
+  reconcileDirtyState: () => void;
   /** 程序化写入单元格时记录变更（source: 'api'） */
   recordChange: (
     row: number,
@@ -199,12 +211,15 @@ export const setupCellHistory = (
     maxRecords?: number;
     /** 编辑后在单元格上打修改标记，默认 true */
     markEditedCells?: boolean;
+    /** 只读单元格不记变更、不打修改底色 */
+    isReadonlyCell?: (row: number, column: number) => boolean;
     onChange?: (record: ETableCellChangeRecord) => void;
     onSelectionChange?: (cell: string, row: number, column: number) => void;
   },
 ): ETableCellHistoryApi => {
   const maxRecords = options?.maxRecords ?? 200;
   const markEditedCells = options?.markEditedCells !== false;
+  bindDirtyMarkHost(univerAPI);
   const tracks: ETableCellChangeRecord[] = [];
   const tracksByCell = new Map<string, ETableCellChangeRecord[]>();
   const disposables: Array<{ dispose?: () => void }> = [];
@@ -213,6 +228,8 @@ export const setupCellHistory = (
   const pendingWriteFrom = new Map<string, string>();
   /** 选中/变更后缓存，供对比 */
   const knownValues = new Map<string, string>();
+  /** 值回撤写入中，忽略由此触发的 SheetValueChanged */
+  let applyingValueUndo = false;
   let lastPushFingerprint = '';
   let lastPushAt = 0;
   let selectionRaf = 0;
@@ -298,7 +315,16 @@ export const setupCellHistory = (
     to: string,
     source: ETableCellChangeRecord['source'] = 'edit',
   ) => {
+    if (applyingValueUndo) {
+      rememberValue(row, column, to);
+      return;
+    }
     if (from === to) {
+      rememberValue(row, column, to);
+      return;
+    }
+    // 只读格（维度列 / 汇总行 / editable:false）不记变更、不打修改底色
+    if (options?.isReadonlyCell?.(row, column)) {
       rememberValue(row, column, to);
       return;
     }
@@ -359,6 +385,68 @@ export const setupCellHistory = (
       markDirtyCell(worksheet, row, column);
     }
     options?.onChange?.(record);
+  };
+
+  const coerceUndoValue = (text: string): string | number => {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) {
+      return '';
+    }
+    const normalized = trimmed
+      .replace(/,/g, '')
+      .replace(/¥/g, '')
+      .replace(/%/g, '')
+      .trim();
+    if (/^-?\d+(\.\d+)?$/.test(normalized)) {
+      const num = Number(normalized);
+      if (Number.isFinite(num)) {
+        return trimmed.includes('%') ? num / 100 : num;
+      }
+    }
+    return trimmed;
+  };
+
+  /**
+   * 只回撤最近一次单元格值：写回 from，更新历史与脏标记。
+   * 不调用 Univer undo，因此不会撤掉折叠/合并等操作。
+   */
+  const undoLastCellEdit = (): boolean => {
+    const latest = tracks[0];
+    if (!latest) {
+      return false;
+    }
+    const range = worksheet?.getRange?.(latest.row, latest.column);
+    if (!range?.setValue) {
+      return false;
+    }
+
+    applyingValueUndo = true;
+    try {
+      const restoreValue = coerceUndoValue(latest.from);
+      runSheetWriteWithoutUndo(worksheet, () => {
+        try {
+          range.setValue(restoreValue);
+        } catch (error) {
+          console.warn('[ETable] undoLastCellEdit setValue failed', error);
+        }
+      });
+
+      tracks.shift();
+      removeFromCellIndex(latest);
+      rememberValue(latest.row, latest.column, latest.from);
+
+      const remaining = tracksByCell.get(latest.cell);
+      if (markEditedCells) {
+        if (!remaining?.length) {
+          clearDirtyCell(worksheet, latest.row, latest.column);
+        } else {
+          markDirtyCell(worksheet, latest.row, latest.column);
+        }
+      }
+      return true;
+    } finally {
+      applyingValueUndo = false;
+    }
   };
 
   /** 回撤/外部改值后：按基线重对脏标记（值已还原的清掉，仍脏的重打） */
@@ -630,9 +718,10 @@ export const setupCellHistory = (
         clearAllDirtyMarks(worksheet);
       }
     },
+    undoLastCellEdit,
+    reconcileDirtyState,
     recordChange: (row, column, from, to) => {
       push(row, column, from, to, 'api');
     },
-    reconcileDirtyState,
   };
 };

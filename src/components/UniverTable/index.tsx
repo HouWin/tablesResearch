@@ -698,46 +698,16 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
     },
     async undo() {
       try {
-        const api = univerAPIRef.current;
-        if (!api?.undo) {
-          return false;
-        }
-        const ok = Boolean(await api.undo());
-        if (ok) {
-          // 等 Univer 回写完成后再清脏标记
-          await new Promise<void>((resolve) => {
-            window.setTimeout(() => {
-              cellHistoryApiRef.current?.reconcileDirtyState?.();
-              resolve();
-            }, 0);
-          });
-        }
-        return ok;
+        // 只回撤单元格值，不走 Univer 全局 undo（避免撤掉折叠等操作）
+        return Boolean(cellHistoryApiRef.current?.undoLastCellEdit?.());
       } catch (error) {
         console.warn('[ETable] undo failed', error);
         return false;
       }
     },
     async redo() {
-      try {
-        const api = univerAPIRef.current;
-        if (!api?.redo) {
-          return false;
-        }
-        const ok = Boolean(await api.redo());
-        if (ok) {
-          await new Promise<void>((resolve) => {
-            window.setTimeout(() => {
-              cellHistoryApiRef.current?.reconcileDirtyState?.();
-              resolve();
-            }, 0);
-          });
-        }
-        return ok;
-      } catch (error) {
-        console.warn('[ETable] redo failed', error);
-        return false;
-      }
+      // 演示页已移除重做；保留 API 兼容，始终返回 false
+      return false;
     },
     getTracks() {
       return cellHistoryApiRef.current?.getTracks() || [];
@@ -1413,6 +1383,32 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         // 13.5 单元格历史 / 数据追踪
         historyApi = setupCellHistory(univerAPI, worksheet, {
           markEditedCells,
+          isReadonlyCell: (sheetRow, column) => {
+            if (sheetRow < maxDepth) {
+              return true;
+            }
+            const dataRow = sheetRow - maxDepth;
+            const logical = useTreeViewport
+              ? logicalRowResolverRef.current?.(dataRow) ?? dataRow
+              : dataRow;
+            const row = rows[logical];
+            const col = leafColumns[column];
+            if (!row || !col) {
+              return false;
+            }
+            if (row.readonly) {
+              return true;
+            }
+            if (col.editable === false) {
+              return true;
+            }
+            const cell = row.data?.[col.id];
+            return (
+              cell !== null &&
+              typeof cell === 'object' &&
+              (cell as { editable?: boolean }).editable === false
+            );
+          },
           onChange: notifyCellChange,
           onSelectionChange: notifySelectionChange,
         });
@@ -1466,16 +1462,8 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
           },
           onUndo: async () => {
             try {
-              const ok = await univerAPI?.undo?.();
-              if (ok) {
-                await new Promise<void>((resolve) => {
-                  window.setTimeout(() => {
-                    cellHistoryApiRef.current?.reconcileDirtyState?.();
-                    resolve();
-                  }, 0);
-                });
-              }
-              message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的操作');
+              const ok = Boolean(cellHistoryApiRef.current?.undoLastCellEdit?.());
+              message[ok ? 'success' : 'info'](ok ? '已撤销' : '没有可撤销的单元格编辑');
             } catch {
               message.warning('撤销失败');
             }

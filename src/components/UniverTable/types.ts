@@ -983,9 +983,9 @@ export interface ETableRef {
   openSearch(): boolean;
   /** 按关键字搜索并定位 */
   search(keyword: string): Promise<{ count: number; cell?: string }>;
-  /** 撤销上一次编辑 */
+  /** 撤销上一次单元格值修改（不回撤折叠等操作） */
   undo(): Promise<boolean>;
-  /** 重做上一次撤销 */
+  /** @deprecated 演示页已移除重做 */
   redo(): Promise<boolean>;
   /** 全部变更记录 */
   getTracks(): ETableCellChangeRecord[];

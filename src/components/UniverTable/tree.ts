@@ -584,6 +584,8 @@ export const flattenTreeData = (
       rows.push({
         id: detail.id,
         data: buildData(ctx.detailPath, label, detail.values),
+        // 有下级的科目合计行只读，且不用明细底色（避免像「已修改」）
+        readonly: hasKids || undefined,
         dimensionContext: buildDimensionContext(ctx.path, {
           organizationId: ctx.organizationId,
           attributeGroupLabel: ctx.attributeGroupLabel,
@@ -593,7 +595,9 @@ export const flattenTreeData = (
           attributePathLabels: pathLabels,
           attributePathIds: pathIds,
         }),
-        style: resolveRowStyle(ctx.styleDepth, { regionDetail: true }),
+        style: resolveRowStyle(ctx.styleDepth, {
+          regionDetail: !hasKids,
+        }),
       });
       const detailHeaderRow = currentRow;
       currentRow += 1;

@@ -1420,11 +1420,11 @@ const UniverTablePage = () => {
   const handleUndo = async () => {
     const ok = await tableRef.current?.undo();
     if (ok) {
-      window.setTimeout(() => {
-        setTracks((prev) => syncTracksFromWorksheet(prev, tableRef));
-      }, 0);
+      setTracks(tableRef.current?.getTracks() ?? []);
     }
-    message[ok ? 'success' : 'info'](ok ? '已撤销上一步编辑' : '没有可撤销的操作');
+    message[ok ? 'success' : 'info'](
+      ok ? '已撤销上一步单元格编辑' : '没有可撤销的单元格编辑',
+    );
   };
 
   const handleViewHistory = (cell: string) => {
@@ -1632,7 +1632,7 @@ const UniverTablePage = () => {
                           保存
                         </Button>
                       </Tooltip>
-                      <Tooltip title="撤销上一步单元格编辑（Ctrl/Cmd+Z）">
+                      <Tooltip title="撤销上一步单元格值修改（不回撤折叠等操作）">
                         <Button icon={<UndoOutlined />} onClick={handleUndo}>
                           回撤
                         </Button>
@@ -1969,7 +1969,7 @@ const UniverTablePage = () => {
                 <li><Tag color="green">单元格编辑：编辑后打修改标记（浅橙底 + 左侧色条），并实时 onCellChange</Tag></li>
                 <li><Tag color="green">保存：收集全部变更单元格，含 rowDimensions / columnDimensions；与 worksheet 对齐，回撤后自动过滤已撤销项</Tag></li>
                 <li><Tag color="green">无变更保存提示；侧栏展示最近 200 条变更记录</Tag></li>
-                <li><Tag color="green">回撤：工具栏、右键菜单或 Ctrl/Cmd+Z</Tag></li>
+                <li><Tag color="green">回撤：仅还原上一步单元格值修改（不回撤折叠等操作）</Tag></li>
               </ul>
 
               <div style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 600, marginTop: 12 }}>树形交互</div>
