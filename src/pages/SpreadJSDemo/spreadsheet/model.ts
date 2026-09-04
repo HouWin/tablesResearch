@@ -286,6 +286,38 @@ export const EMPTY_STATS: SelectionStats = {
 
 type BudgetPair = readonly [annualTotal: number, monthly: number];
 
+type SubjectMemberDefinition = {
+  memberCode: string;
+  name: string;
+};
+
+/**
+ * 科目成员属于科目主数据，同一成员在不同组织下复用同一个编码；组织差异
+ * 由行坐标中的组织维度表达，后台记录 id 仍按“组织 × 科目”保持唯一。
+ */
+const SUBJECT_MEMBERS = {
+  managementExpenseTotal: {
+    memberCode: 'MEM_SUBJECT_MANAGEMENT_EXPENSE_TOTAL',
+    name: '管理费用合计',
+  },
+  dailyExpenseTotal: {
+    memberCode: 'MEM_SUBJECT_DAILY_EXPENSE_TOTAL',
+    name: '日常费用合计',
+  },
+  officeExpense: {
+    memberCode: 'MEM_SUBJECT_OFFICE_EXPENSE',
+    name: '费用-办公费',
+  },
+  electricityExpense: {
+    memberCode: 'MEM_SUBJECT_ELECTRICITY_EXPENSE',
+    name: '费用-电费',
+  },
+  waterExpense: {
+    memberCode: 'MEM_SUBJECT_WATER_EXPENSE',
+    name: '费用-水费',
+  },
+} as const satisfies Record<string, SubjectMemberDefinition>;
+
 function repeatedBudget(annualTotal: number, monthly: number): BudgetValues {
   return {
     annualTotal,
@@ -306,7 +338,7 @@ function repeatedBudget(annualTotal: number, monthly: number): BudgetValues {
 
 function makeBudgetNode(
   id: string,
-  name: string,
+  member: SubjectMemberDefinition,
   functionalAttribute: string,
   annualTotal: number,
   monthly: number,
@@ -314,8 +346,8 @@ function makeBudgetNode(
 ): SubjectNode {
   return {
     id,
-    memberCode: createDemoMemberCode('SUBJECT', id),
-    name,
+    memberCode: member.memberCode,
+    name: member.name,
     functionalAttribute,
     ...repeatedBudget(annualTotal, monthly),
     children,
@@ -324,7 +356,7 @@ function makeBudgetNode(
 
 function makeSubjectTree(
   id: string,
-  summaryName: string,
+  summaryMember: SubjectMemberDefinition,
   functionalAttribute: string,
   values: {
     summary: BudgetPair;
@@ -333,26 +365,32 @@ function makeSubjectTree(
     water: BudgetPair;
   },
 ) {
-  return makeBudgetNode(`${id}-subtotal`, summaryName, '-', ...values.summary, [
-    makeBudgetNode(
-      `${id}-office`,
-      '费用-办公费',
-      functionalAttribute,
-      ...values.office,
-    ),
-    makeBudgetNode(
-      `${id}-electricity`,
-      '费用-电费',
-      functionalAttribute,
-      ...values.electricity,
-    ),
-    makeBudgetNode(
-      `${id}-water`,
-      '费用-水费',
-      functionalAttribute,
-      ...values.water,
-    ),
-  ]);
+  return makeBudgetNode(
+    `${id}-subtotal`,
+    summaryMember,
+    '-',
+    ...values.summary,
+    [
+      makeBudgetNode(
+        `${id}-office`,
+        SUBJECT_MEMBERS.officeExpense,
+        functionalAttribute,
+        ...values.office,
+      ),
+      makeBudgetNode(
+        `${id}-electricity`,
+        SUBJECT_MEMBERS.electricityExpense,
+        functionalAttribute,
+        ...values.electricity,
+      ),
+      makeBudgetNode(
+        `${id}-water`,
+        SUBJECT_MEMBERS.waterExpense,
+        functionalAttribute,
+        ...values.water,
+      ),
+    ],
+  );
 }
 
 const STANDARD_UNIT_VALUES = {
@@ -382,7 +420,7 @@ const huajingSales = makeOrganization(
   '华晶公司-销售部',
   makeSubjectTree(
     'huajing-sales',
-    '管理费用合计',
+    SUBJECT_MEMBERS.managementExpenseTotal,
     '销售',
     STANDARD_UNIT_VALUES,
   ),
@@ -393,7 +431,7 @@ const huajingFinance = makeOrganization(
   // 源 Excel 的财务部功能属性确实为“销售”，按原始数据保留。
   makeSubjectTree(
     'huajing-finance',
-    '管理费用合计',
+    SUBJECT_MEMBERS.managementExpenseTotal,
     '销售',
     STANDARD_UNIT_VALUES,
   ),
@@ -403,7 +441,7 @@ const huajingAdministration = makeOrganization(
   '华晶公司-行政部',
   makeSubjectTree(
     'huajing-administration',
-    '日常费用合计',
+    SUBJECT_MEMBERS.dailyExpenseTotal,
     '管理',
     STANDARD_UNIT_VALUES,
   ),
@@ -413,7 +451,7 @@ const huajingResearch = makeOrganization(
   '华晶公司-研发部',
   makeSubjectTree(
     'huajing-research',
-    '日常费用合计',
+    SUBJECT_MEMBERS.dailyExpenseTotal,
     '研发',
     STANDARD_UNIT_VALUES,
   ),
@@ -421,7 +459,7 @@ const huajingResearch = makeOrganization(
 const huajing = makeOrganization(
   'huajing',
   '华晶公司',
-  makeSubjectTree('huajing', '日常费用合计', '管理', {
+  makeSubjectTree('huajing', SUBJECT_MEMBERS.dailyExpenseTotal, '管理', {
     summary: [28_800, 2_400],
     office: [4_800, 400],
     electricity: [9_600, 800],
@@ -435,7 +473,7 @@ const shanghuaSales = makeOrganization(
   '上华公司-销售部',
   makeSubjectTree(
     'shanghua-sales',
-    '日常费用合计',
+    SUBJECT_MEMBERS.dailyExpenseTotal,
     '销售',
     STANDARD_UNIT_VALUES,
   ),
@@ -443,13 +481,23 @@ const shanghuaSales = makeOrganization(
 const shanghua = makeOrganization(
   'shanghua',
   '上华公司',
-  makeSubjectTree('shanghua', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
+  makeSubjectTree(
+    'shanghua',
+    SUBJECT_MEMBERS.dailyExpenseTotal,
+    '管理',
+    STANDARD_UNIT_VALUES,
+  ),
   [shanghuaSales],
 );
 const headquarters = makeOrganization(
   'headquarters',
   '华润微电子本部',
-  makeSubjectTree('headquarters', '日常费用合计', '管理', STANDARD_UNIT_VALUES),
+  makeSubjectTree(
+    'headquarters',
+    SUBJECT_MEMBERS.dailyExpenseTotal,
+    '管理',
+    STANDARD_UNIT_VALUES,
+  ),
 );
 
 /**
@@ -460,12 +508,17 @@ export const BUSINESS_DATA: OrganizationNode[] = [
   makeOrganization(
     'cr-micro-group',
     '华润微电子集团',
-    makeSubjectTree('cr-micro-group', '日常费用合计', '管理', {
-      summary: [43_200, 3_600],
-      office: [7_200, 600],
-      electricity: [14_400, 1_200],
-      water: [21_600, 1_800],
-    }),
+    makeSubjectTree(
+      'cr-micro-group',
+      SUBJECT_MEMBERS.dailyExpenseTotal,
+      '管理',
+      {
+        summary: [43_200, 3_600],
+        office: [7_200, 600],
+        electricity: [14_400, 1_200],
+        water: [21_600, 1_800],
+      },
+    ),
     [headquarters, huajing, shanghua],
   ),
 ];
@@ -479,6 +532,8 @@ function assertBusinessDataMatchesColumns(
 ) {
   const recordIds = new Set<string>();
   const organizationMemberCodes = new Set<string>();
+  const subjectMemberCodeByName = new Map<string, string>();
+  const subjectNameByMemberCode = new Map<string, string>();
   const assertUniqueId = (node: BusinessNode) => {
     if (recordIds.has(node.id))
       throw new Error(`BUSINESS_DATA 存在重复记录 id：${node.id}`);
@@ -491,6 +546,18 @@ function assertBusinessDataMatchesColumns(
     if (subjectMemberCodes.has(node.memberCode))
       throw new Error(`同一组织存在重复科目成员编码：${node.memberCode}`);
     subjectMemberCodes.add(node.memberCode);
+    const existingMemberCode = subjectMemberCodeByName.get(node.name);
+    if (existingMemberCode && existingMemberCode !== node.memberCode)
+      throw new Error(
+        `同名科目成员编码不一致：${node.name} 同时使用 ${existingMemberCode} 与 ${node.memberCode}`,
+      );
+    const existingName = subjectNameByMemberCode.get(node.memberCode);
+    if (existingName && existingName !== node.name)
+      throw new Error(
+        `科目成员编码重复指向不同名称：${node.memberCode} 同时表示 ${existingName} 与 ${node.name}`,
+      );
+    subjectMemberCodeByName.set(node.name, node.memberCode);
+    subjectNameByMemberCode.set(node.memberCode, node.name);
     COLUMNS.forEach((column) => {
       if (isHierarchyField(column.field)) return;
       if (!(column.field in node))
