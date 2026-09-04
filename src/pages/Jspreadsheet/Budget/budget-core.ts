@@ -1,5 +1,5 @@
 /**
- * 费用表 Data Grid · 投影构建 / 表头合并 / 脏格高亮 / 折叠绘制
+ * 费用表 Data Grid · 投影构建 / 表头合并 / 折叠绘制
  */
 import {
   BUDGET_VALUE_FIELDS,
@@ -45,6 +45,7 @@ export type BudgetEditPayload = {
   newValue: number | string | null;
 };
 
+/** 待保存变更（无单元格高亮，仅用于计数与保存载荷） */
 export type BudgetDirtyChange = {
   type: 'value' | 'attr' | 'date';
   row: { key: string; path: string[] };
@@ -53,7 +54,6 @@ export type BudgetDirtyChange = {
   oldValue: number | string | null;
   newValue: number | string | null;
   rowData: Record<string, unknown>;
-  /** 当前投影行号，大档重绘用 */
   rowIndex?: number;
 };
 
@@ -112,9 +112,6 @@ const ORG_BG = `${DIM_BG};font-weight:600;text-align:left`;
 const SUBJECT_BG =
   'background-color:#93c5f3;text-align:left;vertical-align:middle';
 export const ANNUAL_BG = 'background-color:#fff2cc;text-align:right';
-
-export const DIRTY_CELL_CLASS = 'jss-budget-dirty-cell';
-export const DIRTY_BG = '#ffd6a5';
 
 export function toEditValue(value: unknown): number | string | null {
   if (value === null || value === undefined || value === '') return null;
@@ -715,116 +712,6 @@ export function getCellEl(ws: any, col: number, row: number): HTMLElement | null
       `td[data-x="${col}"][data-y="${row}"]`,
     ) as HTMLElement | null) || null
   );
-}
-
-function resolveCellTd(
-  ws: any,
-  col: number,
-  row: number,
-  hint?: HTMLElement | null,
-): HTMLElement | null {
-  const asTd = (el: Element | null | undefined) => {
-    if (!el) return null;
-    if ((el as HTMLElement).tagName === 'TD') return el as HTMLElement;
-    return ((el as HTMLElement).closest?.('td') as HTMLElement | null) || null;
-  };
-
-  const fromHint = asTd(hint);
-  if (fromHint?.isConnected) return fromHint;
-
-  const fromApi = asTd(getCellEl(ws, col, row));
-  if (fromApi?.isConnected) return fromApi;
-
-  const root =
-    ws?.table ||
-    ws?.element ||
-    ws?.content ||
-    ws?.el ||
-    ws?.parent?.el ||
-    document.querySelector('.jss-page__sheet');
-  return (
-    (root?.querySelector?.(
-      `tbody td[data-x="${col}"][data-y="${row}"], td[data-x="${col}"][data-y="${row}"]`,
-    ) as HTMLElement | null) || null
-  );
-}
-
-export function setCellDirtyHighlight(
-  ws: any,
-  col: number,
-  row: number,
-  dirty: boolean,
-  hint?: HTMLElement | null,
-) {
-  const apply = () => {
-    const td = resolveCellTd(ws, col, row, hint);
-    if (!td) return;
-    if (dirty) {
-      td.classList.add(DIRTY_CELL_CLASS);
-      td.style.setProperty('background-color', DIRTY_BG, 'important');
-      try {
-        ws.setStyle?.(cellName(col, row), `background-color:${DIRTY_BG}`);
-      } catch {
-        // ignore
-      }
-    } else {
-      td.classList.remove(DIRTY_CELL_CLASS);
-      td.style.removeProperty('background-color');
-      try {
-        const restore =
-          col === COL_ANNUAL
-            ? ANNUAL_BG
-            : col === COL_ATTR
-              ? DIM_BG
-              : col === COL_DATE
-                ? 'background-color:#ffffff;text-align:center'
-                : 'background-color:#ffffff;text-align:right';
-        ws.setStyle?.(cellName(col, row), restore);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  apply();
-  requestAnimationFrame(() => {
-    apply();
-    window.setTimeout(apply, 0);
-    window.setTimeout(apply, 40);
-  });
-}
-
-export function clearAllDirtyHighlights(ws: any) {
-  const root = ws?.table || ws?.element || ws?.content || ws?.el || ws?.parent?.el;
-  root
-    ?.querySelectorAll?.(`td.${DIRTY_CELL_CLASS}, .${DIRTY_CELL_CLASS}`)
-    ?.forEach?.((node: Element) => {
-      node.classList.remove(DIRTY_CELL_CLASS);
-      (node as HTMLElement).style?.removeProperty?.('background-color');
-    });
-}
-
-export function paintDirtyHighlights(
-  ws: any,
-  dirtyMap: Map<string, BudgetDirtyChange>,
-  sheet: BuiltSheet,
-) {
-  clearAllDirtyHighlights(ws);
-  dirtyMap.forEach((entry) => {
-    let row =
-      typeof entry.rowIndex === 'number' && entry.rowIndex >= 0
-        ? entry.rowIndex
-        : -1;
-    if (row < 0) {
-      row = sheet.data.findIndex((_, i) => {
-        const vr = resolveViewRow(sheet, i);
-        return vr ? buildRowDimension(vr).key === entry.row.key : false;
-      });
-    }
-    const col = fieldToColumnIndex(entry.field);
-    if (row < 0 || col == null) return;
-    setCellDirtyHighlight(ws, col, row, true);
-  });
 }
 
 export function mergeDimHeaders(ws: any) {

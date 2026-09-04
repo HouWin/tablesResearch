@@ -2,7 +2,7 @@
  * Jspreadsheet Data Grid · 预算费用表
  * 能力：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
  * 下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 /
- * 大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 / 选区统计 / 脏格定位
+ * 大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 / 选区统计
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Spreadsheet, Worksheet, jspreadsheet } from '@jspreadsheet/react';
@@ -12,7 +12,7 @@ import bar from '@jspreadsheet/bar';
 import barFormulas from '@jspreadsheet/bar/dist/formulas.json';
 import lemonade from 'lemonadejs';
 import { PageContainer } from '@ant-design/pro-components';
-import { Button, Dropdown, Select, Space, Spin, message } from 'antd';
+import { Button, Select, Space, Spin, message } from 'antd';
 import 'jsuites/dist/jsuites.css';
 import 'jspreadsheet/dist/jspreadsheet.css';
 import '@jsuites/css/dist/style.css';
@@ -42,20 +42,16 @@ import {
   calcSelectionStats,
   canonicalProductId,
   cellName,
-  clearAllDirtyHighlights,
   dirtyCellKey,
   downloadTextFile,
   expandViewRowsForScale,
-  fieldToColumnIndex,
   formatStatNumber,
   getWorksheetList,
   isBudgetValueRowEditable,
-  paintDirtyHighlights,
   paintVisibleFoldToggles,
   parseA1,
   resolveViewRow,
   scaleTargetRows,
-  setCellDirtyHighlight,
   sheetDataToCsv,
   snapshotRowData,
   stableCellKey,
@@ -133,8 +129,8 @@ export default function JspreadsheetBudgetPage() {
   const [mountId, setMountId] = useState(0);
   const [dirtyCount, setDirtyCount] = useState(0);
   const dirtyRef = useRef<Map<string, BudgetDirtyChange>>(new Map());
-  const suppressDirtyRef = useRef(true);
-  const clearInitDirtyRef = useRef(true);
+  const suppressChangeRef = useRef(true);
+  const clearInitGateRef = useRef(true);
   const [scale, setScale] = useState<BudgetScale>('demo');
   const [tracks, setTracks] = useState<TrackItem[]>([]);
   const [historyCell, setHistoryCell] = useState('A1');
@@ -146,19 +142,20 @@ export default function JspreadsheetBudgetPage() {
     null,
   );
 
-  const resetDirtyState = useCallback(() => {
+  const resetPendingChanges = useCallback(() => {
     dirtyRef.current.clear();
     setDirtyCount(0);
   }, []);
 
-  /** 程序化灌数 / remount 前同步屏蔽；clearDirty 时同时清零待保存 */
-  const beginProgrammaticWrite = useCallback((clearDirty = false) => {
-    suppressDirtyRef.current = true;
-    if (clearDirty) {
-      clearInitDirtyRef.current = true;
-      resetDirtyState();
-    }
-  }, [resetDirtyState]);
+  /** 程序化灌数 / remount 前同步屏蔽 onchange，避免初始化噪音进追踪/待保存 */
+  const beginProgrammaticWrite = useCallback(
+    (clearPending = false) => {
+      suppressChangeRef.current = true;
+      clearInitGateRef.current = true;
+      if (clearPending) resetPendingChanges();
+    },
+    [resetPendingChanges],
+  );
   const [productExpanded, setProductExpanded] = useState(
     () => new Set<string>(INITIAL_PRODUCT_EXPANDED),
   );
@@ -385,7 +382,7 @@ export default function JspreadsheetBudgetPage() {
       oldValue: any,
     ) => {
       // 灌数 / 换档 / loading 期间的 onchange 不是用户编辑
-      if (suppressDirtyRef.current || sheetBusyRef.current) return;
+      if (suppressChangeRef.current || sheetBusyRef.current) return;
       const col = Number(x);
       const row = Number(y);
       if (!Number.isFinite(col) || !Number.isFinite(row)) return;
@@ -419,7 +416,7 @@ export default function JspreadsheetBudgetPage() {
         cellName(col, row),
         payload.oldValue,
         payload.newValue,
-        dirtyCellKey(payload.row.key, payload.col.key),
+        stableCellKey(viewRow, col) ?? undefined,
       );
 
       const key = dirtyCellKey(payload.row.key, payload.col.key);
@@ -430,12 +427,7 @@ export default function JspreadsheetBudgetPage() {
         String(original ?? '') === String(payload.newValue ?? '')
       ) {
         dirtyRef.current.delete(key);
-        setCellDirtyHighlight(_worksheet, col, row, false, _cell);
       } else {
-        const mergedRowData = {
-          ...(prev?.rowData ?? payload.rowData),
-          [payload.field]: payload.newValue,
-        };
         dirtyRef.current.set(key, {
           type: payload.type,
           row: payload.row,
@@ -443,10 +435,12 @@ export default function JspreadsheetBudgetPage() {
           field: payload.field,
           oldValue: original,
           newValue: payload.newValue,
-          rowData: mergedRowData,
+          rowData: {
+            ...(prev?.rowData ?? payload.rowData),
+            [payload.field]: payload.newValue,
+          },
           rowIndex: row,
         });
-        setCellDirtyHighlight(_worksheet, col, row, true, _cell);
       }
       setDirtyCount(dirtyRef.current.size);
     },
@@ -473,7 +467,7 @@ export default function JspreadsheetBudgetPage() {
               ) || null;
         const rowData = viewRow
           ? snapshotRowData(viewRow, { [entry.field]: entry.newValue })
-          : entry.rowData;
+          : { ...entry.rowData };
         dirtyRef.current.forEach((other) => {
           if (other.row.key === entry.row.key) {
             rowData[other.field] = other.newValue;
@@ -490,23 +484,8 @@ export default function JspreadsheetBudgetPage() {
     });
 
     message.success(`已收集 ${changes.length} 处修改，详见控制台 [budget-save]`);
-    dirtyRef.current.clear();
-    setDirtyCount(0);
-    const ws = getWorksheetList(spreadsheet)[0];
-    if (ws) clearAllDirtyHighlights(ws);
-  }, []);
-
-  const clearDirtyMarks = useCallback(() => {
-    if (dirtyRef.current.size === 0) {
-      message.info('当前没有脏标记');
-      return;
-    }
-    dirtyRef.current.clear();
-    setDirtyCount(0);
-    const ws = getWorksheetList(spreadsheet)[0];
-    if (ws) clearAllDirtyHighlights(ws);
-    message.success('已清空脏标记');
-  }, []);
+    resetPendingChanges();
+  }, [resetPendingChanges]);
 
   const refreshSelectionStats = useCallback(
     (px: any, py: any, ux: any, uy: any) => {
@@ -557,50 +536,6 @@ export default function JspreadsheetBudgetPage() {
     refreshSelectionStats(parsed.col, parsed.row, parsed.col, parsed.row);
   }, [refreshSelectionStats]);
 
-  const gotoNextDirty = useCallback(() => {
-    const list = [...dirtyRef.current.values()];
-    if (!list.length) {
-      message.info('没有待保存的脏格');
-      return;
-    }
-    const focus = historyCell.split(':')[0];
-    const focusParsed = parseA1(focus);
-    const ordered = list
-      .map((entry) => {
-        const row =
-          typeof entry.rowIndex === 'number'
-            ? entry.rowIndex
-            : sheetRef.current.viewRows.findIndex(
-                (r) => buildRowDimension(r).key === entry.row.key,
-              );
-        const col = fieldToColumnIndex(entry.field) ?? COL_ATTR;
-        return {
-          row,
-          col,
-          a1: cellName(col, Math.max(0, row)),
-        };
-      })
-      .filter((x) => x.row >= 0)
-      .sort((a, b) => a.row - b.row || a.col - b.col);
-
-    if (!ordered.length) {
-      message.info('脏格缺少行定位信息');
-      return;
-    }
-
-    let next = ordered[0];
-    if (focusParsed) {
-      const idx = ordered.findIndex(
-        (x) =>
-          x.row > focusParsed.row ||
-          (x.row === focusParsed.row && x.col > focusParsed.col),
-      );
-      next = idx >= 0 ? ordered[idx] : ordered[0];
-    }
-    gotoA1(next.a1);
-    message.success(`已定位 ${next.a1}`);
-  }, [gotoA1, historyCell]);
-
   const exportCsv = useCallback(() => {
     const rows = sheetRef.current.data;
     if (!rows.length) {
@@ -632,20 +567,6 @@ export default function JspreadsheetBudgetPage() {
       }
     }, 0);
   }, [scale]);
-
-  const exportDirtyJson = useCallback(() => {
-    const changes = [...dirtyRef.current.values()];
-    if (!changes.length) {
-      message.info('没有待导出的脏变更');
-      return;
-    }
-    downloadTextFile(
-      `budget-dirty-${changes.length}.json`,
-      JSON.stringify({ count: changes.length, changes }, null, 2),
-      'application/json;charset=utf-8',
-    );
-    message.success(`已导出 ${changes.length} 处脏变更 JSON`);
-  }, []);
 
   historyBridge.onSelect = (_worksheet, px, py, ux, uy) => {
     const start = cellName(Number(px), Number(py));
@@ -731,6 +652,75 @@ export default function JspreadsheetBudgetPage() {
         },
       });
       items.push({
+        title: '取消批注',
+        icon: 'speaker_notes_off',
+        onclick: () => {
+          const clearNames = new Set<string>();
+          const selected = instance.getSelected?.() || [];
+          if (Array.isArray(selected) && selected.length) {
+            selected.forEach((sel: any) => {
+              const x0 = Number(sel?.[0] ?? sel?.x);
+              const y0 = Number(sel?.[1] ?? sel?.y);
+              const x1 = Number(sel?.[2] ?? sel?.[0] ?? sel?.x);
+              const y1 = Number(sel?.[3] ?? sel?.[1] ?? sel?.y);
+              if (
+                ![x0, y0, x1, y1].every((n) => Number.isFinite(n)) ||
+                x0 < 0 ||
+                y0 < 0
+              ) {
+                return;
+              }
+              const c0 = Math.min(x0, x1);
+              const c1 = Math.max(x0, x1);
+              const r0 = Math.min(y0, y1);
+              const r1 = Math.max(y0, y1);
+              for (let r = r0; r <= r1; r += 1) {
+                for (let c = c0; c <= c1; c += 1) {
+                  clearNames.add(cellName(c, r));
+                }
+              }
+            });
+          } else if (typeof x === 'number' && typeof y === 'number') {
+            clearNames.add(cellName(x, y));
+          }
+          if (!clearNames.size) {
+            message.warning('请先选中单元格');
+            return;
+          }
+          const payload: Record<string, string> = {};
+          clearNames.forEach((name) => {
+            payload[name] = '';
+          });
+          try {
+            instance.setComments?.(payload);
+          } catch {
+            clearNames.forEach((name) => {
+              try {
+                instance.setComments?.(name, '');
+              } catch {
+                // ignore
+              }
+            });
+          }
+          // 同步内存里的 comments，避免 remount 又带回来
+          const nextComments = {
+            ...(sheetRef.current.comments || {}),
+          };
+          clearNames.forEach((name) => {
+            delete nextComments[name];
+          });
+          sheetRef.current = {
+            ...sheetRef.current,
+            comments: nextComments,
+          };
+          message.success(
+            clearNames.size === 1
+              ? `已取消 ${[...clearNames][0]} 的批注`
+              : `已取消 ${clearNames.size} 个单元格的批注`,
+          );
+        },
+      });
+      items.push({
         title: '添加单元格附件',
         icon: 'attach_file',
         onclick: () => {
@@ -785,29 +775,14 @@ export default function JspreadsheetBudgetPage() {
       });
       items.push({ type: 'line' });
       items.push({
-        title: '定位下一个脏格',
-        icon: 'my_location',
-        onclick: () => gotoNextDirty(),
-      });
-      items.push({
-        title: '清空脏标记',
-        icon: 'layers_clear',
-        onclick: () => clearDirtyMarks(),
-      });
-      items.push({
         title: '导出当前表 CSV',
         icon: 'download',
         onclick: () => exportCsv(),
       });
-      items.push({
-        title: '导出脏变更 JSON',
-        icon: 'data_object',
-        onclick: () => exportDirtyJson(),
-      });
 
       return items;
     },
-    [drillSelected, gotoNextDirty, clearDirtyMarks, exportCsv, exportDirtyJson],
+    [drillSelected, exportCsv],
   );
 
   const toolbar = useCallback(
@@ -914,24 +889,9 @@ export default function JspreadsheetBudgetPage() {
         },
         { type: 'divisor' },
         {
-          content: 'my_location',
-          tooltip: '定位下一个脏格',
-          onclick: () => gotoNextDirty(),
-        },
-        {
-          content: 'layers_clear',
-          tooltip: '清空脏标记',
-          onclick: () => clearDirtyMarks(),
-        },
-        {
           content: 'download',
           tooltip: '导出 CSV',
           onclick: () => exportCsv(),
-        },
-        {
-          content: 'data_object',
-          tooltip: '导出脏变更 JSON',
-          onclick: () => exportDirtyJson(),
         },
       ];
 
@@ -945,15 +905,7 @@ export default function JspreadsheetBudgetPage() {
       }
       return { items: extraItems, responsive: true };
     },
-    [
-      collapseAllFolds,
-      drillSelected,
-      expandAllFolds,
-      gotoNextDirty,
-      clearDirtyMarks,
-      exportCsv,
-      exportDirtyJson,
-    ],
+    [collapseAllFolds, drillSelected, expandAllFolds, exportCsv],
   );
 
   useEffect(() => {
@@ -963,7 +915,7 @@ export default function JspreadsheetBudgetPage() {
   }, [mountId]);
 
   useEffect(() => {
-    clearInitDirtyRef.current = true;
+    clearInitGateRef.current = true;
   }, [mountId, scale]);
 
   // remount 后绑定点击 / 表头稳定；折叠不进 deps，避免拆监听造成闪抖
@@ -971,7 +923,7 @@ export default function JspreadsheetBudgetPage() {
     let unbindClick: (() => void) | undefined;
     let unbindHeader: (() => void) | undefined;
     let readyTimer: number | undefined;
-    beginProgrammaticWrite(false);
+    beginProgrammaticWrite();
 
     const timer = window.setTimeout(() => {
       const list = getWorksheetList(spreadsheet);
@@ -981,7 +933,7 @@ export default function JspreadsheetBudgetPage() {
         return;
       }
 
-      beginProgrammaticWrite(false);
+      beginProgrammaticWrite();
       applySheetToWorksheet(ws, sheetRef.current);
 
       const table =
@@ -1013,43 +965,39 @@ export default function JspreadsheetBudgetPage() {
 
       unbindHeader = bindHeaderStability(ws, () => {
         paintVisibleFoldToggles(ws, sheetRef.current);
-        if (suppressDirtyRef.current || sheetBusyRef.current) return;
-        paintDirtyHighlights(ws, dirtyRef.current, sheetRef.current);
       });
 
-      // 等虚拟滚动 / 插件初始化的尾随 onchange 结束后再开脏标记
+      // 等虚拟滚动 / 插件初始化的尾随 onchange 结束后再记录编辑
       readyTimer = window.setTimeout(() => {
-        if (clearInitDirtyRef.current) {
-          resetDirtyState();
-          clearInitDirtyRef.current = false;
+        if (clearInitGateRef.current) {
+          resetPendingChanges();
+          clearInitGateRef.current = false;
         }
         if (!sheetBusyRef.current) {
-          suppressDirtyRef.current = false;
+          suppressChangeRef.current = false;
         }
         paintVisibleFoldToggles(ws, sheetRef.current);
-        paintDirtyHighlights(ws, dirtyRef.current, sheetRef.current);
       }, 400);
     }, 80);
 
     return () => {
-      suppressDirtyRef.current = true;
+      suppressChangeRef.current = true;
       window.clearTimeout(timer);
       if (readyTimer) window.clearTimeout(readyTimer);
       unbindClick?.();
       unbindHeader?.();
     };
-  }, [mountId, toggleFold, beginProgrammaticWrite, resetDirtyState]);
+  }, [mountId, toggleFold, beginProgrammaticWrite, resetPendingChanges]);
 
-  // 折叠等投影更新：原地灌数；初始化换档期间不要提前开脏闸（交给 mount effect）
+  // 折叠等投影更新：原地灌数；初始化换档期间不要提前开闸（交给 mount effect）
   useEffect(() => {
     const ws = getWorksheetList(spreadsheet)[0];
     if (!ws) return;
-    suppressDirtyRef.current = true;
+    suppressChangeRef.current = true;
     applySheetToWorksheet(ws, sheet);
     const settle = window.setTimeout(() => {
-      if (clearInitDirtyRef.current || sheetBusyRef.current) return;
-      suppressDirtyRef.current = false;
-      paintDirtyHighlights(ws, dirtyRef.current, sheet);
+      if (clearInitGateRef.current || sheetBusyRef.current) return;
+      suppressChangeRef.current = false;
     }, 0);
     return () => window.clearTimeout(settle);
   }, [sheet]);
@@ -1058,12 +1006,6 @@ export default function JspreadsheetBudgetPage() {
   const cellHistory = useMemo(
     () => tracks.filter((item) => item.cell === focusCell),
     [tracks, focusCell],
-  );
-  const dirtyEntries = useMemo(
-    () => [...dirtyRef.current.values()],
-    // dirtyCount 变化时刷新列表
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dirtyCount],
   );
 
   return (
@@ -1092,36 +1034,9 @@ export default function JspreadsheetBudgetPage() {
               待保存 {dirtyCount} 处
             </span>
           )}
-          <Button
-            size="small"
-            onClick={gotoNextDirty}
-            disabled={dirtyCount === 0 || sheetBusy}
-          >
-            下一脏格
+          <Button size="small" onClick={exportCsv} disabled={sheetBusy}>
+            导出 CSV
           </Button>
-          <Button
-            size="small"
-            onClick={clearDirtyMarks}
-            disabled={dirtyCount === 0 || sheetBusy}
-          >
-            清空脏标记
-          </Button>
-          <Dropdown
-            menu={{
-              items: [
-                { key: 'csv', label: '导出 CSV', onClick: () => exportCsv() },
-                {
-                  key: 'dirty',
-                  label: '导出脏变更 JSON',
-                  onClick: () => exportDirtyJson(),
-                },
-              ],
-            }}
-          >
-            <Button size="small" disabled={sheetBusy}>
-              导出
-            </Button>
-          </Dropdown>
           <Button
             type="primary"
             onClick={handleSave}
@@ -1136,8 +1051,8 @@ export default function JspreadsheetBudgetPage() {
         <p className="jss-page__hint">
           费用表已集成：批注 / 下钻上钻 / 回撤 / 批量复制 / 多行列折叠 / 自定义右键 /
           下拉·日期·数值 / 单元格历史 / 数据追踪 / 快速搜索 / 显隐列 / 附件 /
-          大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 CSV·JSON / 选区统计 /
-          脏格定位。科目与汇总行只读；全年合计、月度、功能属性、业务日期可编辑。点击侧栏追踪记录可跳转单元格。
+          大数据虚拟滚动 / 列宽拖动 / 自适应列宽 / 导出 CSV / 选区统计。
+          科目与汇总行只读；全年合计、月度、功能属性、业务日期可编辑。点击侧栏追踪记录可跳转单元格。
         </p>
 
         <input
@@ -1242,46 +1157,6 @@ export default function JspreadsheetBudgetPage() {
                   <li className="jss-panel__item">
                     最大 <strong>{formatStatNumber(selectionStats.max)}</strong>
                   </li>
-                </ul>
-              )}
-            </section>
-
-            <section className="jss-panel" style={{ flex: 1 }}>
-              <div className="jss-panel__title">
-                脏格列表 · {dirtyCount}
-              </div>
-              {dirtyEntries.length === 0 ? (
-                <div className="jss-panel__empty">修改单元格后会出现在这里，点击可跳转。</div>
-              ) : (
-                <ul className="jss-panel__list">
-                  {dirtyEntries.slice(0, 40).map((entry) => {
-                    const row =
-                      typeof entry.rowIndex === 'number' ? entry.rowIndex : -1;
-                    const col = fieldToColumnIndex(entry.field) ?? COL_ATTR;
-                    const a1 = row >= 0 ? cellName(col, row) : entry.col.key;
-                    return (
-                      <li
-                        key={`${entry.row.key}|${entry.col.key}`}
-                        className="jss-panel__item jss-panel__item--clickable"
-                        onClick={() => {
-                          if (row >= 0) gotoA1(cellName(col, row));
-                          else message.info('该脏格缺少行号，请用「下一脏格」');
-                        }}
-                      >
-                        <div>
-                          <strong>{a1}</strong>
-                          <span className="jss-panel__meta">
-                            {' '}
-                            · {entry.field}
-                          </span>
-                        </div>
-                        <div>
-                          {String(entry.oldValue ?? '∅')} →{' '}
-                          {String(entry.newValue ?? '∅')}
-                        </div>
-                      </li>
-                    );
-                  })}
                 </ul>
               )}
             </section>
