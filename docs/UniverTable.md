@@ -2,7 +2,7 @@
 
 > 基于 [Univer](https://univer.ai/)（`@univerjs/presets` 0.25.x）封装的业务表格组件，路径：`src/components/UniverTable/`。  
 > 演示页：`/UniverTable`（`src/pages/UniverTable/`）。  
-> **默认示例**：费用预算表（组织 / 科目树形折叠 + **2025年**月度），数据与表头已拆到页面目录独立文件（见 §14）。
+> **默认示例**：费用预算表（FormSchema：预算科目树 + 实际数/预算数多级表头），经 `adaptFormSchemaToETable` 接入（见 §14）。
 
 ---
 
@@ -16,7 +16,7 @@ UniverTable（内部组件名 `ETable`）在 Univer Sheets 之上提供：
 - 单元格合并、行列大纲分组
 - 列类型（数字 / 下拉 / 日期）、只读区域
 - 批注、附件、单元格历史、数据追踪
-- 编辑回传拼接 `rowId` / `columnId`（维度路径 id，`/` 分隔）与完整行列维
+- 编辑回传 `rowId` / `columnId`（维度 field→成员 id 的 map）与完整行列维
 - 按维度程序化回写：`setCellValue` / `setCellValues` / `locateCellByDimensions`
 - 自定义右键菜单、快速搜索、撤销/重做
 - 大数据渲染：异步分片、懒虚拟写入、树形视口投影
@@ -179,7 +179,7 @@ dimensions[]            measures[] / measureGroups[]
 
 | 规模选项 | 行维 | 列维 | 形态 |
 |----------|------|------|------|
-| **费用预算（默认）** | 组织树 + 科目 `attributes`（三级缩进） | 功能属性 / **2025年**（全年合计 + 1–12 月） | 「层级行 + 分组列」；默认全部折叠 |
+| **费用预算（默认）** | FormSchema `records` 科目树 | `rowDim`/`attr`/`colDim`/`value` → 实际数·预算数 | 适配后「层级行 + 分组列」；默认折叠 |
 | 树形演示 | 品类 → 子品类 → 区域 | `revenue`、`orders` 等经营指标 | 同上 |
 | 1万～100万行 | 生成器缩放树 | 轻量 `liteMode` 指标列 | 视口投影压测 |
 
@@ -251,11 +251,11 @@ interface ETableCellChangeRecord {
   source?: 'edit' | 'paste' | 'api';  // 当前主要走 'edit'
 
   // —— 以下由 enrichCellChangeRecord 自动补充 ——
-  field?: string;       // 叶子列 field，如 'm1'（写入用）
-  columnId?: string;    // 列维路径 id 拼接，如 'year/m1'
+  field?: string;       // 叶子列 field，如 'yearTotal'（写入用）
+  columnId?: ETableDimensionIdMap; // 列维 field→成员 id，如 { year:'year', yearTotal:'全年合计' }
   dataRow?: number;     // 数据区相对行（0-based；视口模式下为投影行）
   logicalRow?: number;  // 逻辑行下标，可反查 rows[]
-  rowId?: string;       // 行维路径 id 拼接，如 'hj-sales/hj-sales-summary/hj-sales-office'
+  rowId?: ETableDimensionIdMap;    // 行维 field→成员 id，如 { organization:'hq', subject:'hq-summary' }
   rowDimensions?: ETableDimensionInfo[];    // 行维度 field / title / value / id
   columnDimensions?: ETableDimensionInfo[]; // 列维度多级表头路径（含 id）
   rowPath?: string[];   // 树分组面包屑（展示用）
@@ -264,37 +264,36 @@ interface ETableCellChangeRecord {
 
 触发时机：`setupCellHistory` 监听 `SheetEditStarted` / `SheetEditEnded`，**每次确认编辑一个单元格**触发一条 `onCellChange`（`from === to` 时跳过）。组件在回调前通过 `enrichCellChangeRecord`（`cellChangeContext.ts`）补充 `field`、`rowId`、`columnId`、行列维度与逻辑行信息。
 
-**`rowId` / `columnId` 拼接规则（对接后端）**
+**`rowId` / `columnId` 规则（对接后端）**
 
-分隔符固定为 **`/`**（`DIMENSION_ID_SEPARATOR`，见 `cellChangeContext.joinDimensionPathIds`）。
+二者均为 **`Record<string, string>`**（`ETableDimensionIdMap`）：**key = 维度 field，value = 成员 id**（由 `buildDimensionIdMap` 从 `*Dimensions` 生成；列维可经 `ETableColumn.dimensionField` / `dimensionId` 配置）。
 
-| 字段 | 生成方式 | 费用预算示例 |
-|------|----------|--------------|
-| `columnId` | `columnDimensions[].id`（缺省用 `field`）按 `/` 连接 | 编辑「2025年 → 1月」→ `year/m1` |
-| `rowId` | `rowDimensions[].id` 按 `/` 连接；无维度时回退 `ETableRow.id` | 编辑华晶销售部-办公费 → `hj-sales/hj-sales-summary/hj-sales-office` |
-| `field` | **叶子列** id，写入 Worksheet 用 | 上例仍为 `m1`（≠ `columnId`） |
+| 字段 | 生成方式 | 费用预算（组织科目）示例 |
+|------|----------|--------------------------|
+| `columnId` | `columnDimensions` → `{ [field]: id }` | 编辑「2025年 → 全年合计」→ `{ year: 'year', yearTotal: '全年合计' }` |
+| `rowId` | `rowDimensions` → `{ [field]: id }` | 总部汇总行 → `{ organization: 'hq', subject: 'hq-summary' }` |
+| `field` | **叶子列** id，写入 Worksheet 用 | 上例仍为 `yearTotal`（≠ `columnId`） |
 
 ```ts
-// 编辑「华晶公司-销售部 / 费用-办公费 / 2025年1月」后 onCellChange 关键
+// 编辑「总部 / 汇总 / 2025年全年合计」后 onCellChange 摘要
 {
-  field: 'm1',
-  columnId: 'year/m1',
-  rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
+  field: 'yearTotal',
+  columnId: { year: 'year', yearTotal: '全年合计' },
+  rowId: { organization: 'hq', subject: 'hq-summary' },
   rowDimensions: [
-    { field: 'organization', title: '组织', value: '华晶公司-销售部', id: 'hj-sales' },
-    { field: 'subject', title: '科目', value: '费用汇总', id: 'hj-sales-summary' },
-    { field: 'subjectDetail', title: '科目', value: '费用-办公费', id: 'hj-sales-office' },
+    { field: 'organization', title: '组织', value: '总部', id: 'hq' },
+    { field: 'subject', title: '科目', value: '汇总', id: 'hq-summary' },
   ],
   columnDimensions: [
     { field: 'year', title: '2025年', id: 'year' },
-    { field: 'm1', title: '1月', id: 'm1' },
+    { field: 'yearTotal', title: '全年合计', id: '全年合计' },
   ],
   from: '100.00',
   to: '150.00',
 }
 ```
 
-> 上报后端请优先用拼接后的 `rowId` + `columnId`；回写表格时同样传这对 id（见 §1.3.7 / §1.3.7.1）。
+> 上报后端请优先用 `rowId` + `columnId` map；回写表格时同样传这对 map（见 §1.3.7 / §1.3.7.1）。旧版 `/` 路径字符串仍可定位（兼容）。
 
 **行维度 `rowDimensions`**
 
@@ -325,10 +324,18 @@ interface ETableCellChangeRecord {
 
 树形折叠分组路径（与右键「数据追踪」中的行路径一致），由 `treeCollapse` / `treeViewport` 的 `getBreadcrumb(logicalRow)` 生成，例如 `['家具', '书柜', '华东']`。
 
-**`onSelectionChange(cell, row, column)`**
+**`onSelectionChange(info)`**
 
-- `cell`：如 `"D5"`
-- `row` / `column`：同上，**工作表绝对坐标**
+与 `onCellChange` 对齐的维度信息（无 `from` / `to`），类型为 `ETableSelectionInfo`：
+
+- `cell` / `row` / `column`：选中单元格与工作表坐标
+- `field` / `rowId` / `columnId` / `rowDimensions` / `columnDimensions` / `rowPath` / `dataRow` / `logicalRow`：同 `onCellChange`
+
+```ts
+onSelectionChange={(info) => {
+  console.log(info.rowId, info.columnId, info.field);
+}}
+```
 
 **映射回业务字段（可直接使用 record 上的补充字段）：**
 
@@ -381,11 +388,11 @@ onCellChange={(record) => {
   // 1. 用 logicalRow 定位 rows[]（视口模式必备）
   patchRow(logicalRow ?? dataRow, field, record.to);
 
-  // 2. 上报后端：用拼接后的 rowId / columnId（与回写对称）
+  // 2. 上报后端：用 rowId / columnId map（与回写对称）
   savePatch({
-    rowId,                 // 如 hj-sales/hj-sales-summary/hj-sales-office
-    columnId,              // 如 year/m1
-    field,                 // 叶子列 m1（可选）
+    rowId,                 // 如 { organization:'hq', subject:'hq-summary' }
+    columnId,              // 如 { year:'year', yearTotal:'全年合计' }
+    field,                 // 叶子列 yearTotal（可选）
     value: record.to,
     rowDimensions,
     columnDimensions,
@@ -501,10 +508,10 @@ const latest = history[0];
   "time": "17:12:36",
   "source": "edit",
   "field": "m1",
-  "columnId": "year/m1",
+  "columnId": { "year": "year", "m1": "1月" },
   "dataRow": 5,
   "logicalRow": 5,
-  "rowId": "hj-sales/hj-sales-summary/hj-sales-office",
+  "rowId": { "organization": "hj-sales", "subject": "hj-sales-summary", "subjectDetail": "hj-sales-office" },
   "rowDimensions": [
     { "field": "organization", "title": "组织", "value": "华晶公司-销售部", "id": "hj-sales" },
     { "field": "subject", "title": "科目", "value": "费用汇总", "id": "hj-sales-summary" },
@@ -522,8 +529,8 @@ const latest = history[0];
 |------|----------------|
 | `cell` / `row` / `column` | 工作表坐标 |
 | `field` | 叶子列 field（写入用），上例为 `m1` |
-| `columnId` | 列维路径 id 拼接，上例为 `year/m1` |
-| `rowId` | 行维路径 id 拼接 |
+| `columnId` | 列维 field→id map |
+| `rowId` | 行维 field→id map |
 | `dataRow` / `logicalRow` | 数据区 / 逻辑行下标 |
 | `rowDimensions` / `columnDimensions` | 完整维度（含各级 `id`） |
 | `from` / `to` | **显示值字符串**（可含千分位） |
@@ -600,8 +607,8 @@ function latestByCell(tracks: ETableCellChangeRecord[]) {
 ```ts
 await api.batchPatchCells(
   latestByCell(tracks).map((r) => ({
-    rowId: r.rowId,           // 拼接路径，如 hj-sales/.../hj-sales-office
-    columnId: r.columnId,     // 拼接路径，如 year/m1
+    rowId: r.rowId,           // field→id map
+    columnId: r.columnId,     // field→id map
     field: r.field,           // 叶子列
     value: parseFieldValue(r.to, r.field),
   })),
@@ -794,21 +801,21 @@ tableRef.current?.setCellValue({ sheetRow: 6, column: 3 }, 20000);
 // 3. 数据区行 + 字段名
 tableRef.current?.setCellValue({ dataRow: 3, field: 'revenue' }, 20000);
 
-// 4. 按拼接 rowId + columnId（与 onCellChange 回传对称，后端回写推荐）
+// 4. 按 rowId + columnId map（与 onCellChange 回传对称，后端回写推荐）
 tableRef.current?.setCellValue(
   {
-    rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
-    columnId: 'year/m1',
+    rowId: { organization: 'hq', subject: 'hq-summary' },
+    columnId: { year: 'year', yearTotal: '全年合计' },
   },
   999,
   { recordChange: true },
 );
 
-// 5. 也可用叶子 field（等价于 columnId 末段）
+// 5. 也可用叶子 field
 tableRef.current?.setCellValue(
   {
-    rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
-    field: 'm1',
+    rowId: { organization: 'hq', subject: 'hq-summary' },
+    field: 'yearTotal',
   },
   999,
 );
@@ -830,18 +837,18 @@ tableRef.current?.setCellValue(
 
 // 只定位不写值
 const hit = tableRef.current?.locateCellByDimensions({
-  rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
-  columnId: 'year/m1',
+  rowId: { organization: 'hq', subject: 'hq-summary' },
+  columnId: { year: 'year', yearTotal: '全年合计' },
 });
-// hit.success / hit.cell / hit.dataRow / hit.field（field 为叶子 m1）
+// hit.success / hit.cell / hit.dataRow / hit.field（field 为叶子 yearTotal）
 ```
 
 **维度匹配规则（`dimensionLocate.ts`）：**
 
 | 入参 | 行为 |
 |------|------|
-| `rowId` | ① 精确匹配 `ETableRow.id`；② 按 `/` 拆段后末段匹配 `row.id`；③ 各段均出现在 `dimensionContext*Id` / `row.id` |
-| `columnId` / `field` | ① 精确匹配叶子列 id；② 按 `/`（或 `\|`）拆段后取**末段**匹配叶子列（如 `year/m1` → `m1`） |
+| `rowId` | map：各 field→id 匹配 `dimensionContext`；string：兼容旧路径 / `row.id` |
+| `columnId` / `field` | map：按表头路径 field→id 匹配；string：叶子 id 或旧版路径末段 |
 | `rowDimensions[].id` | 匹配 `dimensionContext[field + 'Id']` 或 `row.id` |
 | `rowDimensions[].value` | 匹配 `dimensionContext[field]` / `row.data[field]`（去 ▶/▼） |
 | `columnDimensions` | 取路径**最后一级**且存在于 `leafColumns` 的 `id`/`field` |
@@ -876,7 +883,7 @@ const hit = tableRef.current?.locateCellByDimensions({
 | 字段 | 说明 |
 |------|------|
 | `value` | 必填，写入值 |
-| `rowId` / `columnId` | 拼接路径 id（与 `onCellChange` 对称，推荐） |
+| `rowId` / `columnId` | field→id map（与 `onCellChange` 对称，推荐） |
 | `field` | 叶子列 id（可替代 `columnId`） |
 | `rowDimensions` / `columnDimensions` | 维度数组定位（可与 id 混用） |
 | `locator` | 显式 `ETableCellLocator`（优先） |
@@ -889,18 +896,18 @@ import type { ETableCellValuePatch } from '@/components/UniverTable';
 // 后端 patches（与编辑回传的 rowId / columnId 原样对齐）
 const patches: ETableCellValuePatch[] = [
   {
-    rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
-    columnId: 'year/m1',
+    rowId: { organization: 'hq', subject: 'hq-summary' },
+    columnId: { year: 'year', m1: '1月' },
     value: 150,
   },
   {
-    rowId: 'hj-sales/hj-sales-summary/hj-sales-office',
-    columnId: 'year/m2',
+    rowId: { organization: 'hq', subject: 'hq-summary' },
+    columnId: { year: 'year', m2: '2月' },
     value: 160,
   },
   {
-    rowId: 'hq/hq-summary/hq-water',
-    columnId: 'year/yearTotal',
+    rowId: { organization: 'hq', subject: 'hq-water' },
+    columnId: { year: 'year', yearTotal: '全年合计' },
     value: 3600,
   },
   {
@@ -960,7 +967,7 @@ patches.forEach((p) => {
   → 表格刷新对应单元格
 ```
 
-**实现文件：** `src/components/UniverTable/cellValue.ts`（`setCellValuesOnTable`）、`dimensionLocate.ts`、`cellChangeContext.ts`（`joinDimensionPathIds`）
+**实现文件：** `src/components/UniverTable/cellValue.ts`（`setCellValuesOnTable`）、`dimensionLocate.ts`、`dimensionPath.ts`（`buildDimensionIdMap`）
 
 #### 1.3.8 程序化更新一行 `setRowValue`
 
@@ -1050,8 +1057,8 @@ const dims = tableRef.current?.getCellDimensions('D6');
 
 if (dims?.success) {
   dims.field;              // 叶子列 'm1'
-  dims.columnId;           // 拼接 'year/m1'
-  dims.rowId;              // 拼接行维路径
+  dims.columnId;           // { year:'year', yearTotal:'全年合计' }
+  dims.rowId;              // { organization:'hq', subject:'hq-summary' }
   dims.rowDimensions;      // [{ field, title, value, id }, ...]
   dims.columnDimensions;   // [{ field, title, id }, ...]
   dims.rowPath;
@@ -1061,7 +1068,7 @@ if (dims?.success) {
 
 | 字段 | 说明 |
 |------|------|
-| `rowId` / `columnId` | 与 `onCellChange` 相同的路径拼接 id |
+| `rowId` / `columnId` | 与 `onCellChange` 相同的 field→id map |
 | `rowDimensions` | 行维度 field / title / value / id |
 | `columnDimensions` | 列维度多级表头路径 |
 | `rowPath` | 树分组面包屑 |
@@ -1141,19 +1148,24 @@ UniverTable/
 
 ```
 pages/UniverTable/
-├── index.tsx                 # 演示页：模式切换、工具栏、ETable 装配
-├── expenseBudgetData.ts      # 费用预算 · 小样树形行数据
-├── expenseBudgetDataGenerator.ts  # 费用预算 · 1万～100万行压测生成
-└── expenseBudgetHeader.ts    # 费用预算 · 多级表头 + treeConfig + 冻结/深度常量
+├── index.tsx                      # 演示页：模式切换、工具栏、ETable 装配
+├── formSchemaTypes.ts             # 后端 FormSchema 类型（rowDim/attr/colDim/value）
+├── expenseBudgetFormData.json     # 费用预算 · 表单样例（columns/records 原样）
+├── expenseBudgetFormData.ts       # 导出 expenseBudgetFormData
+├── adaptFormSchemaToETable.ts     # FormSchema → treeData + treeConfig
+├── expenseBudgetData.ts           # 旧版 · 组织/科目树形行数据
+├── expenseBudgetHeader.ts         # 旧版 · 组织/科目表头 + treeConfig
+└── expenseBudgetDataGenerator.ts  # 费用预算 · 1万～100万行（FormSchema 形状）
 ```
 
 | 文件 | 导出要点 |
 |------|----------|
-| `expenseBudgetData.ts` | `expenseBudgetTreeData`、`EXPENSE_BUDGET_ORG_COUNT` |
-| `expenseBudgetDataGenerator.ts` | `generateScaledExpenseBudgetTreeData`、`planScaledExpenseBudget` |
-| `expenseBudgetHeader.ts` | `expenseBudgetHeaderColumns`、`expenseBudgetTreeConfig`、`EXPENSE_BUDGET_HEADER_DEPTH`、`EXPENSE_BUDGET_FREEZE_COLS` |
+| `formSchemaTypes.ts` | `FormSchema` / `FormColumn` / `FormRecord` |
+| `expenseBudgetFormData.ts` | `expenseBudgetFormData` |
+| `adaptFormSchemaToETable.ts` | `adaptFormSchemaToETable`、`adaptFormColumns`、`adaptFormRecords` |
+| `expenseBudgetDataGenerator.ts` | `generateScaledExpenseBudgetTreeData`、`planScaledExpenseBudgetForm` |
 
-装配关系：`index.tsx` 在 `dataScale === 'budget'` 时把 `treeData={expenseBudgetTreeData}`、`treeConfig={expenseBudgetTreeConfig}` 传给 `<ETable />`。
+装配：`adaptFormSchemaToETable(expenseBudgetFormData)` → `treeData` + `treeConfig` → `<ETable />`。
 
 ---
 
@@ -1234,68 +1246,58 @@ pages/UniverTable/
 
 ### 3.2.1 费用预算示例（演示页默认）
 
-对齐 Excel「费用预算表」行结构，数据与表头拆分见 §2.2。默认 **组织 / 科目全部折叠**。
+权威数据为后端 **FormSchema**（`columns` + `records`），经 `adaptFormSchemaToETable` 转为 ETable 的 `treeData` / `treeConfig`。页面能力（折叠、编辑、维度回写）不变。
 
-**组织树（`expenseBudgetTreeData`）：**
+**列类型映射**
 
-```
-华润微电子集团
-  ├─ 华润微电子本部
-  ├─ 华晶公司
-  │    ├─ 华晶公司-销售部
-  │    ├─ 华晶公司-财务部
-  │    ├─ 华晶公司-行政部
-  │    └─ 华晶公司-研发部
-  └─ 上华公司
-       └─ 上华公司-销售部
-```
+| `columns[].type` | 含义 | ETable |
+|------------------|------|--------|
+| `rowDim` + `tree` | 行维（预算科目） | `dimensions[0]`，`labelMode: 'single'` |
+| `attr` | 功能属性（枚举） | measure + `select` |
+| `colDim` | 列维分组（实际数/预算数/年/月） | `headerColumns` 多级 |
+| `value` | 指标叶子（金额/同比率） | 叶子列 `id = field`；`dimensionId` ← `formDimValue.default_measure` |
 
-**科目（每个组织固定 5 行，`attributes[0].children` + `depth` 缩进）：**
+**行树（`records`）：**
 
 ```
-费用汇总                         ← 可折叠；功能属性「-」且不可编辑
-  └─ 日常费用合计 / 管理费用合计  ← depth=1；功能属性「-」且不可编辑
-       ├─ 费用-办公费             ← depth=2；功能属性 管理/销售/研发
-       ├─ 费用-电费
-       └─ 费用-水费
+费用合计                         ← readOnly；可折叠
+  ├─ 差旅费
+  ├─ 业务招待费
+  ├─ 审计费
+  ├─ 咨询费
+  ├─ 办公费
+  └─ 绿化费
 ```
 
-叶子月度示例：办公 100 / 电 200 / 水 300 → 月合计 600 → 年 7200；华晶汇总 28800；集团年合计 43200。
-
-**表头（`expenseBudgetHeaderColumns`）：**
+**表头示意（深度约 4）：**
 
 | 列 | 说明 |
 |----|------|
-| 组织 | `dimensions[0]`，`labelMode: 'single'`，同列缩进 + ▶/▼ |
-| 科目 | `attribute.field`，费用汇总可折叠明细 |
-| 功能属性 | measure：`funcAttr` |
-| **2025年** | 分组表头，子列：`yearTotal`（全年合计）+ `m1`…`m12` |
-
-表头单元格：**水平 + 垂直居中**（`applyHeaderCenterAlign`）；数据区仅垂直居中。
+| 预算科目 | 行维树 |
+| 功能属性 | attr 枚举 |
+| 实际数 → 2026年 → 全年合计/8–12月 → 金额 | colDim + value |
+| 预算数 → 2027年 → 全年合计/1–12月 → 金额 + 同比率 | colDim + value |
 
 ```ts
-// pages/UniverTable — 接入示意
-import { expenseBudgetTreeData } from './expenseBudgetData';
-import {
-  expenseBudgetTreeConfig,
-  EXPENSE_BUDGET_HEADER_DEPTH,
-  EXPENSE_BUDGET_FREEZE_COLS,
-} from './expenseBudgetHeader';
+import { expenseBudgetFormData } from './expenseBudgetFormData';
+import { adaptFormSchemaToETable } from './adaptFormSchemaToETable';
+
+const { treeData, treeConfig, meta } = adaptFormSchemaToETable(expenseBudgetFormData);
 
 <ETable
-  treeData={expenseBudgetTreeData}
-  treeConfig={expenseBudgetTreeConfig}
+  treeData={treeData}
+  treeConfig={treeConfig}
   options={{
-    // 演示页「冻结表头」开关默认关闭；打开时再传 freezeRows / freezeColumns
-    freezeRows: freezeHeader ? EXPENSE_BUDGET_HEADER_DEPTH : 0,
-    freezeColumns: freezeHeader ? EXPENSE_BUDGET_FREEZE_COLS : 0,
-    customizeColumnHeader: false,
+    freezeRows: freezeHeader ? meta.headerDepth : 0,
+    freezeColumns: freezeHeader ? meta.freezeCols : 0,
     showColumnHeader: false,
   }}
 />
 ```
 
-常量：`EXPENSE_BUDGET_HEADER_DEPTH = 2`，`EXPENSE_BUDGET_FREEZE_COLS = 3`，`EXPENSE_BUDGET_ORG_COUNT = 9`（集团 + 本部 + 华晶 + 4 部门 + 上华 + 上华销售）。
+`meta.freezeCols` 一般为 2（科目 + 功能属性）；`meta.headerDepth` 取多级 colDim 深度（约 4）。
+
+表头单元格：**水平 + 垂直居中**（`applyHeaderCenterAlign`）；数据区仅垂直居中。
 
 ### 3.3 平铺分组模式
 
@@ -1360,17 +1362,18 @@ import {
 
 演示页有两套表头，按数据规模切换。
 
-#### 4.4.1 费用预算（默认，`expenseBudgetHeader.ts`）
+#### 4.4.1 费用预算（默认，FormSchema → adapter）
 
-| 一级 | 叶子列（id） | 宽度建议 |
-|------|--------------|----------|
-| 组织 | `organization` | 200 |
-| 科目 | `subject` | 140 |
-| 功能属性 | `funcAttr` | 96 |
-| **2025年** | `yearTotal`、`m1`…`m12`（子列） | 110 / 各 88 |
+由 `expenseBudgetFormData.columns` 适配生成，示意：
 
-表头深度 `EXPENSE_BUDGET_HEADER_DEPTH = 2`；演示页冻结表头**默认关闭**，打开时冻结列 `EXPENSE_BUDGET_FREEZE_COLS = 3`（组织 + 科目 + 功能属性）。  
-通过 `treeConfig.headerColumns` 传入，叶子 `id` 与 `measures[].field` / `dimensions` / `attribute` 对齐。
+| 一级 | 二级 / 三级 | 叶子 |
+|------|-------------|------|
+| 预算科目 | — | `DIM0069` |
+| 功能属性 | — | `ATTR000038`（select） |
+| 实际数 | 2026年 → 月度 | `FDG1111-…` 金额 |
+| 预算数 | 2027年 → 月度 | `FDG1374-…` 金额 / 同比率 |
+
+表头深度约 4；冻结列默认 2（科目 + 功能属性）。列维 `columnId` map 的 value 优先用 `ETableColumn.dimensionId`（MEM 成员 id），叶子写入仍用 `field`。
 
 #### 4.4.2 经营树形演示（`index.tsx` → `buildHeaderColumns()`）
 
@@ -1503,15 +1506,18 @@ const group: ETableTreeNode = {
           id: 'group-daily-total',
           label: '日常费用合计',
           depth: 1,
+          collapsed: true,
           values: { funcAttr: { value: '-', editable: false }, yearTotal: 43200 /* … */ },
+          children: [
+            {
+              id: 'group-office',
+              label: '费用-办公费',
+              depth: 2,
+              values: { funcAttr: '管理', yearTotal: 7200, m1: 600 },
+            },
+            // 电费 / 水费 …
+          ],
         },
-        {
-          id: 'group-office',
-          label: '费用-办公费',
-          depth: 2,
-          values: { funcAttr: '管理', yearTotal: 7200, m1: 600 },
-        },
-        // 电费 / 水费 …
       ],
     },
   ],
@@ -1586,9 +1592,17 @@ const node: ETableTreeNode = {
 |------|------|
 | `id` / `label` | 属性标识与显示（如「华东」「费用汇总」） |
 | `values` | 属性汇总行指标 |
-| `children` | 明细（城市或科目子项）；展开后显示，且**必须有 children 才生成折叠 toggle** |
-| `depth` | 科目明细缩进深度（treeUI）；如日常费用合计=1，办公费=2 |
+| `children` | 明细（城市或科目子项）；展开后显示，且**必须有 children 才生成折叠 toggle**；明细可再嵌套 `children`（如日常费用合计 → 办公/电/水） |
 | `collapsed` | 是否默认折叠明细 |
+
+**`ETableTreeAttributeDetail`（属性明细，可嵌套）：**
+
+| 字段 | 说明 |
+|------|------|
+| `id` / `label` / `values` | 明细标识、显示名、指标 |
+| `depth` | 科目缩进深度（treeUI）；如日常费用合计=1，办公费=2 |
+| `children` | 再嵌套明细；有值时本行显示 ▶/▼ 并可独立折叠 |
+| `collapsed` | 嵌套明细是否默认折叠 |
 
 ### 5.5 树形配置与表头对齐（`ETableTreeConfig`）
 
@@ -1846,8 +1860,8 @@ export default function Page() {
         console.log('单格更新', {
           cell: record.cell,
           field: record.field,
-          rowId: record.rowId,       // 行维路径拼接
-          columnId: record.columnId, // 列维路径拼接 year/m1
+          rowId: record.rowId,       // 行维 field→id map
+          columnId: record.columnId, // 列维 field→id map
           to: record.to,
           rowDimensions: record.rowDimensions,
           columnDimensions: record.columnDimensions,
@@ -1888,7 +1902,7 @@ const tableRef = useRef<ETableRef>(null);
     console.log('渲染耗时', renderMs, '行数', rowCount, treeViewport);
   }}
   onCellChange={(record) => setTracks((prev) => [record, ...prev])}
-  onSelectionChange={(cell) => setFocusCell(cell)}
+  onSelectionChange={(info) => setFocusCell(info.cell)}
 />
 ```
 
@@ -1968,9 +1982,9 @@ onUploadAttachment={async (file, cell) => ({
 ## 11. 单元格历史与数据追踪
 
 - `setupCellHistory()`：监听编辑、粘贴，写入 `ETableCellChangeRecord`
-- `enrichCellChangeRecord()`（`cellChangeContext.ts`）：补充 `field`、`rowId`（路径拼接）、`columnId`（路径拼接）、`dataRow`、`logicalRow`、`rowDimensions`、`columnDimensions`、`rowPath`
-- `joinDimensionPathIds()`：将维度路径 id 用 `/` 拼成 `rowId` / `columnId`
-- `resolveDimensionCellLocator()` / `setCellValuesOnTable()`：按拼接 id 或维度数组定位并单格/批量写值
+- `enrichCellChangeRecord()`（`cellChangeContext.ts`）：补充 `field`、`rowId`（field→id map）、`columnId`（field→id map）、`dataRow`、`logicalRow`、`rowDimensions`、`columnDimensions`、`rowPath`
+- `buildDimensionIdMap()`：将维度路径转为 `rowId` / `columnId` map
+- `resolveDimensionCellLocator()` / `setCellValuesOnTable()`：按 id map 或维度数组定位并单格/批量写值
 - `resolveCellDimensions()` / `resolveColumnDimensionPath()` / `resolveRowDimensions()`：维度解析（`getCellDimensions` / `onCellChange` 共用）
 - 右键「查看单元格历史」→ `onViewCellHistory`
 - 右键「数据追踪」→ `onViewDataTrace`（`getDataTrace()` 构建简化血缘树）
@@ -2010,20 +2024,24 @@ onUploadAttachment={async (file, cell) => ({
 | 文件 | 职责 |
 |------|------|
 | `index.tsx` | UI、数据规模切换、经营树/费用预算大数据生成、工具栏与侧栏 |
-| `expenseBudgetData.ts` | 费用预算小样树形行数据（9 组织） |
-| `expenseBudgetDataGenerator.ts` | 费用预算 1万～100万行压测数据生成 |
-| `expenseBudgetHeader.ts` | 费用预算多级表头 + `treeConfig` |
+| `formSchemaTypes.ts` | FormSchema 类型 |
+| `expenseBudgetFormData.json` / `.ts` | 费用预算表单样例（columns/records） |
+| `adaptFormSchemaToETable.ts` | FormSchema → ETable 适配 |
+| `expenseBudgetData.ts` | 旧版组织科目树形行数据 |
+| `expenseBudgetHeader.ts` | 旧版组织科目表头 + treeConfig |
+| `expenseBudgetDataGenerator.ts` | 费用预算 1万～100万行（生成 FormSchema.records 再适配） |
 
 ### 14.2 数据规模（`DATA_SCALE_OPTIONS`）
 
 | 选项 | 作用 |
 |------|------|
-| **费用预算（树形折叠）** | 默认小样；`expenseBudgetTreeData` + `expenseBudgetTreeConfig` |
-| **费用预算 1万 / 5万 / 10万 / 50万 / 100万行** | `generateScaledExpenseBudgetTreeData()`；结构仍为组织树 + 科目五级行；启用 `liteMode` / `skipMerges` |
+| **费用预算（表单 schema）** | 默认；`adaptFormSchemaToETable(expenseBudgetFormData)` |
+| **费用预算（组织科目）** | 旧版小样；`expenseBudgetTreeData` + `expenseBudgetTreeConfig`（组织树 + 科目三级 + 2025年月度） |
+| **费用预算 1万 / 5万 / 10万 / 50万 / 100万行** | `generateScaledExpenseBudgetTreeData()`：放大 FormSchema.records，再适配；`liteMode` / `skipMerges` |
 | 树形演示 | 页内固定经营树（品类/子品类/区域） |
 | 1万 / 5万 / 10万 / 50万 / 100万行（树形） | `generateScaledTreeData()` + `liteMode` / `skipMerges` |
 
-费用预算压测按「每组织 5 行」规划节点数：`集团 → 公司 → 部门`，科目仍为「费用汇总 → 日常费用合计 → 办公/电/水」。
+费用预算压测按「分组父行 + 叶子科目」规划节点数，列结构与小样 FormSchema.columns 一致。
 
 ### 14.3 工具栏与 options
 
@@ -2038,20 +2056,19 @@ onUploadAttachment={async (file, cell) => ({
 
 费用预算模式下常用 `options`：
 
-- 冻结表头开关默认 `false`；打开时 `freezeRows: EXPENSE_BUDGET_HEADER_DEPTH`（2）、`freezeColumns: EXPENSE_BUDGET_FREEZE_COLS`（3）
-- `customizeColumnHeader: false`、`showColumnHeader: false`（隐藏 A/B/C 列标）
-- `treeConfig.defaultCollapsed: true`、各节点 / 科目 `collapsed: true`
+- 冻结表头开关默认 `false`；打开时 `freezeRows: meta.headerDepth`、`freezeColumns: meta.freezeCols`
+- `showColumnHeader: false`（隐藏 A/B/C 列标）
+- `treeConfig.defaultCollapsed: true`
 
 ### 14.4 两种树形示例对照
 
-| | 费用预算 | 经营树形演示 |
+| | 费用预算（FormSchema） | 经营树形演示 |
 |--|----------|--------------|
-| 维度 | `organization`（单列缩进） | `category` / `subcategory` / `region` |
-| 属性列 | `subject`（科目，三级缩进） | 区域明细挂在 Region `attributes` |
-| 指标 | 功能属性、2025 年合计与月度 | revenue、orders、治理字段等 |
+| 数据源 | `columns` + `records` → adapter | 页内 `treeData` / 生成器 |
+| 维度 | `DIM0069` 预算科目（单列缩进） | `category` / `subcategory` / `region` |
+| 属性/指标 | `ATTR000038` + 实际数/预算数 value 叶子 | revenue、orders、治理字段等 |
 | `labelMode` | `single` | `depth`（页内 `buildTreeConfig`） |
 | 默认折叠 | **全部收起** | 演示树多为展开/按节点 `collapsed` |
-| 组织节点数 | 9 | 视生成器而定 |
 
 经营树：`Profit` 下拉、`Date` 日期列、子品类可编辑；大数据使用 `generateScaledTreeData()` + `liteMode` / `compactLiteRows`。
 
@@ -2109,22 +2126,20 @@ export default function Page() {
 }
 ```
 
-费用预算可直接复用演示数据：
+费用预算可直接复用演示 FormSchema：
 
 ```tsx
-import { expenseBudgetTreeData } from '@/pages/UniverTable/expenseBudgetData';
-import {
-  expenseBudgetTreeConfig,
-  EXPENSE_BUDGET_HEADER_DEPTH,
-  EXPENSE_BUDGET_FREEZE_COLS,
-} from '@/pages/UniverTable/expenseBudgetHeader';
+import { expenseBudgetFormData } from '@/pages/UniverTable/expenseBudgetFormData';
+import { adaptFormSchemaToETable } from '@/pages/UniverTable/adaptFormSchemaToETable';
+
+const { treeData, treeConfig, meta } = adaptFormSchemaToETable(expenseBudgetFormData);
 
 <ETable
-  treeData={expenseBudgetTreeData}
-  treeConfig={expenseBudgetTreeConfig}
+  treeData={treeData}
+  treeConfig={treeConfig}
   options={{
-    freezeRows: EXPENSE_BUDGET_HEADER_DEPTH,
-    freezeColumns: EXPENSE_BUDGET_FREEZE_COLS,
+    freezeRows: meta.headerDepth,
+    freezeColumns: meta.freezeCols,
     showColumnHeader: false,
   }}
 />
@@ -2145,11 +2160,12 @@ import {
 | `src/components/UniverTable/dimensionLocate.ts` | 按维度 / rowId 定位 |
 | `src/components/UniverTable/readonly.ts` | 只读 + Backspace 拦截 |
 | `src/pages/UniverTable/index.tsx` | 演示页装配 |
-| `src/pages/UniverTable/expenseBudgetData.ts` | 费用预算小样行数据 |
+| `src/pages/UniverTable/formSchemaTypes.ts` | FormSchema 类型 |
+| `src/pages/UniverTable/expenseBudgetFormData.ts` | 费用预算表单样例 |
+| `src/pages/UniverTable/adaptFormSchemaToETable.ts` | FormSchema → ETable |
 | `src/pages/UniverTable/expenseBudgetDataGenerator.ts` | 费用预算大数据生成 |
-| `src/pages/UniverTable/expenseBudgetHeader.ts` | 费用预算表头与 treeConfig |
 | `docs/UniverTable.md` | 本文档 |
 
 ---
 
-*文档版本与代码同步至当前仓库实现（Univer 0.25.x；费用预算默认示例：2025年表头、9 组织节点、科目三级缩进、默认全折叠；费用预算亦支持 1万～100万行压测；编辑回传拼接 `rowId`/`columnId`（`/` 分隔）；`setCellValue` / `setCellValues` 按维度批量回写；表头居中；Backspace 只读拦截；演示页冻结表头默认关闭）。*
+*文档版本与代码同步至当前仓库实现（Univer 0.25.x；费用预算默认 FormSchema：预算科目树 + 实际数/预算数多级表头，经 adaptFormSchemaToETable 接入；支持 1万～100万行压测；编辑回传 `rowId`/`columnId`（field→成员 id map，列维可用 `dimensionField`/`dimensionId`）；`setCellValue` / `setCellValues` 按维度批量回写；表头居中；Backspace 只读拦截；演示页冻结表头默认关闭）。*

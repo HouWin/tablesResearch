@@ -649,6 +649,36 @@ export const setupTreeCellCollapse = (
         : undefined,
     );
     if (!collapsed && toggle.kind === 'region') {
+      // 展开父级 Region（如费用汇总）后，重新隐藏仍折叠的嵌套 Region（如日常费用合计）
+      const nestedHideRanges: Array<{ start: number; count: number }> = [];
+      toggles.forEach((nestedToggle) => {
+        if (
+          nestedToggle.kind !== 'region' ||
+          nestedToggle.groupId === groupId ||
+          !collapsedState.get(nestedToggle.groupId)
+        ) {
+          return;
+        }
+        const nestedGroup = groupMap.get(nestedToggle.groupId);
+        if (!nestedGroup?.count) {
+          return;
+        }
+        if (
+          rangeInCategoryBody(
+            nestedGroup.startRow,
+            nestedGroup.count,
+            group,
+          )
+        ) {
+          nestedHideRanges.push({
+            start: dataStartRow + nestedGroup.startRow,
+            count: nestedGroup.count,
+          });
+        }
+      });
+      if (nestedHideRanges.length) {
+        hideCoalescedRowRanges(univerAPI, worksheet, nestedHideRanges);
+      }
       reapplyMergesForToggle(toggle);
     }
   };

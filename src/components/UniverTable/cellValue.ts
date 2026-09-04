@@ -253,6 +253,7 @@ const toDisplayValue = (value: ETablePrimitive | ETableCell | null): string => {
 export const getCellValueFromTable = (params: {
   locator: ETableCellLocator;
   leafColumns: ETableColumn[];
+  columns?: ETableColumn[];
   headerDepth: number;
   worksheet: any | null;
   rows: ETableRow[];
@@ -265,6 +266,7 @@ export const getCellValueFromTable = (params: {
   const {
     locator,
     leafColumns,
+    columns,
     headerDepth,
     worksheet,
     rows,
@@ -283,6 +285,7 @@ export const getCellValueFromTable = (params: {
       rows,
       leafColumns,
       headerDepth,
+      columns,
     );
     if (!byDim) {
       return { success: false, value: null, displayValue: '', source: 'memory' };
@@ -415,6 +418,7 @@ export const setCellValueOnTable = (params: {
   locator: ETableCellLocator;
   value: ETablePrimitive | ETableCell;
   leafColumns: ETableColumn[];
+  columns?: ETableColumn[];
   headerDepth: number;
   worksheet: any | null;
   rows: ETableRow[];
@@ -429,6 +433,7 @@ export const setCellValueOnTable = (params: {
     locator,
     value,
     leafColumns,
+    columns,
     headerDepth,
     worksheet,
     rows,
@@ -450,6 +455,7 @@ export const setCellValueOnTable = (params: {
       rows,
       leafColumns,
       headerDepth,
+      columns,
     );
     if (!byDim) {
       return { success: false, appliedToSheet: false };
@@ -547,6 +553,7 @@ export const resolvePatchToLocator = (
 export const setCellValuesOnTable = (params: {
   patches: ETableCellValuePatch[];
   leafColumns: ETableColumn[];
+  columns?: ETableColumn[];
   headerDepth: number;
   worksheet: any | null;
   rows: ETableRow[];

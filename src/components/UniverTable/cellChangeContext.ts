@@ -10,36 +10,17 @@ import type {
   ETableRow,
   ETableTreeConfig,
 } from './types';
+import { attachBusinessChange } from './businessChange';
 import { resolveCellLocator } from './cellValue';
+import { buildDimensionIdMap, resolveColumnDimensionPath } from './dimensionPath';
 
-export type { ETableDimensionInfo } from './types';
-
-/** 行列维路径 id 拼接分隔符（如 year/m1、org/subject/detail） */
-export const DIMENSION_ID_SEPARATOR = '/';
-
-/**
- * 将维度路径上的 id（缺省则 field）按 `/` 拼成业务定位 id。
- * 例：[{ id: 'year' }, { id: 'm1' }] → `year/m1`
- */
-export const joinDimensionPathIds = (
-  dims: Array<{ id?: string; field?: string }> | undefined,
-  separator: string = DIMENSION_ID_SEPARATOR,
-): string | undefined => {
-  if (!dims?.length) {
-    return undefined;
-  }
-  const parts: string[] = [];
-  dims.forEach((item) => {
-    const part =
-      item.id !== undefined && item.id !== null && String(item.id) !== ''
-        ? String(item.id)
-        : item.field;
-    if (part) {
-      parts.push(part);
-    }
-  });
-  return parts.length ? parts.join(separator) : undefined;
-};
+export type { ETableDimensionInfo, ETableDimensionIdMap } from './types';
+export {
+  buildDimensionIdMap,
+  DIMENSION_ID_SEPARATOR,
+  joinDimensionPathIds,
+  resolveColumnDimensionPath,
+} from './dimensionPath';
 
 export interface ETableEnrichCellChangeContext {
   headerDepth: number;
@@ -93,41 +74,6 @@ const getRowDimensionDefs = (
     }));
   }
   return [];
-};
-
-/** 根据叶子列索引，解析多级表头路径（列维度）。 */
-export const resolveColumnDimensionPath = (
-  columns: ETableColumn[],
-  targetLeafIndex: number,
-): ETableDimensionInfo[] => {
-  const path: ETableDimensionInfo[] = [];
-  let leafCounter = 0;
-
-  const walk = (nodes: ETableColumn[], ancestors: ETableDimensionInfo[]): boolean => {
-    for (const column of nodes) {
-      const node: ETableDimensionInfo = {
-        field: column.id,
-        title: column.title,
-        id: column.id,
-      };
-      const nextPath = [...ancestors, node];
-      if (!column.children?.length) {
-        if (leafCounter === targetLeafIndex) {
-          path.push(...nextPath);
-          return true;
-        }
-        leafCounter += 1;
-        continue;
-      }
-      if (walk(column.children, nextPath)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  walk(columns, []);
-  return path;
 };
 
 const readContextId = (
@@ -288,8 +234,11 @@ export const resolveCellDimensions = (
   );
   const columnDimensions = resolveColumnDimensionPath(columns, target.column);
   const columnId =
-    joinDimensionPathIds(columnDimensions) ?? target.field;
-  const rowId = joinDimensionPathIds(rowDimensions) ?? row?.id;
+    buildDimensionIdMap(columnDimensions) ??
+    (target.field ? { [target.field]: target.field } : undefined);
+  const rowId =
+    buildDimensionIdMap(rowDimensions) ??
+    (row?.id ? { id: row.id } : undefined);
 
   return {
     success: true,
@@ -342,10 +291,15 @@ export const enrichCellChangeRecord = (
   );
   const columnDimensions = resolveColumnDimensionPath(columns, record.column);
   const columnId =
-    joinDimensionPathIds(columnDimensions) ?? leaf?.id;
-  const rowId = joinDimensionPathIds(rowDimensions) ?? row?.id;
+    buildDimensionIdMap(columnDimensions) ??
+    (leaf?.id
+      ? { [leaf.dimensionField ?? leaf.id]: leaf.dimensionId ?? leaf.id }
+      : undefined);
+  const rowId =
+    buildDimensionIdMap(rowDimensions) ??
+    (row?.id ? { id: row.id } : undefined);
 
-  return {
+  return attachBusinessChange({
     ...record,
     field: leaf?.id,
     columnId,
@@ -355,6 +309,6 @@ export const enrichCellChangeRecord = (
     columnDimensions: columnDimensions.length ? columnDimensions : undefined,
     rowPath: rowPath.length ? rowPath : undefined,
     rowId,
-  };
+  });
 };
 

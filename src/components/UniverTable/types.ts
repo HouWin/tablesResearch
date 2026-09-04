@@ -45,6 +45,16 @@ export interface ETableColumn {
   id: string;
   /** 表头显示名称 */
   title: string;
+  /**
+   * 业务维度字段名（列维 map 的 key，如 year / DIM0068）。
+   * 缺省时用 `id`。
+   */
+  dimensionField?: string;
+  /**
+   * 业务维度成员 id（列维 map 的 value）。
+   * 缺省时 `onCellChange.columnId` 使用 `id`。
+   */
+  dimensionId?: string;
   /** 当前列宽度 */
   width?: number;
   /** 子列配置，用于创建多级表头 */
@@ -289,6 +299,7 @@ export interface ETableTreeAttribute {
 
 /**
  * 属性下的明细行。
+ * 可再嵌套 children（如「日常费用合计」下挂办公/电/水），有 children 时可独立 ▶/▼ 折叠。
  */
 export interface ETableTreeAttributeDetail {
   id: string;
@@ -299,6 +310,10 @@ export interface ETableTreeAttributeDetail {
    * 例：日常费用合计=1，费用-办公费=2，表达「汇总 → 小计 → 明细」。
    */
   depth?: number;
+  /** 嵌套明细（有值时本行可折叠） */
+  children?: ETableTreeAttributeDetail[];
+  /** 嵌套明细是否默认折叠（默认跟随 collapseAttributes） */
+  collapsed?: boolean;
 }
 
 /**
@@ -546,6 +561,13 @@ export interface ETableGroupConfig {
 }
 
 /** 行/列维度节点（field + title，行维度可带 value / id）。 */
+/**
+ * 行列维定位 map：维度 field → 成员 id。
+ * 例：`{ organization: 'hq', subject: 'hq-summary' }`
+ * 例：`{ year: 'year', yearTotal: '全年合计' }`
+ */
+export type ETableDimensionIdMap = Record<string, string>;
+
 export interface ETableDimensionInfo {
   /** 维度字段（如 organization / subject / yearTotal） */
   field: string;
@@ -556,7 +578,7 @@ export interface ETableDimensionInfo {
   /**
    * 业务实体 id：
    * - 行维：组织节点 id / 科目（属性或明细）id
-   * - 列维：叶子列 id（与 field 相同）
+   * - 列维：维度成员 id（缺省与 field / 列 id 相同）
    */
   id?: string;
 }
@@ -566,8 +588,8 @@ export type ETableCellDimensionsResult = {
   success: boolean;
   cell?: string;
   field?: string;
-  /** 列维路径 id 拼接（与 onCellChange.columnId 一致） */
-  columnId?: string;
+  /** 列维 field→id map（与 onCellChange.columnId 一致） */
+  columnId?: ETableDimensionIdMap;
   sheetRow?: number;
   column?: number;
   dataRow?: number;
@@ -575,8 +597,65 @@ export type ETableCellDimensionsResult = {
   rowDimensions?: ETableDimensionInfo[];
   columnDimensions?: ETableDimensionInfo[];
   rowPath?: string[];
-  /** 行维路径 id 拼接（与 onCellChange.rowId 一致） */
-  rowId?: string;
+  /** 行维 field→id map（与 onCellChange.rowId 一致） */
+  rowId?: ETableDimensionIdMap;
+};
+
+/** 业务定位：key + path（与 PivotPrototype 保存协议一致） */
+export type ETableBusinessDimRef = {
+  key: string;
+  path: string[];
+};
+
+/**
+ * 业务侧单元格变更（保存 / 上报）。
+ * @example
+ * {
+ *   action: 'change',
+ *   type: 'value',
+ *   row: {
+ *     key: 'organization:华润微电子集团|subject:费用汇总:日常费用合计:费用-办公费',
+ *     path: [
+ *       'organization:华润微电子集团',
+ *       'subject:费用汇总:日常费用合计:费用-办公费',
+ *     ],
+ *   },
+ *   col: {
+ *     key: 'year:year|m1:1月',
+ *     path: ['year:year', 'm1:1月'],
+ *   },
+ *   oldValue: 429,
+ *   newValue: 1123,
+ * }
+ */
+export type ETableBusinessChange = {
+  action: 'change' | 'revert';
+  type: 'value' | 'attr';
+  row: ETableBusinessDimRef;
+  col: ETableBusinessDimRef;
+  oldValue: ETablePrimitive;
+  newValue: ETablePrimitive;
+};
+
+/**
+ * onSelectionChange 回传：与 onCellChange 相同的维度定位信息（无 from/to）。
+ */
+export type ETableSelectionInfo = {
+  cell: string;
+  /** 工作表行号，0-based（含表头） */
+  row: number;
+  /** 工作表列号，0-based */
+  column: number;
+  field?: string;
+  columnId?: ETableDimensionIdMap;
+  rowId?: ETableDimensionIdMap;
+  dataRow?: number;
+  logicalRow?: number;
+  rowDimensions?: ETableDimensionInfo[];
+  columnDimensions?: ETableDimensionInfo[];
+  rowPath?: string[];
+  /** 业务定位（无 old/new，仅 type/row/col） */
+  change?: Pick<ETableBusinessChange, 'type' | 'row' | 'col'>;
 };
 
 /**
@@ -591,13 +670,13 @@ export interface ETableCellChangeRecord {
   to: string;
   time: string;
   source?: 'edit' | 'paste' | 'api';
-  /** 叶子列 field（写入用，如 m1；不等于拼接后的 columnId） */
+  /** 叶子列 field（写入用，如 m1 / FDG…） */
   field?: string;
   /**
-   * 列维路径 id 拼接（如 year/m1）。
-   * 由 columnDimensions[].id 按 `/` 连接；回写定位仍用 field 或 columnDimensions。
+   * 列维 field→成员 id。
+   * 例：`{ year: 'year', yearTotal: '全年合计' }`
    */
-  columnId?: string;
+  columnId?: ETableDimensionIdMap;
   /** 数据区相对行（0-based，视口模式下为投影行） */
   dataRow?: number;
   /** 逻辑行下标（反查 rows[]） */
@@ -609,10 +688,15 @@ export interface ETableCellChangeRecord {
   /** 行分组面包屑（树折叠路径，展示用） */
   rowPath?: string[];
   /**
-   * 行维路径 id 拼接（如 hj-sales/hj-sales-summary/hj-sales-office）。
-   * 由 rowDimensions[].id 按 `/` 连接；无维度时回退为 ETableRow.id。
+   * 行维 field→成员 id。
+   * 例：`{ organization: 'hq', subject: 'hq-summary' }`
    */
-  rowId?: string;
+  rowId?: ETableDimensionIdMap;
+  /**
+   * 业务变更载荷（对齐 Pivot 保存协议）：
+   * `{ action, type, row:{key,path}, col:{key,path}, oldValue, newValue }`
+   */
+  change?: ETableBusinessChange;
 }
 
 /**
@@ -660,8 +744,10 @@ export type ETableCellValuePatch = {
   locator?: ETableCellLocator;
   /** A1，等同 locator: 'D7' */
   cell?: string;
-  rowId?: string;
-  columnId?: string;
+  /** 行维 field→id map，或旧版路径字符串 */
+  rowId?: ETableDimensionIdMap | string;
+  /** 列维 field→id map，或旧版路径字符串 / 叶子 field */
+  columnId?: ETableDimensionIdMap | string;
   field?: string;
   rowDimensions?: ETableDimensionMatch[];
   columnDimensions?: ETableDimensionMatch[];
@@ -689,13 +775,14 @@ export type ETableDimensionMatch = {
  * 优先级：rowId > rowDimensions；field/columnId > columnDimensions 叶子。
  */
 export type ETableDimensionCellLocator = {
-  rowId?: string;
+  /** 行维 field→id map，或旧版路径字符串 */
+  rowId?: ETableDimensionIdMap | string;
   rowDimensions?: ETableDimensionMatch[];
   columnDimensions?: ETableDimensionMatch[];
-  /** 叶子列 field，或列维路径拼接 id（如 year/m1） */
+  /** 叶子列 field */
   field?: string;
-  /** 与 field 同义：列维路径拼接 id */
-  columnId?: string;
+  /** 列维 field→id map，或旧版路径字符串 / 叶子 field */
+  columnId?: ETableDimensionIdMap | string;
 };
 
 /** 单元格定位：A1 / 工作表行列 / 数据区行 + 字段 / 行列维度 */
@@ -798,8 +885,11 @@ export interface ETableProps {
   onAttachmentsChange?: (cell: string, files: ETableAttachmentFile[]) => void;
   /** 单元格值变更（数据追踪 / 历史） */
   onCellChange?: (record: ETableCellChangeRecord) => void;
-  /** 选区变化 */
-  onSelectionChange?: (cell: string, row: number, column: number) => void;
+  /**
+   * 选区变化。
+   * 回传字段与 onCellChange 对齐：cell / field / rowId / columnId / 行列维等。
+   */
+  onSelectionChange?: (info: ETableSelectionInfo) => void;
   /** 右键查看单元格历史 */
   onViewCellHistory?: (cell: string) => void;
   /** 右键数据追踪 */

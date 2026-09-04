@@ -49,10 +49,14 @@ export const expenseBudgetHeaderColumns: ETableColumn[] = [
   {
     id: 'year',
     title: '2025年',
+    dimensionField: 'year',
+    dimensionId: 'year',
     children: [
       {
         id: 'yearTotal',
         title: '全年合计',
+        dimensionField: 'yearTotal',
+        dimensionId: '全年合计',
         width: 110,
         type: 'number',
         numberFormat: '#,##0.00',
@@ -60,6 +64,8 @@ export const expenseBudgetHeaderColumns: ETableColumn[] = [
       ...MONTHS.map((m) => ({
         id: `m${m}`,
         title: `${m}月`,
+        dimensionField: `m${m}`,
+        dimensionId: `${m}月`,
         width: 88,
         type: 'number' as const,
         numberFormat: '#,##0.00',

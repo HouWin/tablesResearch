@@ -1,0 +1,1152 @@
+{
+  "columns": [
+    {
+      "field": "DIM0069",
+      "title": "预算科目",
+      "type": "rowDim",
+      "width": "auto",
+      "readOnly": true,
+      "style": {
+        "bgColor": "#f7fbff"
+      },
+      "tree": true
+    },
+    {
+      "field": "ATTR000038",
+      "title": "功能属性",
+      "type": "attr",
+      "dimCode": "DIM0069",
+      "width": "auto",
+      "readOnly": false,
+      "style": {
+        "bgColor": "#f7fbff"
+      },
+      "dataType": "enum",
+      "options": [
+        {
+          "label": "管理费用 ",
+          "value": "管理费用 "
+        },
+        {
+          "label": "销售费用",
+          "value": "销售费用"
+        },
+        {
+          "label": "研发费用",
+          "value": "研发费用"
+        }
+      ]
+    },
+    {
+      "field": "DIM0086",
+      "title": "实际数",
+      "type": "colDim",
+      "width": "auto",
+      "readOnly": false,
+      "headerStyle": {
+        "textAlign": "center"
+      },
+      "columns": [
+        {
+          "field": "DIM0067",
+          "title": "2026年",
+          "type": "colDim",
+          "width": "auto",
+          "readOnly": false,
+          "headerStyle": {
+            "textAlign": "center"
+          },
+          "columns": [
+            {
+              "field": "DIM0068",
+              "title": "全年合计",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": true,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM000570",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "8月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM005255",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "9月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM005256",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "10月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM005257",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "11月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM005258",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "12月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018974",
+                    "DIM0067": "MEM000565",
+                    "DIM0068": "MEM005259",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": "DIM0086",
+      "title": "预算数",
+      "type": "colDim",
+      "width": "auto",
+      "readOnly": false,
+      "headerStyle": {
+        "textAlign": "center"
+      },
+      "columns": [
+        {
+          "field": "DIM0067",
+          "title": "2027年",
+          "type": "colDim",
+          "width": "auto",
+          "readOnly": false,
+          "headerStyle": {
+            "textAlign": "center"
+          },
+          "columns": [
+            {
+              "field": "DIM0068",
+              "title": "全年合计",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": true,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000570",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": true
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000570",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "1月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000571",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000571",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "2月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000572",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000572",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "3月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000573",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000573",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "4月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000574",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000574",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "5月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000576",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM000576",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "6月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005253",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005253",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "7月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005254",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005254",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "8月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005255",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005255",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "9月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005256",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005256",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "10月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005257",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005257",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "11月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005258",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005258",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            },
+            {
+              "field": "DIM0068",
+              "title": "12月",
+              "type": "colDim",
+              "width": "auto",
+              "readOnly": false,
+              "headerStyle": {
+                "textAlign": "center"
+              },
+              "columns": [
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376",
+                  "title": "金额",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005259",
+                    "default_measure": "MEM000376"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "number",
+                  "readOnly": false
+                },
+                {
+                  "field": "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507",
+                  "title": "同比率",
+                  "type": "value",
+                  "formDimValue": {
+                    "DIM0086": "MEM018976",
+                    "DIM0067": "MEM000566",
+                    "DIM0068": "MEM005259",
+                    "default_measure": "MEM162507"
+                  },
+                  "width": "auto",
+                  "style": {
+                    "textAlign": "right"
+                  },
+                  "dataType": "percentage",
+                  "readOnly": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "records": [
+    {
+      "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": null,
+      "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+      "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+      "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+      "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": null,
+      "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+      "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": null,
+      "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+      "DIM0069": "费用合计",
+      "ATTR000038": "",
+      "formDimValue": {
+        "DIM0069": "MEM000577"
+      },
+      "readOnly": true,
+      "children": [
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 200,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 100,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 100,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 100,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 50,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 50,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "差旅费",
+          "ATTR000038": "销售费用",
+          "formDimValue": {
+            "DIM0069": "MEM000578"
+          },
+          "readOnly": false
+        },
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 400,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 200,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 200,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 200,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 100,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 100,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "业务招待费",
+          "ATTR000038": "管理费用 ",
+          "formDimValue": {
+            "DIM0069": "MEM000579"
+          },
+          "readOnly": false
+        },
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 600,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 300,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 300,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 300,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 150,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 150,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "审计费",
+          "ATTR000038": "管理费用 ",
+          "formDimValue": {
+            "DIM0069": "MEM000580"
+          },
+          "readOnly": false
+        },
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 1000,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 500,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 500,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 400,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 200,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 200,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "咨询费",
+          "ATTR000038": "管理费用 ",
+          "formDimValue": {
+            "DIM0069": "MEM000581"
+          },
+          "readOnly": false
+        },
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 1000,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 500,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 500,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 500,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 250,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 250,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "办公费",
+          "ATTR000038": "",
+          "formDimValue": {
+            "DIM0069": "MEM000582"
+          },
+          "readOnly": false
+        },
+        {
+          "FDG1111-MEM018974-MEM000565-MEM000570-MEM000376": 1200,
+          "FDG1111-MEM018974-MEM000565-MEM005255-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005256-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005257-MEM000376": null,
+          "FDG1111-MEM018974-MEM000565-MEM005258-MEM000376": 600,
+          "FDG1111-MEM018974-MEM000565-MEM005259-MEM000376": 600,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM000376": 600,
+          "FDG1374-MEM018976-MEM000566-MEM000570-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000571-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000572-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000573-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000574-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM000576-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005253-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005254-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005255-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005256-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM000376": null,
+          "FDG1374-MEM018976-MEM000566-MEM005257-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM000376": 300,
+          "FDG1374-MEM018976-MEM000566-MEM005258-MEM162507": null,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM000376": 300,
+          "FDG1374-MEM018976-MEM000566-MEM005259-MEM162507": null,
+          "DIM0069": "绿化费",
+          "ATTR000038": "管理费用",
+          "formDimValue": {
+            "DIM0069": "MEM000583"
+          },
+          "readOnly": false
+        }
+      ]
+    }
+  ],
+  "formStatus": 1,
+  "filters": {
+    "DIM0090": "MEM017381",
+    "DIM0091": "MEM018981",
+    "DIM0092": "MEM018983",
+    "DIM0087": "MEM018977"
+  }
+}

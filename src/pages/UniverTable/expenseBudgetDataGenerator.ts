@@ -1,234 +1,188 @@
 /**
- * 费用预算大数据生成：按目标展平行数生成「组织树 + 科目 attributes」。
- *
- * 每个组织固定 5 行：费用汇总 → 日常费用合计 → 办公/电/水。
- * 结构：集团 → 公司 → 部门（默认全部折叠）。
+ * 费用预算大数据：按 FormSchema.records 形状生成，再经 adaptFormSchemaToETable 接入 ETable。
  */
-import type {
-  ETableCell,
-  ETablePrimitive,
-  ETableTreeAttribute,
-  ETableTreeNode,
-} from '@/components/UniverTable/types';
+import { adaptFormSchemaToETable } from './adaptFormSchemaToETable';
+import { expenseBudgetFormData } from './expenseBudgetFormData';
+import type { FormRecord, FormSchema } from './formSchemaTypes';
+import type { ETableTreeNode } from '@/components/UniverTable/types';
 
-const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
-const FUNC_ATTRS = ['管理', '销售', '研发'] as const;
+const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-/** 每个组织展平后的科目行数 */
-export const EXPENSE_BUDGET_ROWS_PER_ORG = 5;
-
-type MeasureValues = Record<string, ETablePrimitive | ETableCell>;
-
-const LOCKED_FUNC_ATTR: ETableCell = { value: '-', editable: false };
-
-const fillMonths = (monthly: number): MeasureValues => {
-  const values: MeasureValues = {};
-  MONTHS.forEach((m) => {
-    values[`m${m}`] = monthly;
-  });
-  return values;
-};
-
-const measureValues = (
-  monthly: number,
-  funcAttr: string | ETableCell,
-): MeasureValues => ({
-  funcAttr,
-  yearTotal: Number((monthly * 12).toFixed(2)),
-  ...fillMonths(monthly),
-});
-
-const makeSubjectAttributes = (
-  prefix: string,
-  office: number,
-  electric: number,
-  water: number,
-  leafFuncAttr: string,
-): ETableTreeAttribute[] => {
-  const total = office + electric + water;
-  return [
-    {
-      id: `${prefix}-summary`,
-      label: '费用汇总',
-      collapsed: true,
-      values: measureValues(total, LOCKED_FUNC_ATTR),
-      children: [
-        {
-          id: `${prefix}-daily-total`,
-          label: '日常费用合计',
-          depth: 1,
-          values: measureValues(total, LOCKED_FUNC_ATTR),
-        },
-        {
-          id: `${prefix}-office`,
-          label: '费用-办公费',
-          depth: 2,
-          values: measureValues(office, leafFuncAttr),
-        },
-        {
-          id: `${prefix}-electric`,
-          label: '费用-电费',
-          depth: 2,
-          values: measureValues(electric, leafFuncAttr),
-        },
-        {
-          id: `${prefix}-water`,
-          label: '费用-水费',
-          depth: 2,
-          values: measureValues(water, leafFuncAttr),
-        },
-      ],
-    },
-  ];
-};
-
-const leafFeesFromSeed = (seed: number) => {
-  const office = 100 + (seed % 50);
-  const electric = 200 + (seed % 80);
-  const water = 300 + (seed % 100);
-  return { office, electric, water };
-};
-
-const makeDeptNode = (
-  companyIndex: number,
-  deptIndex: number,
-): ETableTreeNode => {
-  const seed = companyIndex * 1000 + deptIndex + 1;
-  const fees = leafFeesFromSeed(seed);
-  const funcAttr = FUNC_ATTRS[seed % FUNC_ATTRS.length];
-  const id = `co-${companyIndex}-dept-${deptIndex}`;
-  return {
-    id,
-    label: `公司${companyIndex + 1}-部门${deptIndex + 1}`,
-    collapsed: true,
-    attributes: makeSubjectAttributes(
-      id,
-      fees.office,
-      fees.electric,
-      fees.water,
-      funcAttr,
-    ),
+const listValueFields = (schema: FormSchema): string[] => {
+  const fields: string[] = [];
+  const walk = (cols: FormSchema['columns']) => {
+    cols.forEach((col) => {
+      if (col.type === 'value') {
+        fields.push(col.field);
+      }
+      if (col.columns?.length) {
+        walk(col.columns);
+      }
+    });
   };
+  walk(schema.columns);
+  return fields;
+};
+
+const rowDimField =
+  expenseBudgetFormData.columns.find((col) => col.type === 'rowDim')?.field ??
+  'DIM0069';
+const attrField = expenseBudgetFormData.columns.find(
+  (col) => col.type === 'attr',
+)?.field;
+const VALUE_FIELDS = listValueFields(expenseBudgetFormData);
+
+const SAMPLE_LEAVES: FormRecord[] =
+  (expenseBudgetFormData.records[0]?.children as FormRecord[] | undefined) ??
+  [];
+
+const makeLeafRecord = (
+  index: number,
+  template: FormRecord,
+): FormRecord => {
+  const row = cloneJson(template);
+  const label = String(template[rowDimField] ?? `科目`);
+  row[rowDimField] = `${label}-${index + 1}`;
+  row.formDimValue = {
+    ...(template.formDimValue ?? {}),
+    [rowDimField]: `MEM-leaf-${index}`,
+  };
+  row.readOnly = false;
+  // 轻微一点数值，避免全表相同
+  VALUE_FIELDS.forEach((field, fieldIndex) => {
+    const base = template[field];
+    if (typeof base === 'number') {
+      row[field] = base + ((index + fieldIndex) % 7);
+    }
+  });
+  return row;
+};
+
+const makeGroupRecord = (
+  groupIndex: number,
+  leaves: FormRecord[],
+): FormRecord => {
+  const row: FormRecord = {
+    [rowDimField]: `费用合计组 ${groupIndex + 1}`,
+    ...(attrField ? { [attrField]: '' } : {}),
+    formDimValue: { [rowDimField]: `MEM-group-${groupIndex}` },
+    readOnly: true,
+    children: leaves,
+  };
+  VALUE_FIELDS.forEach((field) => {
+    row[field] = null;
+  });
+  return row;
 };
 
 /**
- * 规划公司数 / 每公司部门数，使展平行数贴近 targetFlatRows。
- * flatRows ≈ (1 + companyCount * (1 + deptPerCompany)) * 5
+ * 规划分组数 / 每组叶子数，使展平行数贴近 targetFlatRows。
+ * 每组 1 个父行 + leafPerGroup 个子行。
  */
-export const planScaledExpenseBudget = (targetFlatRows: number) => {
-  const orgTarget = Math.max(
-    2,
-    Math.ceil(targetFlatRows / EXPENSE_BUDGET_ROWS_PER_ORG),
-  );
-  // 预留 1 个集团根节点
-  const leafAndCompanyBudget = Math.max(1, orgTarget - 1);
-  const companyCount = Math.min(
+export const planScaledExpenseBudgetForm = (targetFlatRows: number) => {
+  const groupCount = Math.min(
     200,
-    Math.max(4, Math.round(Math.sqrt(leafAndCompanyBudget))),
+    Math.max(4, Math.round(Math.sqrt(Math.max(targetFlatRows, 2) / 8))),
   );
-  const deptPerCompany = Math.max(
+  const leafPerGroup = Math.max(
     1,
-    Math.floor((leafAndCompanyBudget - companyCount) / companyCount),
+    Math.floor((targetFlatRows - groupCount) / groupCount),
   );
-  const orgCount = 1 + companyCount * (1 + deptPerCompany);
-  const flatRowCount = orgCount * EXPENSE_BUDGET_ROWS_PER_ORG;
-
-  return { companyCount, deptPerCompany, orgCount, flatRowCount };
+  const flatRowCount = groupCount * (1 + leafPerGroup);
+  return { groupCount, leafPerGroup, flatRowCount };
 };
 
 /**
- * 分片生成大规模费用预算树（避免主线程长时间阻塞）。
+ * 分片生成 FormSchema，再适配为 ETable treeData。
  */
 export const generateScaledExpenseBudgetTreeData = (
   targetFlatRows: number,
   onProgress?: (percent: number) => void,
-): Promise<{ treeData: ETableTreeNode[]; flatRowCount: number; orgCount: number }> =>
+): Promise<{
+  treeData: ETableTreeNode[];
+  flatRowCount: number;
+  orgCount: number;
+  treeConfig: ReturnType<typeof adaptFormSchemaToETable>['treeConfig'];
+  meta: ReturnType<typeof adaptFormSchemaToETable>['meta'];
+}> =>
   new Promise((resolve) => {
-    const { companyCount, deptPerCompany, orgCount, flatRowCount } =
-      planScaledExpenseBudget(targetFlatRows);
+    const { groupCount, leafPerGroup, flatRowCount } =
+      planScaledExpenseBudgetForm(targetFlatRows);
+    const templates =
+      SAMPLE_LEAVES.length > 0
+        ? SAMPLE_LEAVES
+        : [
+            {
+              [rowDimField]: '科目',
+              ...(attrField ? { [attrField]: '管理费用' } : {}),
+              formDimValue: { [rowDimField]: 'MEM-tpl' },
+              readOnly: false,
+            } as FormRecord,
+          ];
 
-    const companies: ETableTreeNode[] = new Array(companyCount);
-    let companyIndex = 0;
-
+    const groups: FormRecord[] = new Array(groupCount);
+    let groupIndex = 0;
     const chunkSize =
       targetFlatRows >= 500000
-        ? Math.max(20, Math.floor(deptPerCompany / 25))
-        : Math.max(40, Math.floor(deptPerCompany / 10));
+        ? Math.max(20, Math.floor(leafPerGroup / 25))
+        : Math.max(40, Math.floor(leafPerGroup / 10));
 
-    const buildCompany = () => {
-      const children: ETableTreeNode[] = new Array(deptPerCompany);
-      let deptIndex = 0;
+    const buildGroup = () => {
+      const leaves: FormRecord[] = new Array(leafPerGroup);
+      let leafIndex = 0;
 
-      const buildDepts = () => {
-        const end = Math.min(deptIndex + chunkSize, deptPerCompany);
-        for (; deptIndex < end; deptIndex += 1) {
-          children[deptIndex] = makeDeptNode(companyIndex, deptIndex);
+      const buildLeaves = () => {
+        const end = Math.min(leafIndex + chunkSize, leafPerGroup);
+        for (; leafIndex < end; leafIndex += 1) {
+          const globalIndex = groupIndex * leafPerGroup + leafIndex;
+          const template = templates[globalIndex % templates.length];
+          leaves[leafIndex] = makeLeafRecord(globalIndex, template);
         }
 
-        const progress =
-          ((companyIndex + deptIndex / deptPerCompany) / companyCount) * 100;
-        onProgress?.(Math.min(99, Math.round(progress)));
-
-        if (deptIndex < deptPerCompany) {
-          window.setTimeout(buildDepts, 0);
-          return;
-        }
-
-        // 公司汇总 ≈ 部门费用之和的简化：取部门均值 * 部门数
-        const sample = leafFeesFromSeed(companyIndex * 1000 + 1);
-        const companyFees = {
-          office: sample.office * deptPerCompany,
-          electric: sample.electric * deptPerCompany,
-          water: sample.water * deptPerCompany,
-        };
-        const companyId = `co-${companyIndex}`;
-        companies[companyIndex] = {
-          id: companyId,
-          label: `演示公司 ${companyIndex + 1}`,
-          collapsed: true,
-          attributes: makeSubjectAttributes(
-            companyId,
-            companyFees.office,
-            companyFees.electric,
-            companyFees.water,
-            '管理',
-          ),
-          children,
-        };
-
-        companyIndex += 1;
-        if (companyIndex < companyCount) {
-          window.setTimeout(buildCompany, 0);
-          return;
-        }
-
-        const groupFees = {
-          office: companyFees.office * companyCount,
-          electric: companyFees.electric * companyCount,
-          water: companyFees.water * companyCount,
-        };
-        const treeData: ETableTreeNode[] = [
-          {
-            id: 'group-scaled',
-            label: '费用预算压测集团',
-            collapsed: true,
-            attributes: makeSubjectAttributes(
-              'group-scaled',
-              groupFees.office,
-              groupFees.electric,
-              groupFees.water,
-              '管理',
+        onProgress?.(
+          Math.min(
+            99,
+            Math.round(
+              ((groupIndex + leafIndex / leafPerGroup) / groupCount) * 100,
             ),
-            children: companies,
-          },
-        ];
+          ),
+        );
 
+        if (leafIndex < leafPerGroup) {
+          window.setTimeout(buildLeaves, 0);
+          return;
+        }
+
+        groups[groupIndex] = makeGroupRecord(groupIndex, leaves);
+        groupIndex += 1;
+
+        if (groupIndex < groupCount) {
+          window.setTimeout(buildGroup, 0);
+          return;
+        }
+
+        const schema: FormSchema = {
+          columns: cloneJson(expenseBudgetFormData.columns),
+          records: groups,
+          formStatus: expenseBudgetFormData.formStatus,
+          filters: expenseBudgetFormData.filters,
+        };
+        const adapted = adaptFormSchemaToETable(schema, {
+          liteMode: true,
+          skipMerges: true,
+        });
         onProgress?.(100);
-        resolve({ treeData, flatRowCount, orgCount });
+        resolve({
+          treeData: adapted.treeData,
+          flatRowCount: adapted.meta.flatRowCount || flatRowCount,
+          orgCount: adapted.meta.orgCount,
+          treeConfig: adapted.treeConfig,
+          meta: adapted.meta,
+        });
       };
 
-      buildDepts();
+      buildLeaves();
     };
 
-    buildCompany();
+    buildGroup();
   });

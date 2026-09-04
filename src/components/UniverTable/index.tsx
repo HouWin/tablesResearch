@@ -9,6 +9,7 @@ import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-v
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
 import { createColumnOutlines, createRowOutlines, getColumnOutlines, getRowOutlines, setOutlineCollapsed, } from './outline';
 import { enrichCellChangeRecord, resolveCellDimensions } from './cellChangeContext';
+import { buildBusinessChange } from './businessChange';
 import { resolveDimensionCellLocator } from './dimensionLocate';
 import { resolveReadonlyLayout } from './cellTone';
 import { ensureSheetCapacity, flattenColumns, renderColumnWidths, renderData, renderDataAsync, renderHeader, renderMerges, renderMergesAsync, renderRowHeights, applyHeaderCenterAlign, applyVerticalMiddleAlign } from './renderer';
@@ -244,6 +245,47 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
     });
     onCellChangeRef.current?.(enriched);
+  };
+
+  const notifySelectionChange = (cell: string, row: number, column: number) => {
+    if (!onSelectionChangeRef.current) {
+      return;
+    }
+    const dims = resolveCellDimensions(cell, {
+      headerDepth: headerDepthRef.current,
+      columns: columnsRef.current,
+      leafColumns: leafColumnsRef.current,
+      rows: rowsRef.current,
+      treeConfig: treeConfigRef.current,
+      groupConfig: groupConfigRef.current,
+      getLogicalDataRow: (dataRow) =>
+        logicalRowResolverRef.current?.(dataRow) ?? dataRow,
+      getRowPath: (logicalRow) =>
+        treeCollapseApiRef.current?.getBreadcrumb(logicalRow) ?? [],
+    });
+    const change = buildBusinessChange({
+      field: dims.field,
+      rowDimensions: dims.rowDimensions,
+      columnDimensions: dims.columnDimensions,
+    });
+    onSelectionChangeRef.current({
+      cell,
+      row,
+      column,
+      field: dims.field,
+      columnId: dims.columnId,
+      rowId: dims.rowId,
+      dataRow: dims.dataRow,
+      logicalRow: dims.logicalRow,
+      rowDimensions: dims.rowDimensions,
+      columnDimensions: dims.columnDimensions,
+      rowPath: dims.rowPath,
+      change: {
+        type: change.type,
+        row: change.row,
+        col: change.col,
+      },
+    });
   };
 
   // 统一数据源：展平结果优先，否则使用 props 直接传入的二维表结构
@@ -737,6 +779,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         locator,
         value,
         leafColumns: leafColumnsRef.current,
+        columns: columnsRef.current,
         headerDepth: headerDepthRef.current,
         worksheet: worksheetRef.current,
         rows: rowsRef.current,
@@ -755,6 +798,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       return setCellValuesOnTable({
         patches,
         leafColumns: leafColumnsRef.current,
+        columns: columnsRef.current,
         headerDepth: headerDepthRef.current,
         worksheet: worksheetRef.current,
         rows: rowsRef.current,
@@ -774,6 +818,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         rowsRef.current,
         leafColumnsRef.current,
         headerDepthRef.current,
+        columnsRef.current,
       );
       if (!found) {
         return { success: false, appliedToSheet: false };
@@ -815,6 +860,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
       return getCellValueFromTable({
         locator,
         leafColumns: leafColumnsRef.current,
+        columns: columnsRef.current,
         headerDepth: headerDepthRef.current,
         worksheet: worksheetRef.current,
         rows: rowsRef.current,
@@ -1349,8 +1395,7 @@ const Table = forwardRef<ETableRef, ETableProps>((props, ref) => {
         historyApi = setupCellHistory(univerAPI, worksheet, {
           markEditedCells,
           onChange: notifyCellChange,
-          onSelectionChange: (cell, row, column) =>
-            onSelectionChangeRef.current?.(cell, row, column),
+          onSelectionChange: notifySelectionChange,
         });
         cellHistoryApiRef.current = historyApi;
 
@@ -1586,7 +1631,11 @@ export type {
   ETableComment,
   ETableCellChangeRecord,
   ETableCellDimensionsResult,
+  ETableBusinessChange,
+  ETableBusinessDimRef,
+  ETableDimensionIdMap,
   ETableDimensionInfo,
+  ETableSelectionInfo,
   ETableCellLocator,
   ETableCellValuePatch,
   ETableDataTraceNode,
@@ -1604,5 +1653,18 @@ export type {
   ETableGetRowValueResult,
   ETableGroupStatisticField,
 } from './types';
+
+export {
+  buildDimensionIdMap,
+  joinDimensionPathIds,
+  DIMENSION_ID_SEPARATOR,
+} from './dimensionPath';
+
+export {
+  buildBusinessChange,
+  buildBusinessRowRef,
+  buildBusinessColRef,
+  attachBusinessChange,
+} from './businessChange';
 
 export default Table;

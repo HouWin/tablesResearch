@@ -16,6 +16,14 @@ const toPrimitive = (value: ETablePrimitive | ETableCell): ETablePrimitive => {
   return value as ETablePrimitive;
 };
 
+const cloneAttributeDetail = (
+  detail: ETableTreeAttributeDetail,
+): ETableTreeAttributeDetail => ({
+  ...detail,
+  values: detail.values ? { ...detail.values } : undefined,
+  children: detail.children?.map(cloneAttributeDetail),
+});
+
 const deepCloneTree = (nodes: ETableTreeNode[]): ETableTreeNode[] =>
   nodes.map((node) => ({
     ...node,
@@ -25,10 +33,7 @@ const deepCloneTree = (nodes: ETableTreeNode[]): ETableTreeNode[] =>
     attributes: node.attributes?.map((attr) => ({
       ...attr,
       values: attr.values ? { ...attr.values } : undefined,
-      children: attr.children?.map((detail) => ({
-        ...detail,
-        values: detail.values ? { ...detail.values } : undefined,
-      })),
+      children: attr.children?.map(cloneAttributeDetail),
     })),
   }));
 
@@ -169,12 +174,16 @@ const walkMerge = (
       if (attrRow) {
         applyRowToAttribute(attr, attrRow, measureFields);
       }
-      attr.children?.forEach((detail) => {
-        const detailRow = rowById.get(detail.id);
-        if (detailRow) {
-          applyRowToDetail(detail, detailRow, measureFields);
-        }
-      });
+      const walkDetails = (details: ETableTreeAttributeDetail[] | undefined) => {
+        details?.forEach((detail) => {
+          const detailRow = rowById.get(detail.id);
+          if (detailRow) {
+            applyRowToDetail(detail, detailRow, measureFields);
+          }
+          walkDetails(detail.children);
+        });
+      };
+      walkDetails(attr.children);
     });
 
     if (node.children?.length) {

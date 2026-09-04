@@ -2,14 +2,18 @@
  * 单元格编辑历史（cellHistory.ts）
  *
  * 监听 Univer 事件记录变更，供 onCellChange / 右键「查看单元格历史」使用：
- * - SheetEditStarted：记录编辑前值
- * - SheetEditEnded：对比新旧值，推送 ETableCellChangeRecord
+ * - SheetEditStarted / SheetEditEnded：普通编辑
+ * - BeforeCommandExecute + SheetValueChanged / CommandExecuted：
+ *   下拉/日期等数据验证选值（走 set-range-values，不进编辑态）
  * - SelectionChanged / CellClicked：触发 onSelectionChange
  *
  * from/to 为字符串化显示值（含数字格式如 ¥20,000），非原始 number。
  */
 import type { ETableCellChangeRecord } from './types';
 import { clearAllDirtyMarks, markDirtyCell } from './cellDirtyMark';
+
+const SET_RANGE_VALUES_COMMAND_ID = 'sheet.command.set-range-values';
+const SET_RANGE_VALUES_MUTATION_ID = 'sheet.mutation.set-range-values';
 
 const columnName = (column: number): string => {
   let result = '';
@@ -56,6 +60,121 @@ const readCellValue = (worksheet: any, row: number, column: number): string => {
   }
 };
 
+const isSetRangeValuesId = (id: unknown): boolean =>
+  id === SET_RANGE_VALUES_COMMAND_ID ||
+  id === SET_RANGE_VALUES_MUTATION_ID ||
+  (typeof id === 'string' && id.endsWith('set-range-values'));
+
+/**
+ * 从 command（range+value）或 mutation（cellValue 矩阵）解析受影响单元格。
+ */
+const extractCellsFromSetRangeParams = (
+  params: any,
+): Array<{ row: number; column: number }> => {
+  if (!params || typeof params !== 'object') {
+    return [];
+  }
+
+  const cells: Array<{ row: number; column: number }> = [];
+
+  const range = params.range;
+  if (range && typeof range === 'object' && !Array.isArray(range)) {
+    const startRow = range.startRow ?? range.row;
+    const startColumn = range.startColumn ?? range.column;
+    const endRow = range.endRow ?? startRow;
+    const endColumn = range.endColumn ?? startColumn;
+    if (
+      typeof startRow === 'number' &&
+      typeof startColumn === 'number' &&
+      startRow === endRow &&
+      startColumn === endColumn
+    ) {
+      cells.push({ row: startRow, column: startColumn });
+    }
+  }
+
+  const cellValue = params.cellValue;
+  if (cellValue && typeof cellValue === 'object') {
+    Object.keys(cellValue).forEach((rowKey) => {
+      const row = Number(rowKey);
+      if (!Number.isFinite(row)) {
+        return;
+      }
+      const rowMap = cellValue[rowKey];
+      if (!rowMap || typeof rowMap !== 'object') {
+        return;
+      }
+      Object.keys(rowMap).forEach((colKey) => {
+        const column = Number(colKey);
+        if (!Number.isFinite(column)) {
+          return;
+        }
+        cells.push({ row, column });
+      });
+    });
+  }
+
+  const seen = new Set<string>();
+  return cells.filter((cell) => {
+    const key = `${cell.row}:${cell.column}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+};
+
+/** 折叠图标切换（▼/▶）不算业务值变更 */
+const isTreeToggleOnlyChange = (from: string, to: string): boolean => {
+  const strip = (value: string) => value.replace(/^[▼▶]\s*/, '').trim();
+  if (!from && !to) {
+    return false;
+  }
+  return (
+    strip(from) === strip(to) &&
+    (/^[▼▶]/.test(from) || /^[▼▶]/.test(to))
+  );
+};
+
+const resolveEffectedCellCoords = (
+  fRange: any,
+): Array<{ row: number; column: number }> => {
+  try {
+    if (typeof fRange?.getRow === 'function') {
+      const startRow = fRange.getRow();
+      const startColumn = fRange.getColumn();
+      const height = fRange.getHeight?.() ?? 1;
+      const width = fRange.getWidth?.() ?? 1;
+      const cells: Array<{ row: number; column: number }> = [];
+      for (let r = 0; r < height; r += 1) {
+        for (let c = 0; c < width; c += 1) {
+          cells.push({ row: startRow + r, column: startColumn + c });
+        }
+      }
+      return cells;
+    }
+    const range =
+      typeof fRange?.getRange === 'function' ? fRange.getRange() : fRange;
+    if (!range) {
+      return [];
+    }
+    const startRow = range.startRow ?? 0;
+    const endRow = range.endRow ?? startRow;
+    const startColumn = range.startColumn ?? 0;
+    const endColumn = range.endColumn ?? startColumn;
+    const cells: Array<{ row: number; column: number }> = [];
+    for (let row = startRow; row <= endRow; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) {
+        cells.push({ row, column });
+      }
+    }
+    return cells;
+  } catch {
+    return [];
+  }
+};
+
 export interface ETableCellHistoryApi {
   dispose: () => void;
   getTracks: () => ETableCellChangeRecord[];
@@ -90,11 +209,36 @@ export const setupCellHistory = (
   const tracksByCell = new Map<string, ETableCellChangeRecord[]>();
   const disposables: Array<{ dispose?: () => void }> = [];
   const editing = new Map<string, string>();
+  /** 下拉写入前 from 快照 */
+  const pendingWriteFrom = new Map<string, string>();
+  /** 选中/变更后缓存，供对比 */
+  const knownValues = new Map<string, string>();
+  let lastPushFingerprint = '';
+  let lastPushAt = 0;
   let selectionRaf = 0;
-  let pendingSelection: { cell: string; row: number; column: number } | null = null;
+  let pendingSelection: { cell: string; row: number; column: number } | null =
+    null;
+  let lastNotifiedSelection: { row: number; column: number } | null = null;
+
+  const cellKey = (row: number, column: number) => `${row}:${column}`;
+
+  const rememberValue = (row: number, column: number, value?: string) => {
+    knownValues.set(
+      cellKey(row, column),
+      value ?? readCellValue(worksheet, row, column),
+    );
+  };
 
   const notifySelection = (row: number, column: number) => {
+    rememberValue(row, column);
     if (!options?.onSelectionChange) {
+      return;
+    }
+    if (
+      lastNotifiedSelection &&
+      lastNotifiedSelection.row === row &&
+      lastNotifiedSelection.column === column
+    ) {
       return;
     }
     pendingSelection = { cell: cellAddress(row, column), row, column };
@@ -104,6 +248,10 @@ export const setupCellHistory = (
     selectionRaf = requestAnimationFrame(() => {
       selectionRaf = 0;
       if (pendingSelection) {
+        lastNotifiedSelection = {
+          row: pendingSelection.row,
+          column: pendingSelection.column,
+        };
         options.onSelectionChange?.(
           pendingSelection.cell,
           pendingSelection.row,
@@ -136,8 +284,18 @@ export const setupCellHistory = (
     source: ETableCellChangeRecord['source'] = 'edit',
   ) => {
     if (from === to) {
+      rememberValue(row, column, to);
       return;
     }
+    const fingerprint = `${row}:${column}:${from}=>${to}`;
+    const now = Date.now();
+    if (fingerprint === lastPushFingerprint && now - lastPushAt < 80) {
+      rememberValue(row, column, to);
+      return;
+    }
+    lastPushFingerprint = fingerprint;
+    lastPushAt = now;
+
     const record: ETableCellChangeRecord = {
       id: `${Date.now()}-${row}-${column}-${Math.random().toString(36).slice(2, 7)}`,
       cell: cellAddress(row, column),
@@ -158,10 +316,98 @@ export const setupCellHistory = (
         removeFromCellIndex(dropped);
       }
     }
+    rememberValue(row, column, to);
     if (markEditedCells) {
       markDirtyCell(worksheet, row, column);
     }
     options?.onChange?.(record);
+  };
+
+  const captureDropdownWriteFrom = (commandParams: any) => {
+    const cells = extractCellsFromSetRangeParams(commandParams);
+    // 下拉选值是单格；批量写入（视口/初始化）忽略
+    if (cells.length !== 1) {
+      return;
+    }
+    const cell = cells[0];
+    const key = cellKey(cell.row, cell.column);
+    if (editing.has(key)) {
+      return;
+    }
+    if (!pendingWriteFrom.has(key)) {
+      pendingWriteFrom.set(
+        key,
+        knownValues.get(key) ??
+          readCellValue(worksheet, cell.row, cell.column),
+      );
+    }
+  };
+
+  const emitNonEditValueChange = (
+    row: number,
+    column: number,
+    from: string,
+  ) => {
+    const key = cellKey(row, column);
+    if (editing.has(key)) {
+      return;
+    }
+    const to = readCellValue(worksheet, row, column);
+    if (isTreeToggleOnlyChange(from, to)) {
+      rememberValue(row, column, to);
+      return;
+    }
+    push(row, column, from, to, 'edit');
+  };
+
+  const flushDropdownWriteChanges = () => {
+    if (!pendingWriteFrom.size) {
+      return;
+    }
+    const entries = [...pendingWriteFrom.entries()];
+    pendingWriteFrom.clear();
+    entries.forEach(([key, from]) => {
+      const [rowText, columnText] = key.split(':');
+      const row = Number(rowText);
+      const column = Number(columnText);
+      if (!Number.isFinite(row) || !Number.isFinite(column)) {
+        return;
+      }
+      emitNonEditValueChange(row, column, from);
+    });
+  };
+
+  const handleSheetValueChanged = (params: any) => {
+    const ranges = params?.effectedRanges;
+    if (!Array.isArray(ranges) || !ranges.length) {
+      return;
+    }
+    ranges.forEach((fRange: any) => {
+      const coords = resolveEffectedCellCoords(fRange);
+      // 批量变更不走这里，避免视口刷新刷屏
+      if (coords.length !== 1) {
+        coords.forEach((cell) => rememberValue(cell.row, cell.column));
+        return;
+      }
+      const cell = coords[0];
+      const key = cellKey(cell.row, cell.column);
+      if (editing.has(key)) {
+        rememberValue(cell.row, cell.column);
+        return;
+      }
+      const hadPending = pendingWriteFrom.has(key);
+      const isActiveSelection =
+        lastNotifiedSelection?.row === cell.row &&
+        lastNotifiedSelection?.column === cell.column;
+      if (!hadPending && !isActiveSelection) {
+        rememberValue(cell.row, cell.column);
+        return;
+      }
+      const from =
+        pendingWriteFrom.get(key) ?? knownValues.get(key) ?? '';
+      pendingWriteFrom.delete(key);
+      emitNonEditValueChange(cell.row, cell.column, from);
+    });
   };
 
   try {
@@ -172,7 +418,9 @@ export const setupCellHistory = (
         if (typeof row !== 'number' || typeof column !== 'number') {
           return;
         }
-        editing.set(`${row}:${column}`, readCellValue(worksheet, row, column));
+        const value = readCellValue(worksheet, row, column);
+        editing.set(cellKey(row, column), value);
+        rememberValue(row, column, value);
       }),
     );
   } catch (error) {
@@ -187,11 +435,11 @@ export const setupCellHistory = (
         if (typeof row !== 'number' || typeof column !== 'number') {
           return;
         }
+        const key = cellKey(row, column);
         if (params?.isConfirm === false) {
-          editing.delete(`${row}:${column}`);
+          editing.delete(key);
           return;
         }
-        const key = `${row}:${column}`;
         const from = editing.get(key) ?? '';
         editing.delete(key);
         const to = readCellValue(worksheet, row, column);
@@ -200,6 +448,54 @@ export const setupCellHistory = (
     );
   } catch (error) {
     console.warn('[ETable] bind SheetEditEnded failed', error);
+  }
+
+  try {
+    if (univerAPI?.Event?.BeforeCommandExecute) {
+      disposables.push(
+        univerAPI.addEvent(
+          univerAPI.Event.BeforeCommandExecute,
+          (event: any) => {
+            const id = event?.id ?? event?.commandId;
+            if (!isSetRangeValuesId(id)) {
+              return;
+            }
+            captureDropdownWriteFrom(event?.params ?? event);
+          },
+        ),
+      );
+    }
+  } catch (error) {
+    console.warn('[ETable] bind BeforeCommandExecute failed', error);
+  }
+
+  try {
+    if (univerAPI?.Event?.SheetValueChanged) {
+      disposables.push(
+        univerAPI.addEvent(
+          univerAPI.Event.SheetValueChanged,
+          handleSheetValueChanged,
+        ),
+      );
+    }
+  } catch (error) {
+    console.warn('[ETable] bind SheetValueChanged failed', error);
+  }
+
+  try {
+    if (univerAPI?.Event?.CommandExecuted) {
+      disposables.push(
+        univerAPI.addEvent(univerAPI.Event.CommandExecuted, (event: any) => {
+          const id = event?.id ?? event?.commandId;
+          if (!isSetRangeValuesId(id)) {
+            return;
+          }
+          flushDropdownWriteChanges();
+        }),
+      );
+    }
+  } catch (error) {
+    console.warn('[ETable] bind CommandExecuted failed', error);
   }
 
   try {
@@ -249,6 +545,8 @@ export const setupCellHistory = (
         cancelAnimationFrame(selectionRaf);
         selectionRaf = 0;
       }
+      pendingWriteFrom.clear();
+      knownValues.clear();
       if (markEditedCells) {
         clearAllDirtyMarks(worksheet);
       }

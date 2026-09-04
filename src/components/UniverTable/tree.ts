@@ -15,6 +15,7 @@ import type {
   ETableRow,
   ETableRowGroup,
   ETableTreeAttribute,
+  ETableTreeAttributeDetail,
   ETableTreeColumnGroup,
   ETableTreeConfig,
   ETableTreeNode,
@@ -394,6 +395,9 @@ export const flattenTreeData = (
       attributeGroupId?: string;
       attributeDetailLabel?: string;
       attributeDetailId?: string;
+      /** 完整科目路径标签（含汇总与各级明细），如 [费用汇总, 日常费用合计, 费用-办公费] */
+      attributePathLabels?: string[];
+      attributePathIds?: string[];
     },
   ): Record<string, ETablePrimitive> => {
     const context: Record<string, ETablePrimitive> = {};
@@ -413,13 +417,38 @@ export const flattenTreeData = (
     if (attributeField && options?.attributeGroupId) {
       context[`${attributeField}Id`] = options.attributeGroupId;
     }
-    if (attributeField && options?.attributeDetailLabel) {
-      context[`${attributeField}Detail`] = normalizeDimensionValue(
-        options.attributeDetailLabel,
-      );
-    }
-    if (attributeField && options?.attributeDetailId) {
-      context[`${attributeField}DetailId`] = options.attributeDetailId;
+
+    const pathLabels = (options?.attributePathLabels ?? [])
+      .map((item) => normalizeDimensionValue(item))
+      .filter(Boolean) as string[];
+    const pathIds = (options?.attributePathIds ?? []).filter(Boolean);
+
+    if (attributeField && pathLabels.length) {
+      // 首段写入 attribute 字段；其余合并进 Detail，供业务 key 拼完整层级
+      context[attributeField] = pathLabels[0];
+      if (pathIds[0]) {
+        context[`${attributeField}Id`] = pathIds[0];
+      }
+      if (pathLabels.length > 1) {
+        context[`${attributeField}Detail`] = pathLabels.slice(1).join(':');
+        const leafId = pathIds[pathIds.length - 1];
+        if (leafId) {
+          context[`${attributeField}DetailId`] = leafId;
+        }
+      }
+      context[`${attributeField}Path`] = pathLabels.join(':');
+      if (pathIds.length) {
+        context[`${attributeField}PathIds`] = pathIds.join('/');
+      }
+    } else {
+      if (attributeField && options?.attributeDetailLabel) {
+        context[`${attributeField}Detail`] = normalizeDimensionValue(
+          options.attributeDetailLabel,
+        );
+      }
+      if (attributeField && options?.attributeDetailId) {
+        context[`${attributeField}DetailId`] = options.attributeDetailId;
+      }
     }
     return context;
   };
@@ -453,6 +482,8 @@ export const flattenTreeData = (
         organizationId: options?.organizationId,
         attributeGroupLabel: attr.label,
         attributeGroupId: attr.id,
+        attributePathLabels: [attr.label],
+        attributePathIds: [attr.id],
       }),
       style: resolveRowStyle(depth),
     });
@@ -464,28 +495,17 @@ export const flattenTreeData = (
 
     const headerRow = currentRow - 1;
     const detailStart = currentRow;
-    attr.children!.forEach((detail) => {
-      const detailDepth = detail.depth ?? 1;
-      rows.push({
-        id: detail.id,
-        data: buildData(
-          detailPath,
-          treeUI ? formatTreeLabel(detail.label, detailDepth) : detail.label,
-          detail.values,
-        ),
-        dimensionContext: buildDimensionContext(path, {
-          organizationId: options?.organizationId,
-          attributeGroupLabel: attr.label,
-          attributeGroupId: attr.id,
-          attributeDetailLabel: detail.label,
-          attributeDetailId: detail.id,
-        }),
-        style: resolveRowStyle(depth, { regionDetail: true }),
-      });
-      currentRow += 1;
+    const emitted = emitAttributeDetailTree(attr.children!, {
+      path,
+      detailPath,
+      styleDepth: depth,
+      organizationId: options?.organizationId,
+      attributeGroupLabel: attr.label,
+      attributeGroupId: attr.id,
+      attributePathLabels: [attr.label],
+      attributePathIds: [attr.id],
     });
-
-    const detailCount = currentRow - detailStart;
+    const detailCount = emitted.rowCount;
     if (detailCount <= 0) {
       return null;
     }
@@ -512,7 +532,104 @@ export const flattenTreeData = (
       startRow: detailStart,
       count: detailCount,
       collapsed,
+      children: emitted.nestedGroups.length ? emitted.nestedGroups : undefined,
     };
+  };
+
+  /**
+   * 递归写出属性明细（支持「日常费用合计」再挂办公/电/水并独立折叠）。
+   */
+  const emitAttributeDetailTree = (
+    details: ETableTreeAttributeDetail[],
+    ctx: {
+      path: Record<string, ETablePrimitive>;
+      detailPath: Record<string, ETablePrimitive>;
+      styleDepth: number;
+      organizationId?: string;
+      attributeGroupLabel: string;
+      attributeGroupId: string;
+      /** 祖先科目路径（不含当前节点） */
+      attributePathLabels: string[];
+      attributePathIds: string[];
+    },
+  ): { rowCount: number; nestedGroups: ETableRowGroup[] } => {
+    let rowCount = 0;
+    const nestedGroups: ETableRowGroup[] = [];
+
+    details.forEach((detail) => {
+      const hasKids = Boolean(detail.children?.length);
+      const detailCollapsed =
+        detail.collapsed ?? config.collapseAttributes ?? true;
+      const detailDepth = detail.depth ?? 1;
+      const label = treeUI
+        ? formatTreeLabel(detail.label, detailDepth, {
+            expandable: hasKids,
+            collapsed: hasKids ? detailCollapsed : undefined,
+          })
+        : detail.label;
+
+      const pathLabels = [...(ctx.attributePathLabels ?? []), detail.label];
+      const pathIds = [...(ctx.attributePathIds ?? []), detail.id];
+
+      rows.push({
+        id: detail.id,
+        data: buildData(ctx.detailPath, label, detail.values),
+        dimensionContext: buildDimensionContext(ctx.path, {
+          organizationId: ctx.organizationId,
+          attributeGroupLabel: ctx.attributeGroupLabel,
+          attributeGroupId: ctx.attributeGroupId,
+          attributeDetailLabel: detail.label,
+          attributeDetailId: detail.id,
+          attributePathLabels: pathLabels,
+          attributePathIds: pathIds,
+        }),
+        style: resolveRowStyle(ctx.styleDepth, { regionDetail: true }),
+      });
+      const detailHeaderRow = currentRow;
+      currentRow += 1;
+      rowCount += 1;
+
+      if (!hasKids) {
+        return;
+      }
+
+      const childStart = currentRow;
+      const childEmitted = emitAttributeDetailTree(detail.children!, {
+        ...ctx,
+        attributePathLabels: pathLabels,
+        attributePathIds: pathIds,
+      });
+      rowCount += childEmitted.rowCount;
+      const nestedGroupId = `${detail.id}-details`;
+      nestedGroups.push({
+        id: nestedGroupId,
+        startRow: childStart,
+        count: childEmitted.rowCount,
+        collapsed: detailCollapsed,
+        children: childEmitted.nestedGroups.length
+          ? childEmitted.nestedGroups
+          : undefined,
+      });
+      if (treeUI && attributeColumn !== undefined) {
+        treeToggles.push({
+          groupId: nestedGroupId,
+          row: detailHeaderRow,
+          column: attributeColumn,
+          collapsed: detailCollapsed,
+          kind: 'region',
+          expandedText: formatTreeLabel(detail.label, detailDepth, {
+            expandable: true,
+            collapsed: false,
+          }),
+          collapsedText: formatTreeLabel(detail.label, detailDepth, {
+            expandable: true,
+            collapsed: true,
+          }),
+        });
+      }
+    });
+
+    return { rowCount, nestedGroups };
   };
 
   /** 品类 / 子品类等维度列：Region 汇总 + 城市明细纵向合并并居中 */
@@ -633,27 +750,22 @@ export const flattenTreeData = (
           });
         }
 
-        primary.children?.forEach((detail) => {
-          rows.push({
-            id: detail.id,
-            data: buildData(
-              regionPath,
-              formatTreeLabel(detail.label, detail.depth ?? 1),
-              detail.values,
-            ),
-            dimensionContext: buildDimensionContext(path, {
+        const primaryEmitted = primary.children?.length
+          ? emitAttributeDetailTree(primary.children, {
+              path,
+              detailPath: regionPath,
+              styleDepth: depth,
               organizationId: node.id,
               attributeGroupLabel: primary.label,
               attributeGroupId: primary.id,
-              attributeDetailLabel: detail.label,
-              attributeDetailId: detail.id,
-            }),
-            style: resolveRowStyle(depth, { regionDetail: true }),
-          });
-          currentRow += 1;
-        });
-
-        const primaryDetailCount = primary.children?.length ?? 0;
+              attributePathLabels: [primary.label],
+              attributePathIds: [primary.id],
+            })
+          : { rowCount: 0, nestedGroups: [] as ETableRowGroup[] };
+        const primaryDetailCount = primaryEmitted.rowCount;
+        if (primaryEmitted.nestedGroups.length) {
+          childGroups.push(...primaryEmitted.nestedGroups);
+        }
 
         rest.forEach((attr) => {
           const attrGroup = emitAttribute(attr, path, {
@@ -730,6 +842,9 @@ export const flattenTreeData = (
         rows.push({
           id: node.id,
           data: buildData(path, regionFromValues, values),
+          dimensionContext: buildDimensionContext(path, {
+            organizationId: node.id,
+          }),
           style: resolveRowStyle(depth),
         });
         currentRow += 1;
@@ -784,29 +899,25 @@ export const flattenTreeData = (
       if (treeUI && hasRegionDetails && primaryRegion && !config.compactLiteRows) {
         const regionDetailStart = currentRow;
         const regionNested: ETableRowGroup[] = [];
-        primaryRegion.children?.forEach((detail) => {
-          const regionPath = { ...path };
-          if (dimensionFields[0]) {
-            regionPath[dimensionFields[0]] = '';
-          }
-          rows.push({
-            id: detail.id,
-            data: buildData(
-              regionPath,
-              formatTreeLabel(detail.label, detail.depth ?? 1),
-              detail.values,
-            ),
-            dimensionContext: buildDimensionContext(path, {
+        const regionPath = { ...path };
+        if (dimensionFields[0]) {
+          regionPath[dimensionFields[0]] = '';
+        }
+        const primaryEmitted = primaryRegion.children?.length
+          ? emitAttributeDetailTree(primaryRegion.children, {
+              path,
+              detailPath: regionPath,
+              styleDepth: depth,
               organizationId: node.id,
               attributeGroupLabel: primaryRegion.label,
               attributeGroupId: primaryRegion.id,
-              attributeDetailLabel: detail.label,
-              attributeDetailId: detail.id,
-            }),
-            style: resolveRowStyle(depth, { regionDetail: true }),
-          });
-          currentRow += 1;
-        });
+              attributePathLabels: [primaryRegion.label],
+              attributePathIds: [primaryRegion.id],
+            })
+          : { rowCount: 0, nestedGroups: [] as ETableRowGroup[] };
+        if (primaryEmitted.nestedGroups.length) {
+          regionNested.push(...primaryEmitted.nestedGroups);
+        }
         restRegions.forEach((attr) => {
           const attrGroup = emitAttribute(attr, path, {
             clearCategory: true,
@@ -817,7 +928,7 @@ export const flattenTreeData = (
             regionNested.push(attrGroup);
           }
         });
-        const primaryRegionCount = primaryRegion.children?.length ?? 0;
+        const primaryRegionCount = primaryEmitted.rowCount;
         if (primaryRegionCount > 0) {
           const regionGroupId = `${node.id}-regions`;
           regionGroup = {

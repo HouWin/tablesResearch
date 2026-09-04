@@ -1,11 +1,16 @@
 /**
  * 按行维 / 列维 / rowId 定位单元格（对接后端回写）。
  */
+import {
+  buildDimensionIdMap,
+  resolveColumnDimensionPath,
+} from './dimensionPath';
 import type {
   ETableCell,
   ETableCellLocator,
   ETableColumn,
   ETableDimensionCellLocator,
+  ETableDimensionIdMap,
   ETableDimensionMatch,
   ETablePrimitive,
   ETableRow,
@@ -38,6 +43,9 @@ const columnName = (column: number): string => {
   }
   return result;
 };
+
+const isDimensionIdMap = (value: unknown): value is ETableDimensionIdMap =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const matchDimensionConstraint = (
   row: ETableRow,
@@ -89,9 +97,20 @@ const matchDimensionConstraint = (
   return true;
 };
 
+const mapsEqualOrCover = (
+  full: ETableDimensionIdMap | undefined,
+  query: ETableDimensionIdMap,
+): boolean => {
+  if (!full) {
+    return false;
+  }
+  return Object.entries(query).every(([key, value]) => full[key] === value);
+};
+
 const resolveLeafFieldFromDimensions = (
   locator: ETableDimensionCellLocator,
   leafColumns: ETableColumn[],
+  columns: ETableColumn[],
 ): string | null => {
   const tryField = (candidate: string | undefined | null): string | null => {
     if (!candidate) {
@@ -100,7 +119,7 @@ const resolveLeafFieldFromDimensions = (
     if (leafColumns.some((col) => col.id === candidate)) {
       return candidate;
     }
-    // 拼接 id：year/m1 → 取最后一段 m1
+    // 旧版拼接 id：year/m1 → 取最后一段 m1
     const parts = candidate.split(/[/|]/).filter(Boolean);
     const last = parts[parts.length - 1];
     if (last && leafColumns.some((col) => col.id === last)) {
@@ -109,9 +128,39 @@ const resolveLeafFieldFromDimensions = (
     return null;
   };
 
-  const fromField = tryField(locator.field ?? locator.columnId);
-  if (fromField) {
-    return fromField;
+  if (locator.field) {
+    const fromField = tryField(locator.field);
+    if (fromField) {
+      return fromField;
+    }
+  }
+
+  if (isDimensionIdMap(locator.columnId)) {
+    for (let i = 0; i < leafColumns.length; i += 1) {
+      const pathMap = buildDimensionIdMap(
+        resolveColumnDimensionPath(columns, i),
+      );
+      if (mapsEqualOrCover(pathMap, locator.columnId)) {
+        return leafColumns[i].id;
+      }
+    }
+    // 兜底：用 map 最后一个 value / key 当叶子 field
+    const entries = Object.entries(locator.columnId);
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const [key, value] = entries[i];
+      const hit = tryField(value) || tryField(key);
+      if (hit) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  const fromColumnId = tryField(
+    typeof locator.columnId === 'string' ? locator.columnId : undefined,
+  );
+  if (fromColumnId) {
+    return fromColumnId;
   }
 
   const dims = locator.columnDimensions;
@@ -127,27 +176,33 @@ const resolveLeafFieldFromDimensions = (
   return null;
 };
 
+const rowMatchesIdMap = (row: ETableRow, map: ETableDimensionIdMap): boolean =>
+  Object.entries(map).every(([field, id]) =>
+    matchDimensionConstraint(row, { field, id }),
+  );
+
 const rowMatchesDimensions = (
   row: ETableRow,
   locator: ETableDimensionCellLocator,
 ): boolean => {
   if (locator.rowId) {
+    if (isDimensionIdMap(locator.rowId)) {
+      return rowMatchesIdMap(row, locator.rowId);
+    }
     if (row.id === locator.rowId) {
       return true;
     }
-    // 拼接 rowId：…/hj-sales-office → 末段与 row.id 匹配
+    // 旧版拼接 rowId：…/hj-sales-office → 末段与 row.id 匹配
     const parts = String(locator.rowId).split(/[/|]/).filter(Boolean);
     const last = parts[parts.length - 1];
     if (last && row.id === last) {
       return true;
     }
-    // 整段路径与 dimensionContext *Id 拼接一致
     const context = row.dimensionContext;
     if (context) {
       const idParts = Object.entries(context)
         .filter(([key]) => key.endsWith('Id'))
         .map(([, value]) => String(value));
-      // 顺序不保证，改为：locator 的每一段都能在 context/row.id 中找到
       const haystack = new Set([row.id, ...idParts]);
       if (parts.length && parts.every((p) => haystack.has(p))) {
         return true;
@@ -171,6 +226,7 @@ export const resolveDimensionCellLocator = (
   rows: ETableRow[],
   leafColumns: ETableColumn[],
   headerDepth: number,
+  columns?: ETableColumn[],
 ): {
   dataRow: number;
   field: string;
@@ -179,7 +235,12 @@ export const resolveDimensionCellLocator = (
   cell: string;
   rowId?: string;
 } | null => {
-  const field = resolveLeafFieldFromDimensions(locator, leafColumns);
+  const headerColumns = columns?.length ? columns : leafColumns;
+  const field = resolveLeafFieldFromDimensions(
+    locator,
+    leafColumns,
+    headerColumns,
+  );
   if (!field) {
     return null;
   }

@@ -3,6 +3,7 @@ import type {
   ETableGroupStatistics,
   ETablePrimitive,
   ETableTreeAttribute,
+  ETableTreeAttributeDetail,
   ETableTreeConfig,
   ETableTreeNode,
 } from './types';
@@ -44,13 +45,18 @@ const aggregateNumbers = (
   }
 };
 
+const cloneAttributeDetail = (
+  detail: ETableTreeAttributeDetail,
+): ETableTreeAttributeDetail => ({
+  ...detail,
+  values: detail.values ? { ...detail.values } : undefined,
+  children: detail.children?.map(cloneAttributeDetail),
+});
+
 const cloneAttribute = (attr: ETableTreeAttribute): ETableTreeAttribute => ({
   ...attr,
   values: attr.values ? { ...attr.values } : undefined,
-  children: attr.children?.map((detail) => ({
-    ...detail,
-    values: detail.values ? { ...detail.values } : undefined,
-  })),
+  children: attr.children?.map(cloneAttributeDetail),
 });
 
 const cloneTree = (nodes: ETableTreeNode[]): ETableTreeNode[] =>
