@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.tanstack.json",
+  "include": [
+    "src/pages/Vtable/**/*.ts",
+    "src/pages/Vtable/**/*.tsx",
+    "src/pages/TanStackBudget/**/*.ts",
+    "src/pages/TanStackBudget/**/*.tsx",
+    "server/**/*.ts",
+    "tests/vtable-budget/**/*.ts"
+  ]
+}

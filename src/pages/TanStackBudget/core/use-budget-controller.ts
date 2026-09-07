@@ -301,8 +301,6 @@ export function useBudgetController(options: Options = {}) {
     if (!transaction.patches.length) return;
     setTransactions((current) => [...current, transaction].slice(-100));
     for (const patch of transaction.patches) {
-      if (process.env.NODE_ENV !== 'production')
-        console.info('[TanStack Budget][单元格修改]', patch.payload);
       try {
         await callbackRef.current?.(patch.payload);
       } catch (error) {

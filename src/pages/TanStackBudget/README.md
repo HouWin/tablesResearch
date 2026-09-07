@@ -78,7 +78,8 @@ BUDGET_BASE_URL=http://localhost:8000 pnpm test:tanstack:e2e
 
 ## 模块边界与后端接入
 
-- `index.tsx`：菜单页面、工具栏和布局。
+- `index.tsx`：菜单入口与业务修改回调。
+- `components/budget-workbench.tsx`：与 VTable 共用的工具栏、弹窗和布局，通过 `Grid` 属性注入各自渲染器。
 - `components/budget-grid.tsx`：TanStack Table / Virtual、单元格交互及可视合并。
 - `components/inspector.tsx`：批注、附件、历史、追踪和统计。
 - `core/use-budget-data.ts`：分页、缓存、取消和重试。
@@ -104,6 +105,8 @@ HTTP 请求均为 `POST /api/tanstack-budget/<action>`，通过 `X-Budget-Sessio
 | replay | mode, transaction, direction | 服务端保存的事务重放结果，不信任客户端传回的修改内容 |
 
 接入已有后端时，可替换 `BudgetGateway`，通过 `useBudgetController({ gateway })` 注入；组件无需改动。后端保留原业务数据树，将查询投影和业务写回放在网关适配层。`onBusinessCellChange` 是成功写入后的通知回调；需要持久化、回滚或版本冲突保证的保存逻辑应置于 `gateway.write`，不能仅依靠通知回调。
+
+页面入口的 `handleBusinessCellChange` 默认打印完整回调。格式与 SpreadJS“经营数据表”一致：一条 `console.log`，以 `[TanStack Budget][单元格修改]` 开头，换行后输出两空格缩进的 JSON。数值修改包含 `type`、`recordId`、`oldValue`、`newValue`、`dimension.row` 和 `dimension.column`；属性修改沿用 `row + attribute` 结构。开发及生产构建均输出，每个成功变更只打印一次；撤销、重做同样打印对应的新旧值。
 
 演示服务以当前会话内存保存金额、公式和事务，刷新页面会创建新会话，重启服务也会清空。批注、附件保存在当前页面内存，沿用原 Demo 的生命周期。正式业务上线需要把这些接口接到现有数据库和文件服务，并使用现有登录态、权限和版本控制；`X-Budget-Session` 仅用于本地 Demo 隔离，不是身份认证。
 

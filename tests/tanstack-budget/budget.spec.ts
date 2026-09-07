@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Page as BudgetPage } from '../../src/pages/TanStackBudget/core/types';
+import type { BusinessCellChangePayload } from '../../src/pages/SpreadJSDemo/spreadsheet/business-cell-change';
 
 const runtimeErrors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => {
@@ -74,7 +75,15 @@ test('菜单、四层表头、冻结、列宽和首页导航', async ({ page }) 
   expect(errors).toEqual([]);
 });
 test('金额和属性编辑、校验、只读、撤销重做与历史', async ({ page }) => {
+  const callbacks: string[] = [];
+  const logPrefix = '[TanStack Budget][单元格修改]\n';
+  page.on('console', (message) => {
+    if (message.type() === 'log' && message.text().startsWith(logPrefix)) {
+      callbacks.push(message.text());
+    }
+  });
   await ready(page);
+  const recordId = await cell(page, 1, 4).getAttribute('data-record-id');
   const writes: unknown[] = [];
   page.on('response', async (response) => {
     if (response.url().endsWith('/write')) writes.push(await response.json());
@@ -104,6 +113,49 @@ test('金额和属性编辑、校验、只读、撤销重做与历史', async ({
   ).toContainText('1234.5');
   expect(JSON.stringify(writes)).toContain('"type":"attribute"');
   expect(JSON.stringify(writes)).toContain('"dimension"');
+  // Assert browser callback output against the production build, not just the API response.
+  await expect.poll(() => callbacks.length).toBe(4);
+  const [edited, undone, redone, attribute] = callbacks.map((text) => {
+    const payload = JSON.parse(
+      text.slice(logPrefix.length),
+    ) as BusinessCellChangePayload;
+    expect(text).toBe(`${logPrefix}${JSON.stringify(payload, null, 2)}`);
+    return payload;
+  });
+  expect(edited).toEqual({
+    type: 'value',
+    recordId,
+    oldValue: 600,
+    newValue: 1234.5,
+    dimension: {
+      row: {
+        DIM0090: expect.any(String),
+        DIM0069: 'MEM_SUBJECT_OFFICE_EXPENSE',
+      },
+      column: {
+        DIM0086: 'MEM_DATA_CATEGORY_BUDGET',
+        DIM0067: 'MEM_YEAR_2025',
+        DIM0068: 'MEM_PERIOD_01',
+        default_measure: 'MEM_MEASURE_AMOUNT',
+      },
+    },
+  });
+  expect(undone).toEqual({ ...edited, oldValue: 1234.5, newValue: 600 });
+  expect(redone).toEqual(edited);
+  expect(attribute).toEqual({
+    type: 'attribute',
+    recordId,
+    oldValue: '管理',
+    newValue: '销售预算',
+    row: edited.type === 'value' ? edited.dimension.row : {},
+    attribute: {
+      code: 'ATTR000038',
+      owner: {
+        dimensionCode: 'DIM0069',
+        memberCode: 'MEM_SUBJECT_OFFICE_EXPENSE',
+      },
+    },
+  });
 });
 test('矩形粘贴、统计、清空和整批只读校验', async ({ page }) => {
   await ready(page);
@@ -561,9 +613,15 @@ test('虚拟长组织块的批注和键盘焦点保持一致，页面不加载 S
   const organization = page.locator('.tb-cell.is-organization').first();
   await expect(organization.getByTitle('组织说明跟随合并区域')).toBeVisible();
   await expect(organization).toHaveClass(/is-active/);
-  const activeId = await page
-    .getByRole('grid')
-    .getAttribute('aria-activedescendant');
-  await expect(page.locator(`#${activeId}`)).toHaveCount(1);
+  // The scroll event can replace virtual rows between the two reads. Wait for
+  // the new page and its active descendant together instead of freezing null.
+  await expect
+    .poll(async () => {
+      const activeId = await page
+        .getByRole('grid')
+        .getAttribute('aria-activedescendant');
+      return activeId ? page.locator(`#${activeId}`).count() : 0;
+    })
+    .toBe(1);
   expect(await page.locator('.tb-grid-row').count()).toBeLessThan(100);
 });
