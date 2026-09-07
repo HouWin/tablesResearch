@@ -12,7 +12,11 @@ import { isBusinessCellDimension } from '../../SpreadJSDemo/spreadsheet/business
 import type { BusinessCellChangePayload } from '../../SpreadJSDemo/spreadsheet/business-cell-change';
 import { COLUMNS, cellAddress, cellKey, rawValue } from './columns';
 import { parseTsv, serializeRows, shiftFormula } from './clipboard';
-import { initialQuery, useBudgetData } from './use-budget-data';
+import {
+  initialQuery,
+  useBudgetData,
+  type QueryViewport,
+} from './use-budget-data';
 import {
   bounds,
   isExpanded,
@@ -134,12 +138,17 @@ export function useBudgetController(options: Options = {}) {
     },
     [],
   );
-  const changeQuery = (query: BudgetQuery) => {
-    if (busyRef.current || preparingRef.current) return;
+  const changeQuery = (
+    query: BudgetQuery,
+    view?: { viewport: QueryViewport; selection: CellPosition },
+  ) => {
+    if (busyRef.current || preparingRef.current || data.loading) return;
     queryRef.current = query;
     setEditing(null);
-    data.setQuery(query);
-    setRange(START_RANGE);
+    data.setQuery(query, view?.viewport);
+    setRange(
+      view ? { anchor: view.selection, focus: view.selection } : START_RANGE,
+    );
   };
   const changeMode = () => {
     if (busyRef.current || preparingRef.current) return;
@@ -157,7 +166,7 @@ export function useBudgetController(options: Options = {}) {
     );
   };
   useEffect(() => {
-    if (!data.manifest || !pendingMatch) return;
+    if (!data.manifest || data.loading || data.error || !pendingMatch) return;
     const controller = new AbortController();
     const manifest = data.manifest;
     data.gateway
@@ -180,6 +189,8 @@ export function useBudgetController(options: Options = {}) {
     return () => controller.abort();
   }, [
     data.manifest?.id,
+    data.loading,
+    data.error,
     pendingMatch,
     data.gateway,
     data.readRow,
@@ -258,8 +269,9 @@ export function useBudgetController(options: Options = {}) {
     reveal(result);
   };
   useEffect(() => {
-    if (!data.manifest || data.loading) {
+    if (!data.manifest || data.loading || data.error) {
       setStatistics(EMPTY_STATS);
+      setStatisticsBusy(false);
       return;
     }
     const controller = new AbortController();
@@ -293,6 +305,7 @@ export function useBudgetController(options: Options = {}) {
     visibleColumnsKey,
     data.gateway,
     data.loading,
+    data.error,
     transactions.at(-1)?.id,
     statsRetry,
   ]);
@@ -316,7 +329,8 @@ export function useBudgetController(options: Options = {}) {
     searchedText.current = '';
   };
   const commit = async (writes: CellWrite[], source = '单元格编辑') => {
-    if (busyRef.current || !data.manifest) return false;
+    if (busyRef.current || data.loading || data.error || !data.manifest)
+      return false;
     busyRef.current = true;
     setBusy(true);
     try {
@@ -386,6 +400,8 @@ export function useBudgetController(options: Options = {}) {
     if (
       busyRef.current ||
       preparingRef.current ||
+      data.loading ||
+      data.error ||
       !COLUMNS[position.col]?.editable
     ) {
       if (position.col < 2) notify('组织和科目名称由层级维护。');

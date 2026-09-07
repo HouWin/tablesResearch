@@ -24,11 +24,16 @@ export function initialQuery(mode: BudgetQuery['mode']): BudgetQuery {
   };
 }
 const CACHE_PAGES = 10;
+export type QueryViewport = { first: number; last: number };
 export function useBudgetData(providedGateway?: BudgetGateway) {
   const [gateway] = useState(
     () => providedGateway ?? createHttpBudgetGateway(),
   );
-  const [query, setQuery] = useState(() => initialQuery('regular'));
+  const [request, setRequest] = useState<{
+    query: BudgetQuery;
+    viewport?: QueryViewport;
+  }>(() => ({ query: initialQuery('regular') }));
+  const { query, viewport } = request;
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -44,6 +49,7 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
   );
   const epoch = useRef(0);
   const manifestRef = useRef<Manifest | null>(null);
+  const transitioning = useRef(true);
   const active = useRef(true);
   const refresh = useCallback(() => {
     if (active.current) setVersion((value) => value + 1);
@@ -52,6 +58,15 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
     requests.current.forEach(({ controller }) => controller.abort());
     requests.current.clear();
   }, []);
+  const setQuery = useCallback(
+    (query: BudgetQuery, viewport?: QueryViewport) => {
+      transitioning.current = true;
+      setLoading(true);
+      setError('');
+      setRequest({ query, viewport });
+    },
+    [],
+  );
   useEffect(() => {
     active.current = true;
     return () => {
@@ -64,19 +79,38 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
     const controller = new AbortController();
     const current = ++epoch.current;
     cancelPages();
-    pages.current.clear();
-    manifestRef.current = null;
-    setManifest(null);
+    // Keep the committed snapshot visible until the replacement viewport is ready.
+    // Clearing it here unmounts the grid and paints an empty/loading frame on every fold.
+    transitioning.current = true;
     setLoading(true);
     setError('');
     setPageError('');
     gateway
       .project(query, controller.signal)
       .then(async (result) => {
-        const page = await gateway.page(result.id, 0, controller.signal);
+        const count = viewport ? viewport.last - viewport.first + 3 : 1;
+        const first = viewport
+          ? Math.max(0, Math.min(viewport.first, result.totalRows - count))
+          : 0;
+        const last = Math.min(result.totalRows - 1, first + count - 1);
+        const offsets: number[] = [];
+        for (
+          let offset = Math.floor(first / result.pageSize) * result.pageSize;
+          offset <= last;
+          offset += result.pageSize
+        )
+          offsets.push(offset);
+        const nextPages = await Promise.all(
+          offsets.map((offset) =>
+            gateway.page(result.id, offset, controller.signal),
+          ),
+        );
         if (current !== epoch.current || controller.signal.aborted) return;
-        pages.current.set(0, page.rows);
+        pages.current = new Map(
+          nextPages.map((page) => [page.offset, page.rows]),
+        );
         manifestRef.current = result;
+        transitioning.current = false;
         setManifest(result);
         setLoading(false);
         refresh();
@@ -87,12 +121,17 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
         setLoading(false);
       });
     return () => controller.abort();
-  }, [query, reload, gateway, cancelPages, refresh]);
+  }, [query, viewport, reload, gateway, cancelPages, refresh]);
 
   const ensurePage = useCallback(
     (index: number): Promise<BudgetRow[]> => {
       const currentManifest = manifestRef.current;
-      if (!currentManifest || index < 0 || index >= currentManifest.totalRows)
+      if (
+        transitioning.current ||
+        !currentManifest ||
+        index < 0 ||
+        index >= currentManifest.totalRows
+      )
         return Promise.resolve([]);
       const offset =
         Math.floor(index / currentManifest.pageSize) * currentManifest.pageSize;
@@ -165,6 +204,7 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
     gateway,
     query,
     setQuery,
+    preserveScroll: Boolean(viewport),
     manifest,
     loading,
     error,

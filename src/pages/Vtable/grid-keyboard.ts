@@ -34,7 +34,14 @@ export function handleGridKey(
   c: BudgetController,
   pageRows: number,
 ) {
-  if (event.isComposing || c.busy || c.editing) return;
+  if (
+    event.isComposing ||
+    c.busy ||
+    c.editing ||
+    c.data.loading ||
+    c.data.error
+  )
+    return;
   const key = event.key.toLowerCase();
   const command = event.ctrlKey || event.metaKey;
   const box = bounds(c.range);

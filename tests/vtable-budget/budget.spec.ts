@@ -685,3 +685,116 @@ test('十万模式附件、批注和公式经分页与折叠保持业务关联',
     .click();
   await expect(panel).not.toContainText('evidence.pdf');
 });
+
+for (const stress of [false, true]) {
+  test(`${
+    stress ? '十万' : '普通'
+  }模式折叠展开等待分页时保留 Canvas，原位更新后可继续编辑`, async ({
+    page,
+  }) => {
+    await ready(page, stress);
+    const canvas = await page
+      .locator('.vt-host canvas')
+      .first()
+      .elementHandle();
+    const total = stress ? 101104 : 40;
+    for (const col of [0, 1]) {
+      // The first ten stress rows are summaries without subject children.
+      const row = stress && col === 1 ? 10 : 0;
+      for (const expanding of [false, true]) {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let requested = false;
+        await page.route('**/api/tanstack-budget/page', async (route) => {
+          requested = true;
+          await held;
+          await route.continue().catch(() => {});
+        });
+        const target = await point(page, row, col);
+        await page.mouse.click(target.x, target.y);
+        await expect.poll(() => requested).toBe(true);
+        await expect(grid(page)).toHaveAttribute('aria-busy', 'true');
+        await expect(page.locator('.tb-loading')).toHaveCount(0);
+        expect(await canvas!.evaluate((element) => element.isConnected)).toBe(
+          true,
+        );
+        await expect(page.locator('.vt-host canvas').first()).toBeVisible();
+        await expect(value(page)).not.toHaveText('正在加载…');
+        if (stress && col === 1 && !expanding)
+          await page.screenshot({
+            path: 'test-results/vtable-fold-pending.png',
+          });
+        // Even with focus retained by the grid, writes cannot use the old projection.
+        await page.keyboard.press('Delete');
+        release();
+        await expect(grid(page)).toHaveAttribute('aria-busy', 'false');
+        await expect(grid(page)).toHaveAttribute(
+          'aria-rowcount',
+          String(
+            expanding
+              ? total
+              : total - (col === 0 ? (stress ? 10100 : 32) : stress ? 100 : 3),
+          ),
+        );
+        expect(await canvas!.evaluate((element) => element.isConnected)).toBe(
+          true,
+        );
+        await page.unroute('**/api/tanstack-budget/page');
+      }
+    }
+    await edit(page, 1, 4, '2468');
+    await selectedValue(page, 1, 4, '2468');
+    await page.getByRole('button', { name: '撤销', exact: true }).click();
+    await expect(value(page)).not.toHaveText('2468');
+  });
+}
+
+test('十万模式远处科目折叠保留滚动位置，仅加载当前分页，失败时保留画面并可重试', async ({
+  page,
+}) => {
+  await ready(page, true);
+  const canvas = await page.locator('.vt-host canvas').first().elementHandle();
+  const rect = await page.locator('.vt-host').boundingBox();
+  // Subject summary at index 414 (10 root summaries + four groups of 101 rows).
+  await page.mouse.move(rect!.x + 760, rect!.y + 200);
+  await page.mouse.wheel(0, 414 * 32);
+  const target = { x: (await point(page, 0, 1)).x, y: rect!.y + 128 };
+  const valueX = (await point(page, 0, 3)).x;
+  await expect
+    .poll(async () => {
+      await page.mouse.click(valueX, target.y);
+      return page.locator('.tb-address').innerText();
+    })
+    .toMatch(/415$/);
+  const offsets: number[] = [];
+  let fail = true;
+  await page.route('**/api/tanstack-budget/page', async (route) => {
+    offsets.push(route.request().postDataJSON().offset);
+    if (fail)
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: '折叠分页暂时失败' }),
+      });
+    else await route.continue();
+  });
+  await page.mouse.click(target.x, target.y);
+  await expect(page.getByRole('alert')).toContainText('折叠分页暂时失败');
+  expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
+  await expect(grid(page)).toHaveAttribute('aria-rowcount', '101104');
+  fail = false;
+  await page.getByRole('button', { name: '重新加载', exact: true }).click();
+  await expect(grid(page)).toHaveAttribute('aria-rowcount', '101004');
+  await page.mouse.click(valueX, target.y);
+  await expect(page.locator('.tb-address')).toHaveText('D415');
+  expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
+  expect(offsets.length).toBeGreaterThan(0);
+  expect(offsets.every((offset) => offset >= 400 && offset <= 600)).toBe(true);
+  await page.mouse.click(target.x, target.y);
+  await expect(grid(page)).toHaveAttribute('aria-rowcount', '101104');
+  await page.mouse.click(valueX, target.y);
+  await expect(page.locator('.tb-address')).toHaveText('D415');
+  await page.screenshot({ path: 'test-results/vtable-fold-restored.png' });
+});

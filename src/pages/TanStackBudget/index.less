@@ -421,6 +421,45 @@
   .tb-grid-wrap {
     position: relative;
   }
+  .tb-grid-stage {
+    position: relative;
+  }
+  .tb-view-transition {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    cursor: progress;
+  }
+  .tb-view-progress {
+    position: absolute;
+    top: 8px;
+    right: 20px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    color: #35566f;
+    background: #f0f6fa;
+    font-size: 12px;
+    animation: tb-progress-appear 0s 250ms both;
+  }
+  @keyframes tb-progress-appear {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .tb-view-error {
+    width: fit-content;
+    max-width: calc(100% - 32px);
+    margin: 16px auto;
+    padding: 12px 18px;
+    background: #fff0eb;
+    color: #a04e3c;
+    border: 1px solid #eac8bc;
+    border-radius: 6px;
+    cursor: default;
+  }
   .tb-grid-scroll {
     overflow: auto;
     height: clamp(360px, calc(100vh - 395px), 720px);

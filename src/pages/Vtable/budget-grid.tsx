@@ -65,6 +65,7 @@ export const VTableBudgetGrid = forwardRef<
   const root = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<ListTable>();
+  const projectionId = useRef<string>();
   const latest = useRef(c);
   latest.current = c;
   const widths = useRef(new Map<number, number>());
@@ -80,6 +81,7 @@ export const VTableBudgetGrid = forwardRef<
   const shiftAnchor = useRef<CellPosition | null>(null);
   const pointerSelecting = useRef(false);
   const visibleKey = c.visibleColumns.join(',');
+  const hasManifest = Boolean(c.data.manifest);
   const focus = () => root.current?.focus({ preventScroll: true });
 
   const captureBlock = (index: number) => {
@@ -120,7 +122,8 @@ export const VTableBudgetGrid = forwardRef<
     const table = instance.current;
     const current = latest.current;
     const manifest = current.data.manifest;
-    if (!table || !manifest) return;
+    if (!table || !manifest || current.data.loading || current.data.error)
+      return;
     const visible = table.getBodyVisibleRowRange();
     const first = Math.max(0, visible.rowStart - HEADER_ROWS);
     const last = Math.min(manifest.totalRows - 1, visible.rowEnd - HEADER_ROWS);
@@ -325,6 +328,7 @@ export const VTableBudgetGrid = forwardRef<
       };
       table = new ListTable(host.current, options);
       instance.current = table;
+      projectionId.current = c.data.manifest.id;
       setInitializationError('');
       const position = (col: number, row: number) =>
         toBusinessPosition(
@@ -334,7 +338,14 @@ export const VTableBudgetGrid = forwardRef<
           latest.current.data.manifest?.totalRows ?? 0,
         );
       table.on('selected_cell', (args) => {
-        if (syncing.current || latest.current.editing || drag.current) return;
+        if (
+          syncing.current ||
+          latest.current.data.loading ||
+          latest.current.data.error ||
+          latest.current.editing ||
+          drag.current
+        )
+          return;
         const selected = args.ranges.at(-1);
         if (!selected) return;
         const anchor =
@@ -349,7 +360,13 @@ export const VTableBudgetGrid = forwardRef<
         }
       });
       table.on('click_cell', ({ col, row, targetIcon }) => {
-        if (latest.current.busy || targetIcon) return;
+        if (
+          latest.current.busy ||
+          latest.current.data.loading ||
+          latest.current.data.error ||
+          targetIcon
+        )
+          return;
         const current = latest.current;
         if (row < HEADER_ROWS) {
           if (col === 0)
@@ -395,23 +412,29 @@ export const VTableBudgetGrid = forwardRef<
         if (point.col === 0) {
           const block = captureBlock(point.row);
           if (block?.productIsGroup)
-            current.changeQuery({
-              ...current.data.query,
-              organizations: toggleExpanded(
-                current.data.query.organizations,
-                block.productId,
-              ),
-            });
+            current.changeQuery(
+              {
+                ...current.data.query,
+                organizations: toggleExpanded(
+                  current.data.query.organizations,
+                  block.productId,
+                ),
+              },
+              { viewport: viewport.current, selection: point },
+            );
         } else if (point.col === 1) {
           const record = current.data.rowAt(point.row);
           if (record?.regionIsGroup)
-            current.changeQuery({
-              ...current.data.query,
-              subjects: toggleExpanded(
-                current.data.query.subjects,
-                record.regionRootId,
-              ),
-            });
+            current.changeQuery(
+              {
+                ...current.data.query,
+                subjects: toggleExpanded(
+                  current.data.query.subjects,
+                  record.regionRootId,
+                ),
+              },
+              { viewport: viewport.current, selection: point },
+            );
         }
         focus();
       });
@@ -476,7 +499,33 @@ export const VTableBudgetGrid = forwardRef<
       table?.release();
       if (instance.current === table) instance.current = undefined;
     };
-  }, [c.data.manifest?.id, attempt, loadViewport]);
+  }, [hasManifest, attempt, loadViewport]);
+
+  useLayoutEffect(() => {
+    const table = instance.current;
+    const manifest = c.data.manifest;
+    if (!table || !manifest || projectionId.current === manifest.id) return;
+    const top = c.data.preserveScroll ? table.scrollTop : 0;
+    const left = c.data.preserveScroll ? table.scrollLeft : 0;
+    blocks.current.clear();
+    // A merged organization's first record may be outside the loaded page.
+    // Seed its metadata before VTable asks for the merge's offscreen origin.
+    captureBlock(c.data.preserveScroll ? viewport.current.first : 0);
+    // Swap only the source, on the existing canvas, before the browser paints.
+    // The data hook has already loaded the new visible pages at this point.
+    syncing.current = true;
+    table.dataSource = new data.CachedDataSource({
+      length: manifest.totalRows,
+      get: (index: number) => latest.current.data.rowAt(index),
+    });
+    projectionId.current = manifest.id;
+    table.scrollTop = top;
+    table.scrollLeft = left;
+    table.render();
+    syncing.current = false;
+    loadViewport();
+    setLayoutVersion((value) => value + 1);
+  }, [c.data.manifest?.id, loadViewport]);
 
   useLayoutEffect(() => {
     const table = instance.current;
@@ -723,7 +772,7 @@ export const VTableBudgetGrid = forwardRef<
         aria-activedescendant="vtable-active-cell"
         aria-describedby="vtable-grid-help"
         onPaste={(event) => {
-          if (!c.editing && !c.busy) {
+          if (!c.editing && !c.busy && !c.data.loading && !c.data.error) {
             event.preventDefault();
             event.stopPropagation();
             void c.paste(event.clipboardData.getData('text/plain'));

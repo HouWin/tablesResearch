@@ -104,7 +104,8 @@ export function BudgetWorkbench({
   const [locating, setLocating] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
-  const disabled = c.busy || c.data.loading || !c.data.manifest;
+  const disabled =
+    c.busy || c.data.loading || Boolean(c.data.error) || !c.data.manifest;
   useEffect(() => {
     const onFullscreen = () =>
       setFullscreen(document.fullscreenElement === rootRef.current);
@@ -578,13 +579,13 @@ export function BudgetWorkbench({
               {COLUMNS[c.range.focus.col].editable ? '编辑' : '只读'}
             </button>
           </div>
-          {c.data.loading ? (
+          {!c.data.manifest && c.data.loading ? (
             <div className="tb-loading" role="status">
               <div className="tb-spinner" />
               <strong>正在准备预算表</strong>
               <p>获取视图与第一批数据…</p>
             </div>
-          ) : c.data.error ? (
+          ) : !c.data.manifest && c.data.error ? (
             <div className="tb-loading" role="alert">
               <strong>预算表暂时无法加载</strong>
               <p>{c.data.error}</p>
@@ -593,7 +594,44 @@ export function BudgetWorkbench({
               </button>
             </div>
           ) : (
-            <Grid ref={c.gridRef} controller={c} />
+            <div
+              className="tb-grid-stage"
+              onKeyDownCapture={(event) => {
+                if (
+                  (c.data.loading || c.data.error) &&
+                  event.key !== 'Tab' &&
+                  (event.target as Element).closest('[role="grid"]')
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              onPasteCapture={(event) => {
+                if (c.data.loading || c.data.error) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+            >
+              <Grid ref={c.gridRef} controller={c} />
+              {c.data.loading || c.data.error ? (
+                <div className="tb-view-transition">
+                  {c.data.error ? (
+                    <div className="tb-view-error" role="alert">
+                      <strong>视图更新失败，当前表格已保留</strong>
+                      <p>{c.data.error}</p>
+                      <button className="tb-primary" onClick={c.data.retry}>
+                        重新加载
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="tb-view-progress" role="status">
+                      正在更新视图…
+                    </span>
+                  )}
+                </div>
+              ) : null}
+            </div>
           )}
           <footer className="tb-status-bar">
             <div>
