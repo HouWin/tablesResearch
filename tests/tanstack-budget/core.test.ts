@@ -265,3 +265,67 @@ test('大范围搜索索引完整，重复保存不占用有效撤销历史', ()
   service.replay('regular', transaction, 'undo');
   assert.equal(service.page(manifest.id, 0).rows[0].january, 3600);
 });
+
+test('列宽样本覆盖全视图、区分显示样式、分页并在修改和撤销后更新', async () => {
+  const service = new BudgetService();
+  const manifest = service.project(expanded('stress'));
+  const tail = service.page(manifest.id, 101000).rows.at(-1)!;
+  const id = tail.sourceNodes[0].id;
+  const text = '屏幕外的长文本 WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW';
+  const transaction = service.write(
+    manifest.id,
+    [
+      { recordId: id, col: 2, input: text },
+      { recordId: id, col: 4, input: '=1000000000' },
+    ],
+    '适配列宽回归',
+  );
+  const samples = [];
+  let offset: number | null = 0;
+  let batches = 0;
+  while (offset !== null) {
+    const page = await service.columnSizes(
+      manifest.id,
+      COLUMNS.map((_, col) => col),
+      offset,
+    );
+    assert.ok(page.samples.length <= 200);
+    samples.push(...page.samples);
+    offset = page.nextOffset;
+    batches++;
+  }
+  assert.ok(
+    samples.some(
+      (sample) => sample.col === 2 && sample.text === text && !sample.bold,
+    ),
+  );
+  assert.ok(
+    samples.some(
+      (sample) =>
+        sample.col === 4 &&
+        sample.text === '1,000,000,000.00' &&
+        sample.formula,
+    ),
+  );
+  assert.ok(
+    samples.some(
+      (sample) => sample.col === 0 && sample.indent > 0 && sample.bold,
+    ),
+  );
+  assert.ok(samples.some((sample) => sample.col === 1 && sample.indent === 1));
+  assert.ok(samples.length < 1000, '十万行只需小量去重文本及数值极值样本');
+  assert.ok(batches < 6);
+  service.replay('stress', transaction, 'undo');
+  const undone = await service.columnSizes(manifest.id, [2, 4], 0);
+  assert.ok(
+    !undone.samples.some((sample) => sample.text === text || sample.formula),
+  );
+  await assert.rejects(service.columnSizes(manifest.id, [-1], 0), /列宽查询/);
+  const changed = service.columnSizes(manifest.id, [0, 1, 2, 3, 4], 0);
+  service.write(
+    manifest.id,
+    [{ recordId: id, col: 2, input: '并发更新' }],
+    '更新',
+  );
+  await assert.rejects(changed, /数据已更新/);
+});

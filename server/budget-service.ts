@@ -29,7 +29,13 @@ import {
   type SearchMatch,
   type Statistics,
   type Transaction,
+  type ColumnSizeSample,
+  type ColumnSizePage,
 } from '../src/pages/TanStackBudget/core/types';
+import {
+  formattedValue,
+  outlineLabel,
+} from '../src/pages/TanStackBudget/core/columns';
 
 const PAGE_SIZE = 200;
 const MAX_BATCH = 20_000;
@@ -317,6 +323,10 @@ export class BudgetService {
     }
   >();
   private revision = 0;
+  private columnSizeCache?: {
+    key: string;
+    promise: Promise<ColumnSizeSample[]>;
+  };
   private searchCache: {
     key: string;
     buckets: SearchBucket[];
@@ -520,6 +530,127 @@ export class BudgetService {
         this.rowAt(projection, offset + index),
       ),
     };
+  }
+  async columnSizes(
+    id: string,
+    columns: number[],
+    offset: number,
+  ): Promise<ColumnSizePage> {
+    const projection = this.projection(id);
+    if (
+      !Array.isArray(columns) ||
+      !columns.length ||
+      columns.length > COLUMNS.length ||
+      columns.some(
+        (col) => !Number.isInteger(col) || col < 0 || col >= COLUMNS.length,
+      ) ||
+      !Number.isInteger(offset) ||
+      offset < 0
+    )
+      throw new BudgetError('无效的列宽查询。');
+    const selected = [...new Set(columns)].sort((a, b) => a - b);
+    const revision = this.revision;
+    const key = `${id}/${revision}/${selected.join(',')}`;
+    if (this.columnSizeCache?.key !== key)
+      this.columnSizeCache = {
+        key,
+        promise: this.collectColumnSizes(projection, selected, revision),
+      };
+    try {
+      const samples = await this.columnSizeCache.promise;
+      if (revision !== this.revision)
+        throw new BudgetError('数据已更新，请重新适配列宽。', 409);
+      if (offset > samples.length) throw new BudgetError('无效的列宽分页。');
+      return {
+        revision,
+        samples: samples.slice(offset, offset + PAGE_SIZE),
+        nextOffset:
+          offset + PAGE_SIZE < samples.length ? offset + PAGE_SIZE : null,
+      };
+    } catch (error) {
+      if (this.columnSizeCache?.key === key) this.columnSizeCache = undefined;
+      throw error;
+    }
+  }
+  private async collectColumnSizes(
+    projection: Projection,
+    columns: number[],
+    revision: number,
+  ) {
+    const texts = new Map<string, ColumnSizeSample>();
+    const numbers = new Map<
+      string,
+      { sample: ColumnSizeSample; min: number; max: number }
+    >();
+    const addText = (sample: ColumnSizeSample) => {
+      texts.set(JSON.stringify(sample), sample);
+    };
+    const mode = projection.query.mode;
+    let scanned = 0;
+    for (const segment of projection.segments) {
+      const { org, subject } = segment;
+      if (columns.includes(0))
+        addText({
+          col: 0,
+          text: outlineLabel(
+            org.name,
+            !!org.children.length,
+            isExpanded(projection.query.organizations, org.id),
+          ),
+          bold: true,
+          indent: segment.depth,
+          formula: false,
+        });
+      for (let detail = -1; detail < segment.count - 1; detail++) {
+        // Yield regularly so other page/edit requests are not blocked by a 100k scan.
+        if (scanned++ % 500 === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (revision !== this.revision)
+            throw new BudgetError('数据已更新，请重新适配列宽。', 409);
+        }
+        if (columns.every((col) => col === 0)) continue;
+        const record = this.record(mode, { org, subject, detail });
+        for (const col of columns) {
+          if (col === 0) continue;
+          const formula = Boolean(
+            this.values.get(this.key(mode, record.id, col))?.formula,
+          );
+          const sample: ColumnSizeSample = {
+            col,
+            text: '',
+            bold: detail < 0,
+            indent: col === 1 && detail >= 0 ? 1 : 0,
+            formula,
+          };
+          if (col === 1)
+            sample.text = outlineLabel(
+              record.name,
+              detail < 0 && subject.detailCount > 0,
+              isExpanded(projection.query.subjects, subjectKey(org, subject)),
+            );
+          else if (col === 2)
+            sample.text = String(record.functionalAttribute ?? '');
+          else {
+            // Arial's digits have equal advances. With the fixed numeric formats,
+            // extrema per weight/formula style cover the widest formatted amount.
+            const value = Number(record[COLUMNS[col].field as 'january']);
+            const key = `${col}/${sample.bold}/${formula}`;
+            const bucket = numbers.get(key);
+            if (bucket) {
+              bucket.min = Math.min(bucket.min, value);
+              bucket.max = Math.max(bucket.max, value);
+            } else numbers.set(key, { sample, min: value, max: value });
+            continue;
+          }
+          addText(sample);
+        }
+      }
+    }
+    for (const { sample, min, max } of numbers.values()) {
+      addText({ ...sample, text: formattedValue(min, COLUMNS[sample.col]) });
+      addText({ ...sample, text: formattedValue(max, COLUMNS[sample.col]) });
+    }
+    return [...texts.values()];
   }
   position(id: string, recordId: string) {
     const projection = this.projection(id);

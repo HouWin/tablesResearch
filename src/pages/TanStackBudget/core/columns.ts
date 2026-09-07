@@ -19,6 +19,11 @@ export const columnLabel = (col: number) =>
   COLUMNS[col]?.type === 'value'
     ? `${col === 3 ? '全年合计' : `${col - 3}月`} · 金额`
     : COLUMNS[col]?.label ?? '';
+export const outlineLabel = (
+  label: string,
+  group: boolean,
+  expanded: boolean,
+) => `${group ? (expanded ? '▾  ' : '▸  ') : ''}${label}`;
 export const cellAddress = (row: number, col: number) =>
   `${columnName(col)}${row + 1}`;
 export const cellKey = (row: BudgetRow, col: number) =>

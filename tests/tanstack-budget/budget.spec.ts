@@ -186,7 +186,9 @@ test('公式编辑、依赖重算、复制相对引用与循环校验', async ({
   await expect(cell(page, 1, 3)).toHaveAttribute('data-value', '10');
   await cell(page, 1, 3).click();
   await page.getByRole('button', { name: '复制', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已复制');
+  await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+    '已复制',
+  );
   await cell(page, 2, 3).click();
   await page.keyboard.press('ControlOrMeta+V');
   await expect(cell(page, 2, 3)).toHaveAttribute('data-value', '2400');
@@ -430,7 +432,9 @@ test('右键剪切粘贴、数据追踪与批注删除', async ({ page }) => {
   await edit(page, 1, 4, '314');
   await cell(page, 1, 4).click({ button: 'right' });
   await page.getByRole('menuitem', { name: '剪切', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已剪切');
+  await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+    '已剪切',
+  );
   await cell(page, 2, 4).click();
   await page.keyboard.press('ControlOrMeta+V');
   await expect(cell(page, 2, 4)).toHaveAttribute('data-value', '314');

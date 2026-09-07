@@ -39,6 +39,12 @@ export function dispatchBudgetRequest(
       return service.project(body.query as BudgetQuery);
     case 'page':
       return service.page(String(body.id), Number(body.offset));
+    case 'column-sizes':
+      return service.columnSizes(
+        String(body.id),
+        body.columns as number[],
+        Number(body.offset),
+      );
     case 'position':
       return service.position(String(body.id), String(body.recordId));
     case 'search':

@@ -8,7 +8,9 @@ import {
   cellKey,
   formattedValue,
   rawValue,
+  outlineLabel,
 } from '../TanStackBudget/core/columns';
+import { MIN_COLUMN_WIDTH } from './column-sizing';
 import type { BudgetRow, CellPosition } from '../TanStackBudget/core/types';
 import type { BudgetController } from '../TanStackBudget/core/use-budget-controller';
 
@@ -53,9 +55,11 @@ export type OrganizationBlock = Pick<
 >;
 
 export function organizationLabel(block: OrganizationBlock) {
-  return `${
-    block.productIsGroup ? (block.productExpanded ? '▾  ' : '▸  ') : ''
-  }${block.productLabel}`;
+  return outlineLabel(
+    block.productLabel,
+    block.productIsGroup,
+    block.productExpanded,
+  );
 }
 
 export function createColumns(
@@ -150,19 +154,16 @@ export function createColumns(
           key: node.id,
           title: node.label,
           width: widths.get(col) ?? node.width,
-          minWidth: 76,
-          maxWidth: 520,
+          minWidth: MIN_COLUMN_WIDTH,
           fieldFormat: (record: BudgetRow | undefined) => {
             if (!record) return '…';
             if (col === 0) return organizationLabel(record);
             if (col === 1)
-              return `${
-                record.regionIsGroup
-                  ? record.regionExpanded
-                    ? '▾  '
-                    : '▸  '
-                  : ''
-              }${record.regionLabel}`;
+              return outlineLabel(
+                record.regionLabel,
+                record.regionIsGroup,
+                record.regionExpanded,
+              );
             return formattedValue(rawValue(record, col), node);
           },
           style: ({ row }) => {

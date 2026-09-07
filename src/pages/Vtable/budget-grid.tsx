@@ -7,11 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import {
-  ListTable,
-  data,
-  type ListTableConstructorOptions,
-} from '@visactor/vtable';
+import { ListTable, data } from '@visactor/vtable';
 import {
   COLUMNS,
   cellAddress,
@@ -33,24 +29,18 @@ import {
   HEADER_ROWS,
   HEADER_HEIGHT,
   ROW_HEIGHT,
-  ROW_NUMBER_WIDTH,
-  organizationLabel,
   toBusinessPosition,
   toTableCell,
   type OrganizationBlock,
 } from './grid-model';
 import { handleGridKey } from './grid-keyboard';
+import { useGridDrag } from './use-grid-drag';
 import { GridEditor } from './grid-editor';
 import { GridContextMenu } from './grid-context-menu';
+import { createTableOptions } from './grid-options';
+import { adjustFrozenColumns, useColumnSizing } from './use-column-sizing';
 
 type Rect = { left: number; top: number; width: number; height: number };
-type Drag = {
-  source: CellRange;
-  last: CellPosition;
-  x: number;
-  y: number;
-  move: boolean;
-};
 const sameRange = (a: CellRange, b: CellRange) =>
   a.anchor.row === b.anchor.row &&
   a.anchor.col === b.anchor.col &&
@@ -77,7 +67,6 @@ export const VTableBudgetGrid = forwardRef<
   const [attempt, setAttempt] = useState(0);
   const [context, setContext] = useState<{ x: number; y: number } | null>(null);
   const closeContext = useCallback(() => setContext(null), []);
-  const drag = useRef<Drag | null>(null);
   const shiftAnchor = useRef<CellPosition | null>(null);
   const pointerSelecting = useRef(false);
   const visibleKey = c.visibleColumns.join(',');
@@ -140,33 +129,23 @@ export const VTableBudgetGrid = forwardRef<
         void current.data.ensurePage(offset).catch(() => {});
     });
   }, []);
-  const autoFitColumn = (col: number) => {
-    const table = instance.current;
-    if (!table) return;
-    const ctx = document.createElement('canvas').getContext('2d');
-    if (!ctx) return;
-    ctx.font = '13px Arial';
-    let width = ctx.measureText(columnLabel(col)).width + 44;
-    for (
-      let row = viewport.current.first;
-      row <= viewport.current.last;
-      row++
-    ) {
-      const record = latest.current.data.rowAt(row);
-      if (record)
-        width = Math.max(
-          width,
-          ctx.measureText(String(rawValue(record, col))).width +
-            (col < 2 ? 80 : 36),
-        );
-    }
-    const next = Math.min(440, Math.max(92, Math.ceil(width)));
-    widths.current.set(col, next);
-    const tableCol = latest.current.visibleColumns.indexOf(col) + 1;
-    if (tableCol > 0) table.setColWidth(tableCol, next);
-    table.render();
-    setLayoutVersion((value) => value + 1);
-  };
+  const drag = useGridDrag({
+    instance,
+    host,
+    latest,
+    pointerSelecting,
+    loadViewport,
+  });
+  const { sizing, cancelSizing, autoFitColumns } = useColumnSizing({
+    controller: c,
+    latest,
+    instance,
+    host,
+    widths,
+    captureBlock,
+    loadViewport,
+    onLayout: () => setLayoutVersion((value) => value + 1),
+  });
   useImperativeHandle(ref, () => ({
     focus,
     scrollToCell: (position) => {
@@ -192,7 +171,7 @@ export const VTableBudgetGrid = forwardRef<
       loadViewport();
       setLayoutVersion((value) => value + 1);
     },
-    autoFit: () => latest.current.visibleColumns.forEach(autoFitColumn),
+    autoFit: () => autoFitColumns(latest.current.visibleColumns),
   }));
 
   useLayoutEffect(() => {
@@ -217,115 +196,12 @@ export const VTableBudgetGrid = forwardRef<
       get: (index: number) => latest.current.data.rowAt(index),
     });
     try {
-      const options: ListTableConstructorOptions = {
-        columns: createColumns(
-          () => latest.current,
-          widths.current,
-          captureBlock,
-        ),
-        dataSource: source,
-        widthMode: 'standard',
-        heightMode: 'standard',
-        defaultRowHeight: ROW_HEIGHT,
-        defaultHeaderRowHeight: HEADER_HEIGHT,
-        frozenColCount: 4,
-        frozenRowCount: HEADER_ROWS,
-        autoWrapText: false,
-        rowSeriesNumber: {
-          width: ROW_NUMBER_WIDTH,
-          title: '#',
-          format: (_col, row) => (row ?? HEADER_ROWS) - HEADER_ROWS + 1,
-          style: {
-            color: '#8b9daa',
-            fontSize: 11,
-            textAlign: 'center',
-            padding: [0, 4],
-            bgColor: '#f7f9fc',
-          },
-          headerStyle: { bgColor: '#e4eef7' },
-        },
-        customMergeCell: (col, row) => {
-          if (col !== 1 || row < HEADER_ROWS) return;
-          const block = captureBlock(row - HEADER_ROWS);
-          if (!block || block.productRowSpan <= 1) return;
-          return {
-            text: organizationLabel(block),
-            range: {
-              start: { col, row: block.blockStart + HEADER_ROWS },
-              end: {
-                col,
-                row: block.blockStart + block.productRowSpan - 1 + HEADER_ROWS,
-              },
-            },
-            style: {
-              bgColor: '#f7fafc',
-              color: '#344f62',
-              fontWeight: 600,
-              textAlign: 'left',
-              textBaseline: 'top',
-              textStick: 'vertical',
-              padding: [10, 12, 0, 12 + block.productDepth * 14],
-              cursor: block.productIsGroup ? 'pointer' : 'default',
-            },
-          };
-        },
-        select: {
-          disableHeaderSelect: true,
-          highlightMode: 'cell',
-          // Controller navigation handles scrolling. Selecting a huge range must
-          // not render both endpoints and restore the viewport on every update.
-          makeSelectCellVisible: false,
-        },
-        keyboardOptions: {
-          copySelected: false,
-          cutSelected: false,
-          pasteValueToCell: false,
-          selectAllOnCtrlA: false,
-          moveFocusCellOnTab: false,
-          moveFocusCellOnEnter: false,
-          moveSelectedCellOnArrowKeys: false,
-          editCellOnEnter: false,
-        },
-        eventOptions: {
-          preventDefaultContextMenu: true,
-          contextmenuReturnAllSelectedCells: false,
-        },
-        resize: {
-          columnResizeMode: 'header',
-          rowResizeMode: 'all',
-          disableDblclickAutoResizeColWidth: true,
-        },
-        dragOrder: { dragHeaderMode: 'none' },
-        theme: {
-          defaultStyle: {
-            fontFamily: 'Arial, PingFang SC, Microsoft YaHei, sans-serif',
-          },
-          bodyStyle: {
-            fontSize: 12,
-            borderColor: '#e6edf2',
-            borderLineWidth: 1,
-          },
-          headerStyle: {
-            fontSize: 12,
-            borderColor: '#d9e4ec',
-            borderLineWidth: 1,
-          },
-          selectionStyle: {
-            cellBgColor: 'rgba(41,147,158,0.10)',
-            cellBorderColor: '#268a94',
-            cellBorderLineWidth: 2,
-          },
-          underlayBackgroundColor: '#fff',
-          scrollStyle: {
-            visible: 'scrolling',
-            width: 10,
-            barToSide: true,
-            scrollSliderColor: '#b6c7d3',
-            scrollRailColor: '#f3f6f9',
-          },
-          frameStyle: { borderLineWidth: 0 },
-        },
-      };
+      const options = createTableOptions({
+        source,
+        getController: () => latest.current,
+        widths: widths.current,
+        getBlock: captureBlock,
+      });
       table = new ListTable(host.current, options);
       instance.current = table;
       projectionId.current = c.data.manifest.id;
@@ -450,6 +326,13 @@ export const VTableBudgetGrid = forwardRef<
         if (name === 'budget-attachment') latest.current.setPanel('attachment');
       });
       table.on('contextmenu_cell', ({ col, row, event }) => {
+        if (
+          latest.current.busy ||
+          latest.current.editing ||
+          latest.current.data.loading ||
+          latest.current.data.error
+        )
+          return;
         const point = position(col, row);
         if (!point || !event || !('clientX' in event)) return;
         const box = bounds(latest.current.range);
@@ -463,22 +346,18 @@ export const VTableBudgetGrid = forwardRef<
         setContext({ x: event.clientX, y: event.clientY });
       });
       table.on('resize_column_end', () => {
+        cancelSizing();
         latest.current.visibleColumns.forEach((col, index) =>
           widths.current.set(col, table!.getColWidth(index + 1)),
         );
+        adjustFrozenColumns(table!, host.current?.clientWidth ?? 0);
         schedule();
       });
       table.on('resize_row_end', schedule);
       table.on('scroll', schedule);
       observer = new ResizeObserver(([entry]) => {
         if (!table || disposed) return;
-        const frozen =
-          entry.contentRect.width >= 760
-            ? 4
-            : entry.contentRect.width >= 560
-            ? 2
-            : 1;
-        table.setFrozenColCount(frozen);
+        adjustFrozenColumns(table, entry.contentRect.width);
         table.resize();
         latest.current.gridRef.current?.scrollToCell(
           latest.current.range.focus,
@@ -585,6 +464,31 @@ export const VTableBudgetGrid = forwardRef<
     if (!element) return;
     const key = (event: KeyboardEvent) => {
       if ((event.target as Element).closest('input,button,textarea')) return;
+      if (
+        (event.key === 'ContextMenu' ||
+          (event.shiftKey && event.key === 'F10')) &&
+        !latest.current.busy &&
+        !latest.current.editing &&
+        !latest.current.data.loading &&
+        !latest.current.data.error
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const table = instance.current;
+        const hostRect = host.current?.getBoundingClientRect();
+        if (table && hostRect) {
+          const at = toTableCell(
+            latest.current.range.focus,
+            latest.current.visibleColumns,
+          );
+          const rect = table.getCellRelativeRect(at.col, at.row);
+          setContext({
+            x: hostRect.left + rect.left,
+            y: hostRect.top + rect.bottom,
+          });
+        }
+        return;
+      }
       handleGridKey(
         event,
         latest.current,
@@ -610,105 +514,6 @@ export const VTableBudgetGrid = forwardRef<
       element.removeEventListener('wheel', wheel, true);
     };
   }, []);
-
-  useEffect(() => {
-    let frame = 0;
-    const update = () => {
-      const state = drag.current;
-      const table = instance.current;
-      const rect = host.current?.getBoundingClientRect();
-      if (!state || !table || !rect) return;
-      if (state.y > rect.bottom - 24) table.scrollTop += 20;
-      if (state.y < rect.top + HEADER_ROWS * HEADER_HEIGHT + 20)
-        table.scrollTop -= 20;
-      if (state.x > rect.right - 24) table.scrollLeft += 20;
-      if (state.x < rect.left + ROW_NUMBER_WIDTH + 12) table.scrollLeft -= 20;
-      const hit = table.getCellAtRelativePosition(
-        Math.max(
-          ROW_NUMBER_WIDTH + 2,
-          Math.min(rect.width - 12, state.x - rect.left),
-        ),
-        Math.max(
-          HEADER_ROWS * HEADER_HEIGHT + 2,
-          Math.min(rect.height - 12, state.y - rect.top),
-        ),
-      );
-      const point = toBusinessPosition(
-        hit.col,
-        hit.row,
-        latest.current.visibleColumns,
-        latest.current.data.manifest?.totalRows ?? 0,
-      );
-      if (
-        point &&
-        (point.row !== state.last.row || point.col !== state.last.col)
-      ) {
-        state.last = point;
-        if (!state.move)
-          latest.current.setRange({
-            anchor: state.source.anchor,
-            focus: point,
-          });
-      }
-      loadViewport();
-      frame = requestAnimationFrame(update);
-    };
-    const move = (event: PointerEvent) => {
-      if (!drag.current) return;
-      drag.current.x = event.clientX;
-      drag.current.y = event.clientY;
-      if (!frame) frame = requestAnimationFrame(update);
-    };
-    const stop = () => {
-      pointerSelecting.current = false;
-      cancelAnimationFrame(frame);
-      frame = 0;
-      const state = drag.current;
-      drag.current = null;
-      if (!state) return;
-      const current = latest.current;
-      const box = bounds(state.source);
-      if (!state.move)
-        void current.fill(state.source, {
-          anchor: { row: box.top, col: box.left },
-          focus: state.last,
-        });
-      else {
-        const width = current.visibleColumns.filter(
-          (col) => col >= box.left && col <= box.right,
-        ).length;
-        const col =
-          current.visibleColumns[
-            current.visibleColumns.indexOf(state.last.col) + width - 1
-          ];
-        const row = state.last.row + box.bottom - box.top;
-        if (col === undefined || row >= (current.data.manifest?.totalRows ?? 0))
-          current.notify('移动位置超出表格范围。', true);
-        else
-          void current.fill(
-            state.source,
-            { anchor: state.last, focus: { row, col } },
-            true,
-          );
-      }
-    };
-    const cancel = () => {
-      pointerSelecting.current = false;
-      cancelAnimationFrame(frame);
-      frame = 0;
-      if (drag.current) latest.current.setRange(drag.current.source);
-      drag.current = null;
-    };
-    document.addEventListener('pointermove', move);
-    document.addEventListener('pointerup', stop);
-    document.addEventListener('pointercancel', cancel);
-    return () => {
-      cancel();
-      document.removeEventListener('pointermove', move);
-      document.removeEventListener('pointerup', stop);
-      document.removeEventListener('pointercancel', cancel);
-    };
-  }, [loadViewport]);
 
   const cellRect = (point: CellPosition): Rect | null => {
     const table = instance.current;
@@ -759,6 +564,12 @@ export const VTableBudgetGrid = forwardRef<
           </button>
         </div>
       ) : null}
+      {sizing ? (
+        <div className="vt-sizing-status" role="status">
+          正在按全部内容适配列宽…
+          <button onClick={() => cancelSizing()}>取消适配</button>
+        </div>
+      ) : null}
       <div
         ref={root}
         className="vt-grid"
@@ -797,7 +608,7 @@ export const VTableBudgetGrid = forwardRef<
             if (Math.abs(x - cell.right) <= 6) {
               event.preventDefault();
               event.stopPropagation();
-              autoFitColumn(c.visibleColumns[col - 1]);
+              void autoFitColumns([c.visibleColumns[col - 1]]);
               return;
             }
           }
@@ -868,6 +679,12 @@ export const VTableBudgetGrid = forwardRef<
             controller={c}
             style={editorRect}
           />
+        ) : null}
+        {c.editing && c.editError ? (
+          <div id="vtable-edit-error" className="vt-edit-error">
+            <strong>{c.editError}</strong>
+            <span>请修改后按 Enter 保存，或按 Esc 取消。</span>
+          </div>
         ) : null}
         {!c.editing &&
         !c.busy &&

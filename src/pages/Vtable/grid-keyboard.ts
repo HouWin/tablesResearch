@@ -6,17 +6,18 @@ export function moveFocus(
   rowDelta: number,
   columnDelta: number,
   extend = false,
+  wrap = false,
 ) {
   const visible = c.visibleColumns;
   let row = c.range.focus.row + rowDelta;
   let column = Math.max(0, visible.indexOf(c.range.focus.col)) + columnDelta;
   if (column >= visible.length) {
-    column = 0;
-    row += 1;
+    column = wrap ? 0 : visible.length - 1;
+    if (wrap) row += 1;
   }
   if (column < 0) {
-    column = visible.length - 1;
-    row -= 1;
+    column = wrap ? visible.length - 1 : 0;
+    if (wrap) row -= 1;
   }
   c.select(
     {
@@ -124,7 +125,7 @@ export function handleGridKey(
       moveFocus(c, 0, 1, event.shiftKey);
       break;
     case 'Tab':
-      moveFocus(c, 0, event.shiftKey ? -1 : 1);
+      moveFocus(c, 0, event.shiftKey ? -1 : 1, false, true);
       break;
     case 'PageDown':
       moveFocus(c, pageRows, 0, event.shiftKey);

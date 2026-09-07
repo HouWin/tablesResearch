@@ -41,6 +41,8 @@ export function createHttpBudgetGateway(
   return {
     project: (query, signal) => request('project', { query }, signal),
     page: (id, offset, signal) => request('page', { id, offset }, signal),
+    columnSizes: (id, columns, offset, signal) =>
+      request('column-sizes', { id, columns, offset }, signal),
     search: (mode, query, index, signal) =>
       request('search', { mode, query, index }, signal),
     locate: (mode, dimension, signal) =>

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type SetStateAction,
+} from 'react';
 import {
   BUSINESS_DIMENSION_CODES,
   type CellAttachment,
@@ -12,6 +18,8 @@ import { isBusinessCellDimension } from '../../SpreadJSDemo/spreadsheet/business
 import type { BusinessCellChangePayload } from '../../SpreadJSDemo/spreadsheet/business-cell-change';
 import { COLUMNS, cellAddress, cellKey, rawValue } from './columns';
 import { parseTsv, serializeRows, shiftFormula } from './clipboard';
+import { visibleBudgetColumns, visibleRange } from './selection';
+import { useTransactionHistory } from './use-transaction-history';
 import {
   initialQuery,
   useBudgetData,
@@ -35,7 +43,7 @@ import {
 export type GridHandle = {
   scrollToCell: (position: CellPosition) => void;
   focus: () => void;
-  autoFit: () => void;
+  autoFit: () => void | Promise<void>;
 };
 export type Panel =
   | 'comment'
@@ -45,7 +53,12 @@ export type Panel =
   | 'aggregate'
   | 'help'
   | null;
-export type EditState = { position: CellPosition; draft: string };
+export type EditState = {
+  position: CellPosition;
+  draft: string;
+  recordId: string;
+  expected: string | number;
+};
 type Options = {
   gateway?: BudgetGateway;
   onBusinessCellChange?: (
@@ -69,8 +82,33 @@ const isAbort = (error: unknown) =>
   error instanceof DOMException && error.name === 'AbortError';
 export function useBudgetController(options: Options = {}) {
   const data = useBudgetData(options.gateway);
-  const [range, setRange] = useState<CellRange>(START_RANGE);
-  const [editing, setEditing] = useState<EditState | null>(null);
+  const [range, updateRange] = useState<CellRange>(START_RANGE);
+  const rangeRef = useRef(START_RANGE);
+  const editRequest = useRef(0);
+  const setRange = useCallback((next: SetStateAction<CellRange>) => {
+    const previous = rangeRef.current;
+    const value = typeof next === 'function' ? next(previous) : next;
+    if (
+      previous.anchor.row === value.anchor.row &&
+      previous.anchor.col === value.anchor.col &&
+      previous.focus.row === value.focus.row &&
+      previous.focus.col === value.focus.col
+    )
+      return;
+    editRequest.current += 1;
+    rangeRef.current = value;
+    updateRange(value);
+  }, []);
+  const [editing, updateEditing] = useState<EditState | null>(null);
+  const editingRef = useRef<EditState | null>(null);
+  const finishingEdit = useRef<Promise<boolean> | null>(null);
+  const [editError, setEditError] = useState('');
+  const setEditing = useCallback((next: SetStateAction<EditState | null>) => {
+    const value = typeof next === 'function' ? next(editingRef.current) : next;
+    editingRef.current = value;
+    updateEditing(value);
+    setEditError('');
+  }, []);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [preparing, setPreparing] = useState(false);
@@ -85,12 +123,9 @@ export function useBudgetController(options: Options = {}) {
   const gridRef = useRef<GridHandle>(null);
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const [collapsedColumns, setCollapsedColumns] = useState(false);
-  const visibleColumns = COLUMNS.map((_, index) => index).filter(
-    (col) => !hidden.has(col) && !(collapsedColumns && col > 3),
-  );
+  const visibleColumns = visibleBudgetColumns(hidden, collapsedColumns);
   const visibleColumnsKey = visibleColumns.join(',');
-  const [undo, setUndo] = useState<Transaction[]>([]);
-  const [redo, setRedo] = useState<Transaction[]>([]);
+  const history = useTransactionHistory();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [panel, setPanel] = useState<Panel>(null);
   const [comments, setComments] = useState(new Map<string, string>());
@@ -136,29 +171,43 @@ export function useBudgetController(options: Options = {}) {
       }));
       if (scroll) gridRef.current?.scrollToCell(position);
     },
-    [],
+    [setRange],
   );
   const changeQuery = (
     query: BudgetQuery,
     view?: { viewport: QueryViewport; selection: CellPosition },
   ) => {
+    if (editingRef.current) {
+      void finishEdit().then((ok) => {
+        if (ok) changeQuery(query, view);
+      });
+      return;
+    }
     if (busyRef.current || preparingRef.current || data.loading) return;
     queryRef.current = query;
     setEditing(null);
     data.setQuery(query, view?.viewport);
     setRange(
-      view ? { anchor: view.selection, focus: view.selection } : START_RANGE,
+      visibleRange(
+        view ? { anchor: view.selection, focus: view.selection } : START_RANGE,
+        visibleColumns,
+      ),
     );
   };
   const changeMode = () => {
+    if (editingRef.current) {
+      void finishEdit().then((ok) => {
+        if (ok) changeMode();
+      });
+      return;
+    }
     if (busyRef.current || preparingRef.current) return;
     searchRequest.current?.abort();
     setSearchResult(null);
     setSearchText('');
     setSearchBusy(false);
     setPendingMatch(null);
-    setUndo([]);
-    setRedo([]);
+    history.clear();
     setPanel(null);
     internalClipboard.current = null;
     changeQuery(
@@ -222,6 +271,7 @@ export function useBudgetController(options: Options = {}) {
     });
   };
   const search = async (direction = 1) => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (!searchText.trim() || busyRef.current || preparingRef.current) return;
     searchRequest.current?.abort();
     const controller = new AbortController();
@@ -251,6 +301,14 @@ export function useBudgetController(options: Options = {}) {
     } finally {
       if (!controller.signal.aborted) setSearchBusy(false);
     }
+  };
+  const updateSearchText = (text: string) => {
+    searchRequest.current?.abort();
+    setSearchBusy(false);
+    setSearchResult(null);
+    setPendingMatch(null);
+    searchedText.current = '';
+    setSearchText(text);
   };
   const locate = async (text: string) => {
     const query = data.query;
@@ -340,8 +398,7 @@ export function useBudgetController(options: Options = {}) {
         source,
       );
       if (transaction.patches.length) {
-        setUndo((current) => [...current, transaction].slice(-100));
-        setRedo([]);
+        history.record(transaction);
         await recordTransaction(transaction);
         // A refresh failure must not be reported as a rejected write or invite a duplicate save.
         try {
@@ -352,10 +409,10 @@ export function useBudgetController(options: Options = {}) {
       }
       return true;
     } catch (error) {
-      notify(
-        error instanceof Error ? error.message : '修改失败，请重试。',
-        true,
-      );
+      const message =
+        error instanceof Error ? error.message : '修改失败，请重试。';
+      if (editingRef.current) setEditError(message);
+      notify(message, true);
       return false;
     } finally {
       busyRef.current = false;
@@ -363,9 +420,9 @@ export function useBudgetController(options: Options = {}) {
     }
   };
   const replay = async (direction: 'undo' | 'redo') => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (busyRef.current || preparingRef.current) return;
-    const stack = direction === 'undo' ? undo : redo;
-    const transaction = stack.at(-1);
+    const transaction = history.peek(direction);
     if (!transaction) return;
     busyRef.current = true;
     setBusy(true);
@@ -375,13 +432,7 @@ export function useBudgetController(options: Options = {}) {
         transaction,
         direction,
       );
-      if (direction === 'undo') {
-        setUndo((current) => current.slice(0, -1));
-        setRedo((current) => [...current, transaction]);
-      } else {
-        setRedo((current) => current.slice(0, -1));
-        setUndo((current) => [...current, transaction]);
-      }
+      history.acceptReplay(direction, transaction);
       await recordTransaction(replayed);
       try {
         await data.invalidate(range.focus.row);
@@ -398,6 +449,12 @@ export function useBudgetController(options: Options = {}) {
   };
   const startEdit = async (position: CellPosition, replacement?: string) => {
     if (
+      editingRef.current?.position.row === position.row &&
+      editingRef.current.position.col === position.col
+    )
+      return;
+    if (editingRef.current && !(await finishEdit())) return;
+    if (
       busyRef.current ||
       preparingRef.current ||
       data.loading ||
@@ -408,12 +465,22 @@ export function useBudgetController(options: Options = {}) {
       return;
     }
     try {
+      const request = ++editRequest.current;
       const query = data.query;
-      const row = await data.readRow(position.row);
-      if (queryRef.current !== query) return;
+      const row =
+        data.rowAt(position.row) ?? (await data.readRow(position.row));
+      if (
+        queryRef.current !== query ||
+        request !== editRequest.current ||
+        busyRef.current ||
+        preparingRef.current
+      )
+        return;
       select(position);
       setEditing({
         position,
+        recordId: row.sourceNodes[0].id,
+        expected: rawValue(row, position.col),
         draft:
           replacement ??
           row.formulas[COLUMNS[position.col].id] ??
@@ -424,30 +491,29 @@ export function useBudgetController(options: Options = {}) {
         notify(error instanceof Error ? error.message : '无法编辑。', true);
     }
   };
-  const finishEdit = async () => {
-    if (!editing) return true;
-    try {
-      const query = data.query;
-      const row = await data.readRow(editing.position.row);
-      if (queryRef.current !== query) return false;
-      const ok = await commit([
-        {
-          recordId: row.sourceNodes[0].id,
-          col: editing.position.col,
-          input: editing.draft,
-          expected: rawValue(row, editing.position.col),
-        },
-      ]);
-      if (ok) setEditing(null);
-      return ok;
-    } catch (error) {
-      if (!isAbort(error))
-        notify(
-          error instanceof Error ? error.message : '无法保存，请重试。',
-          true,
-        );
-      return false;
-    }
+  const finishEdit = (): Promise<boolean> => {
+    if (finishingEdit.current) return finishingEdit.current;
+    const edit = editingRef.current;
+    if (!edit) return Promise.resolve(true);
+    // Blur, Enter and a toolbar action can request the same save in one turn.
+    // Submit once, with the value captured when editing began for conflict checks.
+    const pending = commit([
+      {
+        recordId: edit.recordId,
+        col: edit.position.col,
+        input: edit.draft,
+        expected: edit.expected,
+      },
+    ])
+      .then((ok) => {
+        if (ok && editingRef.current === edit) setEditing(null);
+        return ok;
+      })
+      .finally(() => {
+        finishingEdit.current = null;
+      });
+    finishingEdit.current = pending;
+    return pending;
   };
   // Keep a paged clipboard/fill operation on one projection until its atomic write completes.
   const beginPreparation = () => {
@@ -494,6 +560,7 @@ export function useBudgetController(options: Options = {}) {
     text: string;
   } | null>(null);
   const copy = async (cut = false) => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (!beginPreparation()) return;
     try {
       const selection = await selectedRows();
@@ -536,6 +603,7 @@ export function useBudgetController(options: Options = {}) {
     }
   };
   const paste = async (text?: string) => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (!beginPreparation()) return;
     try {
       const content = text ?? (await navigator.clipboard.readText());
@@ -619,6 +687,7 @@ export function useBudgetController(options: Options = {}) {
     }
   };
   const clear = async () => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (!beginPreparation()) return;
     try {
       const { rows, columns } = await selectedRows(range, 20_000);
@@ -646,6 +715,7 @@ export function useBudgetController(options: Options = {}) {
     targetRange: CellRange,
     move = false,
   ) => {
+    if (editingRef.current && !(await finishEdit())) return;
     if (!beginPreparation()) return;
     try {
       const source = await selectedRows(sourceRange, 20_000);
@@ -763,18 +833,30 @@ export function useBudgetController(options: Options = {}) {
   };
   const setColumnVisible = (col: number, visible: boolean) => {
     if (col < 3) return;
-    setHidden((current) => {
-      const next = new Set(current);
-      if (visible) next.delete(col);
-      else next.add(col);
-      return next;
-    });
-    if (!visible && (range.focus.col === col || range.anchor.col === col))
-      select({ row: range.focus.row, col: 2 });
+    if (editingRef.current) {
+      void finishEdit().then((ok) => {
+        if (ok) setColumnVisible(col, visible);
+      });
+      return;
+    }
+    const next = new Set(hidden);
+    if (visible) next.delete(col);
+    else next.add(col);
+    setHidden(next);
+    setRange((current) =>
+      visibleRange(current, visibleBudgetColumns(next, collapsedColumns)),
+    );
   };
   const toggleColumns = () => {
-    if (!collapsedColumns && range.focus.col > 3)
-      select({ row: range.focus.row, col: 3 });
+    if (editingRef.current) {
+      void finishEdit().then((ok) => {
+        if (ok) toggleColumns();
+      });
+      return;
+    }
+    setRange((current) =>
+      visibleRange(current, visibleBudgetColumns(hidden, !collapsedColumns)),
+    );
     setCollapsedColumns((current) => !current);
   };
   const selectedHistory = selectedRow
@@ -802,10 +884,12 @@ export function useBudgetController(options: Options = {}) {
     setRange,
     select,
     editing,
+    editError,
     setEditing,
     startEdit,
     finishEdit,
     busy: busy || preparing,
+    saving: busy,
     toast,
     notify,
     hidden,
@@ -821,8 +905,8 @@ export function useBudgetController(options: Options = {}) {
     selectedKey,
     changeQuery,
     changeMode,
-    undo,
-    redo,
+    undo: history.undo,
+    redo: history.redo,
     replay,
     copy,
     paste,
@@ -836,8 +920,9 @@ export function useBudgetController(options: Options = {}) {
     addAttachments,
     removeAttachment,
     selectedHistory,
+    lastSavedAt: transactions.at(-1)?.createdAt,
     searchText,
-    setSearchText,
+    setSearchText: updateSearchText,
     searchResult,
     searchBusy,
     search,

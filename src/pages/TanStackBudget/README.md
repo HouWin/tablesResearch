@@ -96,6 +96,7 @@ HTTP 请求均为 `POST /api/tanstack-budget/<action>`，通过 `X-Budget-Sessio
 | --- | --- | --- |
 | project | query | 投影 ID、行数、pageSize、面包屑和层级计数 |
 | page | id, offset | projectionId、offset、rows，最多 200 行 |
+| column-sizes | id, columns, offset | revision、samples、nextOffset；VTable 列宽测量样本每批最多 200 条 |
 | search | mode, query, index | total、index、单个命中业务坐标 |
 | locate | mode, dimension | 精确命中业务坐标或 null |
 | position | id, recordId | 当前投影内的行号，不可见时 -1 |

@@ -2,7 +2,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ReactNode,
   type ForwardRefExoticComponent,
   type RefAttributes,
 } from 'react';
@@ -10,28 +9,17 @@ import { Modal } from 'antd';
 import {
   ArrowDownToLine,
   ArrowUpRight,
-  ChartNoAxesCombined,
-  ChevronLeft,
   ChevronRight,
-  Columns3,
-  Copy,
   CornerUpLeft,
   Database,
   Expand,
-  FileClock,
-  FolderTree,
   HelpCircle,
-  LocateFixed,
   Maximize2,
-  MessageSquare,
   Minimize2,
-  Paperclip,
   Pencil,
-  Redo2,
   RotateCcw,
-  Search,
   Shrink,
-  Undo2,
+  Check,
   X,
 } from 'lucide-react';
 import { getBusinessColumnDimension } from '../../SpreadJSDemo/spreadsheet/model';
@@ -49,35 +37,9 @@ import {
   type GridHandle,
 } from '../core/use-budget-controller';
 import { Inspector } from './inspector';
+import { BudgetToolbar } from './budget-toolbar';
 import '../index.less';
 
-function Tool({
-  icon,
-  children,
-  title,
-  disabled,
-  onClick,
-}: {
-  icon: ReactNode;
-  children: ReactNode;
-  title?: string;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="tb-tool"
-      title={title}
-      aria-label={typeof children === 'string' ? children : title}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      {icon}
-      <span>{children}</span>
-    </button>
-  );
-}
 type BudgetWorkbenchProps = {
   engineName: string;
   Grid: ForwardRefExoticComponent<
@@ -102,8 +64,6 @@ export function BudgetWorkbench({
   const [locateText, setLocateText] = useState('');
   const [locateError, setLocateError] = useState('');
   const [locating, setLocating] = useState(false);
-  const [columnsOpen, setColumnsOpen] = useState(false);
-  const columnMenuRef = useRef<HTMLDivElement>(null);
   const disabled =
     c.busy || c.data.loading || Boolean(c.data.error) || !c.data.manifest;
   useEffect(() => {
@@ -113,7 +73,8 @@ export function BudgetWorkbench({
       if (
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === 'f' &&
-        rootRef.current
+        rootRef.current?.contains(document.activeElement) &&
+        !(event.target as Element).closest('[role="dialog"]')
       ) {
         event.preventDefault();
         searchRef.current?.focus();
@@ -127,15 +88,6 @@ export function BudgetWorkbench({
       document.removeEventListener('keydown', onKey);
     };
   }, []);
-  useEffect(() => {
-    if (!columnsOpen) return;
-    const outside = (event: PointerEvent) => {
-      if (!columnMenuRef.current?.contains(event.target as Node))
-        setColumnsOpen(false);
-    };
-    document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
-  }, [columnsOpen]);
   const toggleFullscreen = async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -171,6 +123,12 @@ export function BudgetWorkbench({
     <div
       ref={rootRef}
       className={`tanstack-budget ${fullscreen ? 'is-fullscreen' : ''}`}
+      onPointerDownCapture={(event) => {
+        // Let the clicked command finish the edit. Native blur would disable
+        // its button before click and silently swallow the user's action.
+        if (c.editing && (event.target as Element).closest('button'))
+          event.preventDefault();
+      }}
     >
       <a className="tb-skip" href="#tanstack-workspace">
         跳到费用预算表
@@ -185,7 +143,12 @@ export function BudgetWorkbench({
           <p>按组织与科目查看、调整和追踪每一笔预算。</p>
         </div>
         <div className="tb-heading-actions">
-          <span className="tb-open-source">MIT · 开源免费</span>
+          <span
+            className="tb-open-source"
+            title="金额、批注和附件仅在本次会话中保留"
+          >
+            会话数据 · 刷新后重置
+          </span>
           <button
             className="tb-icon-button"
             aria-label="使用指南"
@@ -208,7 +171,12 @@ export function BudgetWorkbench({
         <div>
           <Database size={17} />
           <strong>{summaryText}</strong>
-          <span className="tb-dataset-status">
+          <span
+            className="tb-dataset-status"
+            data-state={
+              c.data.error ? 'error' : c.data.loading ? 'loading' : 'ready'
+            }
+          >
             {c.data.loading
               ? '正在加载…'
               : c.data.error
@@ -225,174 +193,12 @@ export function BudgetWorkbench({
           <ArrowUpRight size={15} />
         </button>
       </section>
-      <section className="tb-toolbar" aria-label="预算表工具栏">
-        <div className="tb-tool-group">
-          <Tool
-            icon={<Undo2 size={16} />}
-            disabled={disabled || !c.undo.length}
-            title="撤销（Ctrl/⌘ + Z）"
-            onClick={() => void c.replay('undo')}
-          >
-            撤销
-          </Tool>
-          <Tool
-            icon={<Redo2 size={16} />}
-            disabled={disabled || !c.redo.length}
-            title="重做（Ctrl/⌘ + Shift + Z）"
-            onClick={() => void c.replay('redo')}
-          >
-            重做
-          </Tool>
-          <Tool
-            icon={<Copy size={16} />}
-            disabled={disabled}
-            onClick={() => void c.copy()}
-          >
-            复制
-          </Tool>
-        </div>
-        <div className="tb-search">
-          <Search size={16} />
-          <input
-            ref={searchRef}
-            aria-label="搜索完整预算数据"
-            placeholder="搜索组织、科目或金额…"
-            value={c.searchText}
-            disabled={c.busy}
-            onChange={(event) => c.setSearchText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                void c.search(event.shiftKey ? -1 : 1);
-              }
-              if (event.key === 'Escape') c.gridRef.current?.focus();
-            }}
-          />
-          <span aria-live="polite">
-            {c.searchBusy
-              ? '查找中'
-              : c.searchResult
-              ? c.searchResult.total
-                ? `${c.searchResult.index + 1} / ${c.searchResult.total}`
-                : '无结果'
-              : ''}
-          </span>
-          <button
-            aria-label="上一个搜索结果"
-            disabled={disabled || c.searchBusy || !c.searchText}
-            onClick={() => void c.search(-1)}
-          >
-            <ChevronLeft size={15} />
-          </button>
-          <button
-            aria-label="下一个搜索结果"
-            disabled={disabled || c.searchBusy || !c.searchText}
-            onClick={() => void c.search(1)}
-          >
-            <ChevronRight size={15} />
-          </button>
-        </div>
-        <div className="tb-tool-group">
-          <Tool
-            icon={<LocateFixed size={16} />}
-            disabled={disabled}
-            onClick={openLocate}
-          >
-            业务定位
-          </Tool>
-          <div className="tb-column-menu-anchor" ref={columnMenuRef}>
-            <Tool
-              icon={<Columns3 size={16} />}
-              disabled={disabled}
-              onClick={() => setColumnsOpen((value) => !value)}
-            >
-              列管理
-            </Tool>
-            {columnsOpen ? (
-              <div
-                className="tb-column-menu"
-                role="dialog"
-                aria-label="列管理"
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') setColumnsOpen(false);
-                }}
-              >
-                <div>
-                  <strong>显示的列</strong>
-                  <button
-                    aria-label="关闭列管理"
-                    onClick={() => setColumnsOpen(false)}
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-                {COLUMNS.map((column, col) => (
-                  <label key={column.id}>
-                    <input
-                      type="checkbox"
-                      disabled={col < 3}
-                      checked={!c.hidden.has(col)}
-                      onChange={(event) =>
-                        c.setColumnVisible(col, event.target.checked)
-                      }
-                    />
-                    {columnLabel(col)}
-                    {col < 3 ? <small>冻结</small> : null}
-                  </label>
-                ))}
-                <button className="tb-text-button" onClick={c.showAllColumns}>
-                  恢复显示全部列
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <Tool
-            icon={<Expand size={16} />}
-            disabled={disabled}
-            title="按当前已加载内容调整列宽；双击列边界调整单列"
-            onClick={() => c.gridRef.current?.autoFit()}
-          >
-            适配列宽
-          </Tool>
-        </div>
-        <div className="tb-tool-group tb-secondary-tools">
-          <Tool
-            icon={<MessageSquare size={16} />}
-            disabled={disabled}
-            onClick={() => c.setPanel('comment')}
-          >
-            批注
-          </Tool>
-          <Tool
-            icon={<FileClock size={16} />}
-            disabled={disabled}
-            onClick={() => c.setPanel('history')}
-          >
-            历史
-          </Tool>
-          <Tool
-            icon={<Paperclip size={16} />}
-            disabled={disabled}
-            onClick={() => c.setPanel('attachment')}
-          >
-            附件
-          </Tool>
-          <Tool
-            icon={<FolderTree size={16} />}
-            disabled={disabled}
-            onClick={() => c.setPanel('lineage')}
-          >
-            追踪
-          </Tool>
-          <Tool
-            icon={<ChartNoAxesCombined size={16} />}
-            disabled={disabled}
-            onClick={() => c.setPanel('aggregate')}
-          >
-            统计
-          </Tool>
-        </div>
-      </section>
+      <BudgetToolbar
+        controller={c}
+        engineName={engineName}
+        searchRef={searchRef}
+        openLocate={openLocate}
+      />
       <section className="tb-outline-bar" aria-label="层级控制">
         <div>
           <span>组织</span>
@@ -493,6 +299,7 @@ export function BudgetWorkbench({
       <main
         className={`tb-workspace ${c.panel ? 'has-inspector' : ''}`}
         id="tanstack-workspace"
+        tabIndex={-1}
       >
         <div className="tb-sheet">
           <div className="tb-sheet-nav">
@@ -553,14 +360,15 @@ export function BudgetWorkbench({
               </button>
             </div>
           </div>
-          <div className="tb-formula-bar">
+          <div className="tb-formula-bar" role="region" aria-label="当前单元格">
             <span className="tb-address">{c.selectedAddress}</span>
             <span className="tb-fx">ƒx</span>
             <span
               className="tb-formula-value"
               title={
                 c.selectedRow
-                  ? String(rawValue(c.selectedRow, c.range.focus.col))
+                  ? c.selectedRow.formulas[COLUMNS[c.range.focus.col].id] ??
+                    String(rawValue(c.selectedRow, c.range.focus.col))
                   : ''
               }
             >
@@ -569,15 +377,65 @@ export function BudgetWorkbench({
                   String(rawValue(c.selectedRow, c.range.focus.col))
                 : '正在加载…'}
             </span>
-            <button
-              className="tb-edit-trigger"
-              aria-label="编辑当前单元格"
-              disabled={disabled || !COLUMNS[c.range.focus.col].editable}
-              onClick={() => void c.startEdit(c.range.focus)}
+            {c.editing ? (
+              <div className="tb-edit-actions">
+                <span>
+                  {c.busy ? '正在保存…' : '编辑中 · Enter 保存 / Esc 取消'}
+                </span>
+                <button
+                  aria-label="取消当前编辑"
+                  title="取消（Esc）"
+                  disabled={c.busy}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    c.setEditing(null);
+                    c.gridRef.current?.focus();
+                  }}
+                >
+                  <X size={15} />
+                </button>
+                <button
+                  aria-label="保存当前单元格"
+                  title="保存（Enter）"
+                  disabled={c.busy}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() =>
+                    void c.finishEdit().then((ok) => {
+                      if (ok) c.gridRef.current?.focus();
+                    })
+                  }
+                >
+                  <Check size={15} />
+                </button>
+              </div>
+            ) : (
+              <button
+                className="tb-edit-trigger"
+                aria-label="编辑当前单元格"
+                disabled={disabled || !COLUMNS[c.range.focus.col].editable}
+                onClick={() => void c.startEdit(c.range.focus)}
+              >
+                <Pencil size={13} />
+                {COLUMNS[c.range.focus.col].editable ? '编辑' : '只读'}
+              </button>
+            )}
+          </div>
+          <div className="tb-cell-context" aria-label="当前预算明细">
+            <span
+              title={
+                c.selectedRow
+                  ? `${c.selectedRow.productLabel} / ${c.selectedRow.regionLabel}`
+                  : undefined
+              }
             >
-              <Pencil size={13} />
-              {COLUMNS[c.range.focus.col].editable ? '编辑' : '只读'}
-            </button>
+              {c.selectedRow
+                ? `${c.selectedRow.productLabel} / ${c.selectedRow.regionLabel}`
+                : '正在加载预算明细…'}
+            </span>
+            <span>
+              {columnLabel(c.range.focus.col)} ·{' '}
+              {COLUMNS[c.range.focus.col].editable ? '可编辑' : '只读'}
+            </span>
           </div>
           {!c.data.manifest && c.data.loading ? (
             <div className="tb-loading" role="status">
@@ -640,16 +498,40 @@ export function BudgetWorkbench({
                 {(outlineState?.totalRows ?? 0).toLocaleString()} 行 ×{' '}
                 {c.visibleColumns.length} 列
               </span>
-              <span title="只缓存最近使用的 10 页，每页 200 行">
-                已加载 {c.data.cachedRows.toLocaleString()} 行
+              <span
+                className="tb-save-status"
+                role="status"
+                title="修改自动保存至当前会话，刷新页面后重置"
+              >
+                {c.saving
+                  ? '正在保存…'
+                  : c.busy
+                  ? '正在处理…'
+                  : c.editing
+                  ? '正在编辑'
+                  : c.lastSavedAt
+                  ? '本次修改已保存'
+                  : '修改后自动保存'}
               </span>
+              {c.data.query.mode === 'stress' ? (
+                <span title="只缓存最近使用的 10 页，每页 200 行">
+                  已加载 {c.data.cachedRows.toLocaleString()} 行
+                </span>
+              ) : null}
             </div>
             <button
-              onClick={() => c.setPanel('aggregate')}
+              onClick={() => {
+                c.setPanel('aggregate');
+                if (c.statisticsError) c.retryStatistics();
+              }}
               title={c.statisticsError || '查看完整选区统计'}
             >
               {c.busy ? (
-                '保存中…'
+                c.saving ? (
+                  '保存中…'
+                ) : (
+                  '处理中…'
+                )
               ) : c.statisticsBusy ? (
                 '统计中…'
               ) : c.statisticsError ? (
@@ -672,6 +554,7 @@ export function BudgetWorkbench({
       {c.toast ? (
         <div
           className={`tb-toast ${c.toast.error ? 'is-error' : ''}`}
+          aria-label="操作反馈"
           role={c.toast.error ? 'alert' : 'status'}
         >
           {c.toast.message}

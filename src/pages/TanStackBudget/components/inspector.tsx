@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Download, FileText, Paperclip, Trash2, X } from 'lucide-react';
 import { toBusinessCellDimension } from '../../SpreadJSDemo/spreadsheet/business-cell-coordinate';
 import { ATTACHMENT_ACCEPT } from '../../SpreadJSDemo/spreadsheet/attachments';
@@ -21,6 +21,17 @@ const TITLES = {
 export function Inspector({ controller: c }: { controller: BudgetController }) {
   const [comment, setComment] = useState('');
   const [formula, setFormula] = useState('SUM / COUNT');
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!c.panel) return;
+    const frame = requestAnimationFrame(() => {
+      const first = panelRef.current?.querySelector<HTMLElement>(
+        'textarea, input, select',
+      );
+      (first ?? panelRef.current)?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [c.panel]);
   useEffect(
     () => setComment(c.comments.get(c.selectedKey) ?? ''),
     [c.selectedKey, c.comments],
@@ -40,6 +51,8 @@ export function Inspector({ controller: c }: { controller: BudgetController }) {
       : stats.average;
   return (
     <aside
+      ref={panelRef}
+      tabIndex={-1}
       className="tb-inspector"
       aria-label={TITLES[c.panel]}
       onKeyDown={(event) => {
@@ -133,7 +146,14 @@ export function Inspector({ controller: c }: { controller: BudgetController }) {
         ) : null}
         {c.panel === 'attachment' ? (
           <>
-            <label className="tb-upload">
+            <label
+              className="tb-upload"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                c.addAttachments(Array.from(event.dataTransfer.files));
+              }}
+            >
               <Paperclip size={24} />
               <strong>选择或拖入附件</strong>
               <span>图片、PDF、Word、Excel · 单个不超过 5 MiB</span>

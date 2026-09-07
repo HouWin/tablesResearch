@@ -1,4 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { COLUMNS } from '../TanStackBudget/core/columns';
+import { bounds } from '../TanStackBudget/core/types';
 import type { BudgetController } from '../TanStackBudget/core/use-budget-controller';
 
 export function GridContextMenu({
@@ -11,21 +13,51 @@ export function GridContextMenu({
   close: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [offset, setOffset] = useState(position);
+  const box = bounds(c.range);
+  const readOnly = c.visibleColumns.some(
+    (col) => col >= box.left && col <= box.right && !COLUMNS[col].editable,
+  );
+  const disabled = c.busy || c.data.loading || Boolean(c.data.error);
+  const dismiss = () => {
+    close();
+    c.gridRef.current?.focus();
+  };
+  useLayoutEffect(() => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (rect)
+      setOffset({
+        x: Math.max(
+          8,
+          Math.min(position.x, window.innerWidth - rect.width - 8),
+        ),
+        y: Math.max(
+          8,
+          Math.min(position.y, window.innerHeight - rect.height - 8),
+        ),
+      });
+  }, [position]);
   useEffect(() => {
-    ref.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    ref.current
+      ?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+      ?.focus();
     const outside = (event: PointerEvent) => {
       if (!ref.current?.contains(event.target as Node)) close();
     };
     // The menu opens during VTable's pointerdown. Capture avoids closing it again
     // when that same opening event reaches document's bubble phase.
     document.addEventListener('pointerdown', outside, true);
-    return () => document.removeEventListener('pointerdown', outside, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      window.removeEventListener('resize', close);
+    };
   }, [close]);
-  const actions: [string, () => void][] = [
+  const actions: [string, () => void, boolean?][] = [
     ['复制', () => void c.copy()],
-    ['剪切', () => void c.copy(true)],
-    ['粘贴', () => void c.paste()],
-    ['清空', () => void c.clear()],
+    ['剪切', () => void c.copy(true), readOnly],
+    ['粘贴', () => void c.paste(), !COLUMNS[box.left].editable],
+    ['清空', () => void c.clear(), readOnly],
     ['批注', () => c.setPanel('comment')],
     ['历史', () => c.setPanel('history')],
     ['附件', () => c.setPanel('attachment')],
@@ -38,15 +70,18 @@ export function GridContextMenu({
       role="menu"
       aria-label="单元格操作"
       style={{
-        left: Math.max(0, Math.min(position.x, window.innerWidth - 200)),
-        top: Math.max(0, Math.min(position.y, window.innerHeight - 350)),
+        left: offset.x,
+        top: offset.y,
+        maxHeight: 'calc(100dvh - 16px)',
+        overflowY: 'auto',
       }}
       onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          close();
-          c.gridRef.current?.focus();
+        event.stopPropagation();
+        if (event.key === 'Escape' || event.key === 'Tab') {
+          event.preventDefault();
+          dismiss();
         }
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
           event.preventDefault();
           const buttons = [
             ...(ref.current?.querySelectorAll<HTMLButtonElement>(
@@ -56,21 +91,26 @@ export function GridContextMenu({
           const index = buttons.indexOf(
             document.activeElement as HTMLButtonElement,
           );
-          buttons[
-            (index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) %
-              buttons.length
-          ]?.focus();
+          const next =
+            event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+              ? buttons.length - 1
+              : (index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) %
+                buttons.length;
+          buttons[next]?.focus();
         }
       }}
     >
-      {actions.map(([label, action]) => (
+      {actions.map(([label, action, unavailable]) => (
         <button
           key={label}
           role="menuitem"
-          disabled={c.busy}
+          disabled={disabled || unavailable}
+          title={unavailable ? '选区包含只读的组织或科目列' : undefined}
           onClick={() => {
+            dismiss();
             action();
-            close();
           }}
         >
           {label}
@@ -78,7 +118,7 @@ export function GridContextMenu({
       ))}
       <button
         role="menuitem"
-        disabled={c.busy || !c.selectedRow?.productIsGroup}
+        disabled={disabled || !c.selectedRow?.productIsGroup}
         onClick={() => {
           if (c.selectedRow)
             c.changeQuery({
@@ -88,7 +128,7 @@ export function GridContextMenu({
                 c.selectedRow.productId,
               ],
             });
-          close();
+          dismiss();
         }}
       >
         下钻到下一级

@@ -206,7 +206,9 @@ test('公式、依赖重算、复制相对引用、循环引用', async ({ page 
   await select(page, 1, 3);
   await expect(page.locator('#vtable-active-cell')).toContainText('10');
   await page.getByRole('button', { name: '复制', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('已复制');
+  await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+    '已复制',
+  );
   await select(page, 2, 3);
   await page.keyboard.press('ControlOrMeta+V');
   await expect(value(page)).toHaveText('=SUM(E3:F3)');
@@ -361,7 +363,9 @@ test('十万模式跨页粘贴、搜索、独立折叠及网络恢复', async ({
     page,
     Array.from({ length: 205 }, (_, i) => String(5000 + i)).join('\n'),
   );
-  await expect(page.getByRole('status')).toContainText('已粘贴 205 行');
+  await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+    '已粘贴 205 行',
+  );
   await selectedValue(page, 1, 4, '5000');
   await page.getByRole('button', { name: '撤销', exact: true }).click();
   await expect(value(page)).not.toHaveText('5000');
@@ -461,10 +465,14 @@ for (const stress of [false, true]) {
     await expect(grid(page)).toHaveAttribute('aria-busy', 'false');
     await selectedValue(page, 2, 6, '25');
     await page.keyboard.press('ControlOrMeta+X');
-    await expect(page.getByRole('status')).toContainText('已剪切');
+    await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+      '已剪切',
+    );
     await select(page, 3, 6);
     await page.keyboard.press('ControlOrMeta+V');
-    await expect(page.getByRole('status')).toContainText('已粘贴');
+    await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+      '已粘贴',
+    );
     await selectedValue(page, 3, 6, '25');
     await selectedValue(page, 2, 6, '0');
     await page.getByRole('button', { name: '撤销', exact: true }).click();
@@ -486,7 +494,9 @@ test('Canvas 层级按钮、列宽行高调整、自定义统计与帮助', asyn
   await expect(grid(page)).toHaveAttribute('aria-rowcount', '40');
   await select(page, 1, 4);
   await paste(page, '10\t20');
-  await expect(page.getByRole('status')).toContainText('已粘贴');
+  await expect(page.getByRole('status', { name: '操作反馈' })).toContainText(
+    '已粘贴',
+  );
   await page.getByRole('button', { name: '统计', exact: true }).click();
   const stats = page.getByRole('complementary', { name: '选区统计' });
   await expect(stats.locator('.tb-stat-list')).toContainText('30');
@@ -635,6 +645,7 @@ test('编辑滚动、中文输入法和错误输入保留', async ({ page }) => 
   await selectedValue(page, 1, 4, '666');
   await page.getByRole('button', { name: '编辑当前单元格' }).click();
   await editor.fill('不是金额');
+  await page.mouse.move(host!.x + 800, host!.y + 200);
   await page.mouse.wheel(0, 1200);
   await expect(page.getByRole('alert')).toContainText('预算金额');
   await expect(editor).toBeFocused();

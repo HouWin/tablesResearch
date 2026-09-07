@@ -29,6 +29,8 @@ export function GridEditor({
         c,
         key === 'Enter' ? (backwards ? -1 : 1) : 0,
         key === 'Tab' ? (backwards ? -1 : 1) : 0,
+        false,
+        key === 'Tab',
       );
       c.gridRef.current?.focus();
     } else if (!ok) {
@@ -42,8 +44,12 @@ export function GridEditor({
       className="tb-cell-editor vt-editor"
       style={style}
       aria-label={`编辑 ${c.selectedAddress}`}
+      aria-invalid={Boolean(c.editError)}
+      aria-describedby={c.editError ? 'vtable-edit-error' : undefined}
+      autoComplete="off"
+      spellCheck={false}
       value={c.editing?.draft ?? ''}
-      disabled={c.busy}
+      readOnly={c.busy}
       onChange={(event) =>
         c.setEditing((current) =>
           current ? { ...current, draft: event.target.value } : null,
@@ -60,7 +66,8 @@ export function GridEditor({
       }}
       onKeyDown={(event) => {
         event.stopPropagation();
-        if (composing.current || event.nativeEvent.isComposing) return;
+        if (composing.current || event.nativeEvent.isComposing || c.busy)
+          return;
         if (event.key === 'Escape') {
           event.preventDefault();
           cancelBlur.current = true;

@@ -76,9 +76,28 @@ export type Statistics = {
   max: number;
   ignored: number;
 };
+/** Display samples only; the business rows and edit callback contract stay unchanged. */
+export type ColumnSizeSample = {
+  col: number;
+  text: string;
+  bold: boolean;
+  indent: number;
+  formula: boolean;
+};
+export type ColumnSizePage = {
+  revision: number;
+  samples: ColumnSizeSample[];
+  nextOffset: number | null;
+};
 export type BudgetGateway = {
   project: (query: BudgetQuery, signal?: AbortSignal) => Promise<Manifest>;
   page: (id: string, offset: number, signal?: AbortSignal) => Promise<Page>;
+  columnSizes: (
+    id: string,
+    columns: number[],
+    offset: number,
+    signal?: AbortSignal,
+  ) => Promise<ColumnSizePage>;
   search: (
     mode: BudgetQuery['mode'],
     query: string,

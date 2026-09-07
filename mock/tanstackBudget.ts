@@ -12,6 +12,7 @@ type MockResponse = {
 const actions = [
   'project',
   'page',
+  'column-sizes',
   'position',
   'search',
   'locate',
@@ -23,9 +24,9 @@ const actions = [
 export default Object.fromEntries(
   actions.map((action) => [
     `POST /api/tanstack-budget/${action}`,
-    (req: MockRequest, res: MockResponse) => {
+    async (req: MockRequest, res: MockResponse) => {
       try {
-        const data = dispatchBudgetRequest(
+        const data = await dispatchBudgetRequest(
           String(req.headers['x-budget-session'] ?? ''),
           action,
           req.body ?? {},

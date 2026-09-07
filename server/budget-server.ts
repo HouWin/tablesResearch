@@ -42,7 +42,7 @@ createServer(async (req, res) => {
       } catch {
         throw new BudgetError('请求不是有效 JSON。');
       }
-      const data = dispatchBudgetRequest(
+      const data = await dispatchBudgetRequest(
         String(req.headers['x-budget-session'] || ''),
         url.pathname.split('/').at(-1)!,
         body,
