@@ -130,7 +130,7 @@ export function createColumns(
         return [
           {
             title: node.collapsible
-              ? `${getController().collapsedColumns ? '▸' : '▾'}  ${node.label}`
+              ? `${getController().collapsedColumns ? '▸' : '◂'}  ${node.label}`
               : node.label,
             columns: children,
             headerStyle: {

@@ -38,6 +38,8 @@ import {
 } from '../core/use-budget-controller';
 import { Inspector } from './inspector';
 import { BudgetToolbar } from './budget-toolbar';
+import { BudgetCommand } from './budget-command';
+import { useDelayedPending } from '../core/use-delayed-pending';
 import '../index.less';
 
 type BudgetWorkbenchProps = {
@@ -64,8 +66,12 @@ export function BudgetWorkbench({
   const [locateText, setLocateText] = useState('');
   const [locateError, setLocateError] = useState('');
   const [locating, setLocating] = useState(false);
-  const disabled =
-    c.busy || c.data.loading || Boolean(c.data.error) || !c.data.manifest;
+  const disabled = Boolean(c.data.error) || !c.data.manifest;
+  const pending = c.busy || c.data.loading;
+  const viewPending = useDelayedPending(c.data.loading);
+  const commandPending = useDelayedPending(c.busy);
+  const statisticsPending = c.statisticsBusy || c.data.loading;
+  const showStatisticsPending = useDelayedPending(statisticsPending);
   useEffect(() => {
     const onFullscreen = () =>
       setFullscreen(document.fullscreenElement === rootRef.current);
@@ -149,49 +155,37 @@ export function BudgetWorkbench({
           >
             会话数据 · 刷新后重置
           </span>
-          <button
+          <BudgetCommand
             className="tb-icon-button"
             aria-label="使用指南"
             title="使用指南"
             onClick={() => c.setPanel('help')}
           >
             <HelpCircle size={19} />
-          </button>
-          <button
+          </BudgetCommand>
+          <BudgetCommand
             className="tb-icon-button"
             aria-label={fullscreen ? '退出全屏' : '全屏显示'}
             title={fullscreen ? '退出全屏' : '全屏显示'}
             onClick={() => void toggleFullscreen()}
           >
             {fullscreen ? <Minimize2 size={19} /> : <Maximize2 size={19} />}
-          </button>
+          </BudgetCommand>
         </div>
       </header>
       <section className="tb-dataset-strip">
         <div>
           <Database size={17} />
           <strong>{summaryText}</strong>
-          <span
-            className="tb-dataset-status"
-            data-state={
-              c.data.error ? 'error' : c.data.loading ? 'loading' : 'ready'
-            }
-          >
-            {c.data.loading
-              ? '正在加载…'
-              : c.data.error
-              ? '连接异常'
-              : '已连接'}
-          </span>
         </div>
-        <button
+        <BudgetCommand
           className="tb-dataset-toggle"
-          disabled={c.busy || c.data.loading}
+          pending={pending}
           onClick={c.changeMode}
         >
           {c.data.query.mode === 'stress' ? '返回预算样例' : '体验 10 万行数据'}
           <ArrowUpRight size={15} />
-        </button>
+        </BudgetCommand>
       </section>
       <BudgetToolbar
         controller={c}
@@ -206,10 +200,15 @@ export function BudgetWorkbench({
             {outlineState?.organizationExpanded ?? 0}/
             {outlineState?.organizationGroups ?? 0}
           </small>
-          <button
+          <BudgetCommand
             aria-label="展开全部组织"
             title="展开全部组织"
-            disabled={disabled}
+            pending={pending}
+            disabled={
+              disabled ||
+              outlineState?.organizationExpanded ===
+                outlineState?.organizationGroups
+            }
             onClick={() =>
               c.changeQuery({
                 ...c.data.query,
@@ -218,11 +217,12 @@ export function BudgetWorkbench({
             }
           >
             <Expand size={14} />
-          </button>
-          <button
+          </BudgetCommand>
+          <BudgetCommand
             aria-label="收起全部组织"
             title="收起全部组织"
-            disabled={disabled}
+            pending={pending}
+            disabled={disabled || !outlineState?.organizationExpanded}
             onClick={() =>
               c.changeQuery({
                 ...c.data.query,
@@ -231,7 +231,7 @@ export function BudgetWorkbench({
             }
           >
             <Shrink size={14} />
-          </button>
+          </BudgetCommand>
         </div>
         <div>
           <span>科目</span>
@@ -239,10 +239,14 @@ export function BudgetWorkbench({
             {outlineState?.subjectExpanded ?? 0}/
             {outlineState?.subjectGroups ?? 0}
           </small>
-          <button
+          <BudgetCommand
             aria-label="展开全部科目"
             title="展开全部科目"
-            disabled={disabled}
+            pending={pending}
+            disabled={
+              disabled ||
+              outlineState?.subjectExpanded === outlineState?.subjectGroups
+            }
             onClick={() =>
               c.changeQuery({
                 ...c.data.query,
@@ -251,11 +255,12 @@ export function BudgetWorkbench({
             }
           >
             <Expand size={14} />
-          </button>
-          <button
+          </BudgetCommand>
+          <BudgetCommand
             aria-label="收起全部科目"
             title="收起全部科目"
-            disabled={disabled}
+            pending={pending}
+            disabled={disabled || !outlineState?.subjectExpanded}
             onClick={() =>
               c.changeQuery({
                 ...c.data.query,
@@ -264,18 +269,30 @@ export function BudgetWorkbench({
             }
           >
             <Shrink size={14} />
-          </button>
+          </BudgetCommand>
         </div>
-        <button
+        <BudgetCommand
           className="tb-outline-text"
+          pending={pending}
           disabled={disabled}
+          aria-expanded={!c.collapsedColumns}
+          title={
+            c.collapsedColumns
+              ? '向右展开 1 至 12 月'
+              : '向左收起月份，保留全年合计'
+          }
           onClick={c.toggleColumns}
         >
           {c.collapsedColumns ? '展开月份' : '收起月份'}
-        </button>
-        <button
+        </BudgetCommand>
+        <BudgetCommand
           className="tb-outline-text"
-          disabled={disabled}
+          pending={pending}
+          disabled={
+            disabled ||
+            (!outlineState?.organizationExpanded &&
+              !outlineState?.subjectExpanded)
+          }
           onClick={() =>
             c.changeQuery({
               ...c.data.query,
@@ -285,15 +302,16 @@ export function BudgetWorkbench({
           }
         >
           收起全部层级
-        </button>
-        <button
+        </BudgetCommand>
+        <BudgetCommand
           className="tb-outline-text"
+          pending={pending}
           disabled={disabled}
           onClick={() => c.changeQuery(initialQuery(c.data.query.mode))}
         >
           <RotateCcw size={13} />
           恢复默认视图
-        </button>
+        </BudgetCommand>
         <span className="tb-outline-hint">汇总与明细独立保存</span>
       </section>
       <main
@@ -304,19 +322,31 @@ export function BudgetWorkbench({
         <div className="tb-sheet">
           <div className="tb-sheet-nav">
             <nav aria-label="组织钻取路径">
-              <button
-                disabled={disabled}
+              <BudgetCommand
+                pending={pending}
+                disabled={disabled || !c.data.query.drillPath.length}
+                aria-current={
+                  !c.data.query.drillPath.length ? 'page' : undefined
+                }
                 onClick={() =>
                   c.changeQuery({ ...c.data.query, drillPath: [] })
                 }
               >
                 全部组织
-              </button>
+              </BudgetCommand>
               {outlineState?.breadcrumbs.map((crumb, index) => (
                 <span key={crumb.id}>
                   <ChevronRight size={13} />
-                  <button
-                    disabled={disabled}
+                  <BudgetCommand
+                    pending={pending}
+                    disabled={
+                      disabled || index === outlineState.breadcrumbs.length - 1
+                    }
+                    aria-current={
+                      index === outlineState.breadcrumbs.length - 1
+                        ? 'page'
+                        : undefined
+                    }
                     onClick={() =>
                       c.changeQuery({
                         ...c.data.query,
@@ -325,12 +355,13 @@ export function BudgetWorkbench({
                     }
                   >
                     {crumb.name}
-                  </button>
+                  </BudgetCommand>
                 </span>
               ))}
             </nav>
             <div>
-              <button
+              <BudgetCommand
+                pending={pending}
                 disabled={disabled || !c.data.query.drillPath.length}
                 onClick={() =>
                   c.changeQuery({
@@ -341,8 +372,9 @@ export function BudgetWorkbench({
               >
                 <CornerUpLeft size={14} />
                 上一级
-              </button>
-              <button
+              </BudgetCommand>
+              <BudgetCommand
+                pending={pending}
                 disabled={disabled || !c.selectedRow?.productIsGroup}
                 onClick={() => {
                   if (c.selectedRow)
@@ -357,7 +389,7 @@ export function BudgetWorkbench({
               >
                 <ArrowDownToLine size={14} />
                 下钻
-              </button>
+              </BudgetCommand>
             </div>
           </div>
           <div className="tb-formula-bar" role="region" aria-label="当前单元格">
@@ -382,7 +414,7 @@ export function BudgetWorkbench({
                 <span>
                   {c.busy ? '正在保存…' : '编辑中 · Enter 保存 / Esc 取消'}
                 </span>
-                <button
+                <BudgetCommand
                   aria-label="取消当前编辑"
                   title="取消（Esc）"
                   disabled={c.busy}
@@ -393,8 +425,8 @@ export function BudgetWorkbench({
                   }}
                 >
                   <X size={15} />
-                </button>
-                <button
+                </BudgetCommand>
+                <BudgetCommand
                   aria-label="保存当前单元格"
                   title="保存（Enter）"
                   disabled={c.busy}
@@ -406,18 +438,19 @@ export function BudgetWorkbench({
                   }
                 >
                   <Check size={15} />
-                </button>
+                </BudgetCommand>
               </div>
             ) : (
-              <button
+              <BudgetCommand
                 className="tb-edit-trigger"
                 aria-label="编辑当前单元格"
+                pending={pending}
                 disabled={disabled || !COLUMNS[c.range.focus.col].editable}
                 onClick={() => void c.startEdit(c.range.focus)}
               >
                 <Pencil size={13} />
                 {COLUMNS[c.range.focus.col].editable ? '编辑' : '只读'}
-              </button>
+              </BudgetCommand>
             )}
           </div>
           <div className="tb-cell-context" aria-label="当前预算明细">
@@ -447,9 +480,9 @@ export function BudgetWorkbench({
             <div className="tb-loading" role="alert">
               <strong>预算表暂时无法加载</strong>
               <p>{c.data.error}</p>
-              <button className="tb-primary" onClick={c.data.retry}>
+              <BudgetCommand className="tb-primary" onClick={c.data.retry}>
                 重新加载
-              </button>
+              </BudgetCommand>
             </div>
           ) : (
             <div
@@ -478,15 +511,18 @@ export function BudgetWorkbench({
                     <div className="tb-view-error" role="alert">
                       <strong>视图更新失败，当前表格已保留</strong>
                       <p>{c.data.error}</p>
-                      <button className="tb-primary" onClick={c.data.retry}>
+                      <BudgetCommand
+                        className="tb-primary"
+                        onClick={c.data.retry}
+                      >
                         重新加载
-                      </button>
+                      </BudgetCommand>
                     </div>
-                  ) : (
+                  ) : viewPending ? (
                     <span className="tb-view-progress" role="status">
                       正在更新视图…
                     </span>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -503,9 +539,9 @@ export function BudgetWorkbench({
                 role="status"
                 title="修改自动保存至当前会话，刷新页面后重置"
               >
-                {c.saving
+                {commandPending && c.saving
                   ? '正在保存…'
-                  : c.busy
+                  : commandPending
                   ? '正在处理…'
                   : c.editing
                   ? '正在编辑'
@@ -519,37 +555,40 @@ export function BudgetWorkbench({
                 </span>
               ) : null}
             </div>
-            <button
+            <BudgetCommand
               onClick={() => {
                 c.setPanel('aggregate');
                 if (c.statisticsError) c.retryStatistics();
               }}
-              title={c.statisticsError || '查看完整选区统计'}
+              aria-busy={statisticsPending}
+              title={
+                c.statisticsError ||
+                (statisticsPending
+                  ? '正在更新统计，当前显示上次结果'
+                  : '查看完整选区统计')
+              }
             >
-              {c.busy ? (
-                c.saving ? (
-                  '保存中…'
-                ) : (
-                  '处理中…'
-                )
-              ) : c.statisticsBusy ? (
-                '统计中…'
-              ) : c.statisticsError ? (
+              {c.statisticsError ? (
                 '统计失败 · 点击重试'
               ) : (
                 <>
                   选中 {c.statistics.cells.toLocaleString()} 格{' '}
                   <b>合计 {formattedValue(c.statistics.sum, COLUMNS[3])}</b>
+                  <span className="tb-statistics-progress" aria-live="polite">
+                    {showStatisticsPending ? '更新中…' : ''}
+                  </span>
                 </>
               )}
-            </button>
+            </BudgetCommand>
           </footer>
         </div>
         <Inspector controller={c} />
       </main>
       <div className="tb-footnote">
         <span>双击编辑 · 拖动选择 · 右键查看更多操作</span>
-        <button onClick={() => c.setPanel('help')}>查看快捷键与数据说明</button>
+        <BudgetCommand onClick={() => c.setPanel('help')}>
+          查看快捷键与数据说明
+        </BudgetCommand>
       </div>
       {c.toast ? (
         <div

@@ -139,7 +139,9 @@ export function useBudgetController(options: Options = {}) {
   const [searchBusy, setSearchBusy] = useState(false);
   const searchRequest = useRef<AbortController>();
   const searchedText = useRef('');
-  const [pendingMatch, setPendingMatch] = useState<SearchMatch | null>(null);
+  const [pendingMatch, setPendingMatch] = useState<
+    (SearchMatch & { focusGrid: boolean }) | null
+  >(null);
   const [statistics, setStatistics] = useState<Statistics>(EMPTY_STATS);
   const [statisticsBusy, setStatisticsBusy] = useState(false);
   const [statisticsError, setStatisticsError] = useState('');
@@ -227,7 +229,7 @@ export function useBudgetController(options: Options = {}) {
         const position = { row, col: pendingMatch.column };
         select(position, false, true);
         setPendingMatch(null);
-        gridRef.current?.focus();
+        if (pendingMatch.focusGrid) gridRef.current?.focus();
       })
       .catch((error) => {
         if (!controller.signal.aborted && !isAbort(error)) {
@@ -247,7 +249,7 @@ export function useBudgetController(options: Options = {}) {
     notify,
   ]);
 
-  const reveal = (match: SearchMatch) => {
+  const reveal = (match: SearchMatch, focusGrid = true) => {
     setHidden((current) => {
       const next = new Set(current);
       next.delete(match.column);
@@ -259,7 +261,7 @@ export function useBudgetController(options: Options = {}) {
       ids.forEach((id) => (state.all ? values.delete(id) : values.add(id)));
       return { ...state, ids: [...values] };
     };
-    setPendingMatch(match);
+    setPendingMatch({ ...match, focusGrid });
     changeQuery({
       ...data.query,
       drillPath: [],
@@ -272,7 +274,14 @@ export function useBudgetController(options: Options = {}) {
   };
   const search = async (direction = 1) => {
     if (editingRef.current && !(await finishEdit())) return;
-    if (!searchText.trim() || busyRef.current || preparingRef.current) return;
+    if (
+      !searchText.trim() ||
+      busyRef.current ||
+      preparingRef.current ||
+      data.loading ||
+      data.error
+    )
+      return;
     searchRequest.current?.abort();
     const controller = new AbortController();
     searchRequest.current = controller;
@@ -293,7 +302,7 @@ export function useBudgetController(options: Options = {}) {
       if (controller.signal.aborted) return;
       searchedText.current = searchText;
       setSearchResult(result);
-      if (result.match) reveal(result.match);
+      if (result.match) reveal(result.match, false);
       else notify('没有找到匹配的单元格。');
     } catch (error) {
       if (!isAbort(error))
@@ -328,7 +337,6 @@ export function useBudgetController(options: Options = {}) {
   };
   useEffect(() => {
     if (!data.manifest || data.loading || data.error) {
-      setStatistics(EMPTY_STATS);
       setStatisticsBusy(false);
       return;
     }

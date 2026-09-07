@@ -64,9 +64,10 @@ export function createTableOptions({
           color: '#344f62',
           fontWeight: 600,
           textAlign: 'left',
-          textBaseline: 'top',
+          textBaseline: 'middle',
           textStick: 'vertical',
-          padding: [10, 12, 0, 12 + block.productDepth * 14],
+          textStickBaseOnAlign: true,
+          padding: [0, 12, 0, 12 + block.productDepth * 14],
           cursor: block.productIsGroup ? 'pointer' : 'default',
         },
       };

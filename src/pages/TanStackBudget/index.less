@@ -36,6 +36,14 @@
     cursor: not-allowed;
     opacity: 0.4;
   }
+  button[data-pending='true']:not(:disabled) {
+    cursor: progress;
+  }
+  button[aria-current='page'] {
+    opacity: 1;
+    cursor: default;
+    color: var(--tb-ink);
+  }
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
@@ -169,29 +177,6 @@
   .tb-dataset-strip strong {
     font-size: 12px;
     font-weight: 600;
-  }
-  .tb-dataset-status {
-    color: #788a97;
-    font-size: 11px;
-  }
-  .tb-dataset-status::before {
-    content: '';
-    display: inline-block;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #3ca583;
-    margin-right: 6px;
-    vertical-align: middle;
-  }
-  .tb-dataset-status[data-state='error'] {
-    color: #a94339;
-  }
-  .tb-dataset-status[data-state='error']::before {
-    background: #c34b40;
-  }
-  .tb-dataset-status[data-state='loading']::before {
-    background: #bf861f;
   }
   .tb-edit-actions {
     display: flex;
@@ -485,15 +470,6 @@
     color: #35566f;
     background: #f0f6fa;
     font-size: 12px;
-    animation: tb-progress-appear 0s 250ms both;
-  }
-  @keyframes tb-progress-appear {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
   }
   .tb-view-error {
     width: fit-content;
@@ -808,6 +784,11 @@
   .tb-status-bar b {
     color: #355c6c;
     font-variant-numeric: tabular-nums;
+  }
+  .tb-statistics-progress {
+    min-width: 4em;
+    text-align: left;
+    color: #738896;
   }
   .tb-loading {
     height: clamp(360px, calc(100vh - 395px), 720px);

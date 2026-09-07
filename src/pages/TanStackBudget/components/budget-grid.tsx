@@ -22,6 +22,7 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   MessageSquare,
   Paperclip,
@@ -611,13 +612,15 @@ export const BudgetGrid = forwardRef<
             aria-label={
               c.collapsedColumns ? '展开年度月份列' : '收起年度月份列'
             }
+            aria-expanded={!c.collapsedColumns}
+            title={c.collapsedColumns ? '向右展开月份' : '向左收起月份'}
             onClick={c.toggleColumns}
             disabled={c.busy}
           >
             {c.collapsedColumns ? (
               <ChevronRight size={13} />
             ) : (
-              <ChevronDown size={13} />
+              <ChevronLeft size={13} />
             )}
             {cell.label}
           </button>

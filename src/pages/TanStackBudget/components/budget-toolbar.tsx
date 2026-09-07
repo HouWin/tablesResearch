@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { COLUMNS, columnLabel } from '../core/columns';
+import { BudgetCommand } from './budget-command';
 import type { BudgetController } from '../core/use-budget-controller';
 
 function Tool({
@@ -30,6 +31,7 @@ function Tool({
   children,
   title,
   disabled,
+  pending,
   onClick,
   expanded,
 }: {
@@ -37,15 +39,17 @@ function Tool({
   children: ReactNode;
   title?: string;
   disabled?: boolean;
+  pending?: boolean;
   onClick: () => void;
   expanded?: boolean;
 }) {
   return (
-    <button
+    <BudgetCommand
       type="button"
       className="tb-tool"
       title={title}
       aria-label={typeof children === 'string' ? children : title}
+      pending={pending}
       disabled={disabled}
       aria-expanded={expanded}
       aria-haspopup={expanded === undefined ? undefined : 'dialog'}
@@ -53,7 +57,7 @@ function Tool({
     >
       {icon}
       <span>{children}</span>
-    </button>
+    </BudgetCommand>
   );
 }
 
@@ -72,8 +76,14 @@ export function BudgetToolbar({
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [autoFitting, setAutoFitting] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
-  const disabled =
-    c.busy || c.data.loading || Boolean(c.data.error) || !c.data.manifest;
+  const disabled = Boolean(c.data.error) || !c.data.manifest;
+  const pending = c.busy || c.data.loading;
+  const closeColumns = () => {
+    setColumnsOpen(false);
+    columnMenuRef.current
+      ?.querySelector<HTMLButtonElement>('.tb-tool')
+      ?.focus();
+  };
   useEffect(() => {
     if (!columnsOpen) return;
     columnMenuRef.current
@@ -90,6 +100,7 @@ export function BudgetToolbar({
     <section className="tb-toolbar" aria-label="预算表工具栏">
       <div className="tb-tool-group">
         <Tool
+          pending={pending}
           icon={<Undo2 size={16} />}
           disabled={disabled || !c.undo.length}
           title="撤销（Ctrl/⌘ + Z）"
@@ -98,6 +109,7 @@ export function BudgetToolbar({
           撤销
         </Tool>
         <Tool
+          pending={pending}
           icon={<Redo2 size={16} />}
           disabled={disabled || !c.redo.length}
           title="重做（Ctrl/⌘ + Shift + Z）"
@@ -106,6 +118,7 @@ export function BudgetToolbar({
           重做
         </Tool>
         <Tool
+          pending={pending}
           icon={<Copy size={16} />}
           disabled={disabled}
           onClick={() => void c.copy()}
@@ -140,7 +153,7 @@ export function BudgetToolbar({
             : ''}
         </span>
         {c.searchText ? (
-          <button
+          <BudgetCommand
             aria-label="清除搜索"
             disabled={disabled}
             onClick={() => {
@@ -149,25 +162,28 @@ export function BudgetToolbar({
             }}
           >
             <X size={14} />
-          </button>
+          </BudgetCommand>
         ) : null}
-        <button
+        <BudgetCommand
           aria-label="上一个搜索结果"
-          disabled={disabled || c.searchBusy || !c.searchText}
+          pending={pending || c.searchBusy}
+          disabled={disabled || !c.searchText}
           onClick={() => void c.search(-1)}
         >
           <ChevronLeft size={15} />
-        </button>
-        <button
+        </BudgetCommand>
+        <BudgetCommand
           aria-label="下一个搜索结果"
-          disabled={disabled || c.searchBusy || !c.searchText}
+          pending={pending || c.searchBusy}
+          disabled={disabled || !c.searchText}
           onClick={() => void c.search(1)}
         >
           <ChevronRight size={15} />
-        </button>
+        </BudgetCommand>
       </div>
       <div className="tb-tool-group">
         <Tool
+          pending={pending}
           icon={<LocateFixed size={16} />}
           disabled={disabled}
           onClick={openLocate}
@@ -176,6 +192,7 @@ export function BudgetToolbar({
         </Tool>
         <div className="tb-column-menu-anchor" ref={columnMenuRef}>
           <Tool
+            pending={pending}
             icon={<Columns3 size={16} />}
             disabled={disabled}
             expanded={columnsOpen}
@@ -191,29 +208,29 @@ export function BudgetToolbar({
               onKeyDown={(event) => {
                 if (event.key === 'Escape') {
                   event.preventDefault();
-                  setColumnsOpen(false);
-                  columnMenuRef.current
-                    ?.querySelector<HTMLButtonElement>('.tb-tool')
-                    ?.focus();
+                  closeColumns();
                 }
               }}
             >
               <div>
                 <strong>显示的列</strong>
-                <button
-                  aria-label="关闭列管理"
-                  onClick={() => setColumnsOpen(false)}
-                >
+                <BudgetCommand aria-label="关闭列管理" onClick={closeColumns}>
                   <X size={15} />
-                </button>
+                </BudgetCommand>
               </div>
               {COLUMNS.map((column, col) => (
                 <label key={column.id}>
                   <input
                     type="checkbox"
                     disabled={col < 3}
+                    aria-disabled={col < 3 || pending || disabled}
+                    onClick={(event) => {
+                      if (pending || disabled) event.preventDefault();
+                    }}
                     checked={!c.hidden.has(col)}
                     onChange={(event) =>
+                      !pending &&
+                      !disabled &&
                       c.setColumnVisible(col, event.target.checked)
                     }
                   />
@@ -221,15 +238,21 @@ export function BudgetToolbar({
                   {col < 3 ? <small>必显</small> : null}
                 </label>
               ))}
-              <button className="tb-text-button" onClick={c.showAllColumns}>
+              <BudgetCommand
+                className="tb-text-button"
+                pending={pending}
+                disabled={disabled}
+                onClick={c.showAllColumns}
+              >
                 恢复显示全部列
-              </button>
+              </BudgetCommand>
             </div>
           ) : null}
         </div>
         <Tool
+          pending={pending || autoFitting}
           icon={<Expand size={16} />}
-          disabled={disabled || autoFitting}
+          disabled={disabled}
           title={
             engineName === 'VTable'
               ? '按当前层级视图全部内容适配列宽；双击列边界适配单列'
@@ -248,11 +271,12 @@ export function BudgetToolbar({
             })();
           }}
         >
-          {autoFitting ? '适配中…' : '适配列宽'}
+          适配列宽
         </Tool>
       </div>
       <div className="tb-tool-group tb-secondary-tools">
         <Tool
+          pending={pending}
           icon={<MessageSquare size={16} />}
           disabled={disabled}
           onClick={() => c.setPanel('comment')}
@@ -260,6 +284,7 @@ export function BudgetToolbar({
           批注
         </Tool>
         <Tool
+          pending={pending}
           icon={<FileClock size={16} />}
           disabled={disabled}
           onClick={() => c.setPanel('history')}
@@ -267,6 +292,7 @@ export function BudgetToolbar({
           历史
         </Tool>
         <Tool
+          pending={pending}
           icon={<Paperclip size={16} />}
           disabled={disabled}
           onClick={() => c.setPanel('attachment')}
@@ -274,6 +300,7 @@ export function BudgetToolbar({
           附件
         </Tool>
         <Tool
+          pending={pending}
           icon={<FolderTree size={16} />}
           disabled={disabled}
           onClick={() => c.setPanel('lineage')}
@@ -281,6 +308,7 @@ export function BudgetToolbar({
           追踪
         </Tool>
         <Tool
+          pending={pending}
           icon={<ChartNoAxesCombined size={16} />}
           disabled={disabled}
           onClick={() => c.setPanel('aggregate')}

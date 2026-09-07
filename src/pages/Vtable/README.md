@@ -160,3 +160,13 @@ VTABLE_BASE_URL=http://127.0.0.1:8000 pnpm test:vtable:e2e
 - 已目视检查 1600 × 1000 桌面和 390 × 844 窄屏。截图位于 `test-results/vtable-product-desktop.png` 与 `test-results/vtable-product-mobile.png`。
 - 完整 VTable 报告保留在 `playwright-report/vtable-budget-full/`；最终专项与 TanStack 报告分别在 `playwright-report/vtable-budget/` 和 `playwright-report/tanstack-budget/`。这些生成目录均被 Git 忽略。
 - 开发预览使用 `http://localhost:8000/vtable`。生产验收时停止开发服务再构建，将 `dist/` 复制到独立临时目录后启动预算演示服务，避免开发编译覆盖待验收产物。
+
+### 交互稳定性修正（2026-09-07）
+
+- 去掉将层级视图更新误称为“正在加载 / 已连接”的顶部状态。首次进入仍有准备提示；保留当前表格切换视图时，仅超过 300ms 才在表格附近显示进度，错误仍即时显示并可重试。
+- 共用 `budget-command.tsx` 区分暂时等待与功能不可用：暂时等待用 `aria-disabled` 和事件拦截保护操作，保留按钮的颜色、宽度和焦点；没有可撤销内容、层级已全部展开/收起等情况继续使用原生禁用。
+- 合并组织名称垂直居中；超长合并区域滚动时保持名称在可见部分居中。年份表头使用 `◂` 收起月份、`▸` 展开月份，上方月份控制提供展开状态和方向说明。月份显隐不请求行数据。
+- 统计等待期间保留上次合计，慢请求附加“更新中”说明，不清零或替换整段文字。搜索结果定位保留搜索框焦点，支持连续 Enter 查找；业务维度定位仍返回表格。关闭列管理后返回原按钮。
+- `use-delayed-pending.ts` 统一短请求的反馈时机，避免仅靠透明度隐藏仍被辅助技术播报的加载节点。新增 `interaction-stability.spec.ts` 验证慢请求保护、快速请求静默、Canvas 合并文字位置、月份操作和统计连续性。
+
+本轮验收：生产构建、VTable/TanStack 类型检查、11 项逻辑测试通过。VTable 完整回归首轮 36/37 通过，十万行列宽用例在等待适配完成时超时；未调整断言或超时设置，单独复验 1/1 通过（32.3s），37 项用例均已逐项验证。共用 TanStack 工作台 15/15 通过。完整首轮报告位于 `playwright-report/vtable-interaction-full/`，列宽复验报告位于 `playwright-report/vtable-budget/`。开发预览已恢复，最终浏览器检查无页面错误。

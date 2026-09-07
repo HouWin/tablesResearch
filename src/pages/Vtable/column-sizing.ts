@@ -49,7 +49,7 @@ export function fitHeaders(
     ctx.font = `600 ${GRID_FONT_SIZE}px ${GRID_FONT_FAMILY}`;
     const title =
       node.type === 'colDim' && node.collapsible
-        ? `${collapsed ? '▸' : '▾'}  ${node.label}`
+        ? `${collapsed ? '▸' : '◂'}  ${node.label}`
         : node.label;
     const needed = Math.ceil(
       ctx.measureText(title).width + (node.type === 'colDim' ? 32 : 24) + 2,
