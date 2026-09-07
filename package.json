@@ -5,6 +5,10 @@
     "dev": "max dev",
     "build": "max build",
     "typecheck:spreadjs": "tsc -p tsconfig.spreadjs.json --noEmit",
+    "typecheck:tanstack": "tsc -p tsconfig.tanstack.json --noEmit",
+    "test:tanstack": "node --import tsx --test tests/tanstack-budget/core.test.ts",
+    "test:tanstack:e2e": "playwright test --config tests/tanstack-budget/playwright.config.ts",
+    "serve:budget": "node --import tsx server/budget-server.ts",
     "format": "prettier --cache --write .",
     "prepare": "husky",
     "postinstall": "max setup",
@@ -26,6 +30,8 @@
     "@jspreadsheet/react": "^12.8.8",
     "@jspreadsheet/search": "^6.4.0",
     "@jsuites/css": "^1.5.2",
+    "@tanstack/react-table": "9.2.4",
+    "@tanstack/react-virtual": "3.14.10",
     "@umijs/max": "^4.7.7",
     "@univerjs/core": "^0.25.1",
     "@univerjs/data-validation": "0.25.1",
@@ -52,6 +58,7 @@
     "ag-grid-enterprise": "^36.1.0",
     "ag-grid-react": "^36.1.0",
     "antd": "^5.21.6",
+    "fast-formula-parser": "1.0.19",
     "handsontable": "^18.0.0",
     "jspreadsheet": "^12.8.8",
     "jsuites": "^6.4.2",
@@ -64,6 +71,8 @@
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.1",
     "@types/react": "^18.0.33",
     "@types/react-dom": "^18.0.11",
     "husky": "^9",
@@ -71,6 +80,7 @@
     "prettier": "^2.8.7",
     "prettier-plugin-organize-imports": "^3.2.2",
     "prettier-plugin-packagejson": "^2.4.3",
+    "tsx": "^4.23.13",
     "typescript": "^5.0.3"
   }
 }

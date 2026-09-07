@@ -9,6 +9,8 @@
 
 # production
 /dist
+/test-results/
+/playwright-report/
 
 
 # misc

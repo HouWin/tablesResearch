@@ -1,0 +1,19 @@
+{
+  "extends": "./src/.umi/tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "strict": true,
+    "target": "ES2022",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/pages/TanStackBudget/**/*.ts",
+    "src/pages/TanStackBudget/**/*.tsx",
+    "server/**/*.ts",
+    "mock/tanstackBudget.ts",
+    "tests/tanstack-budget/**/*.ts"
+  ]
+}

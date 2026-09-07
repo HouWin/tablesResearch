@@ -91,6 +91,11 @@ export default defineConfig({
       ],
     },
     {
+      name: 'TanStack 费用预算表',
+      path: '/tanstack-budget',
+      component: './TanStackBudget',
+    },
+    {
       name: 'SpreadJS Demo',
       path: '/spreadjs-demo',
       routes: [
