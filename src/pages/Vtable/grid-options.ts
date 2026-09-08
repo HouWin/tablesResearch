@@ -30,13 +30,18 @@ export function createTableOptions({
     heightMode: 'standard',
     defaultRowHeight: ROW_HEIGHT,
     defaultHeaderRowHeight: HEADER_HEIGHT,
+    limitMinHeight: false,
     frozenColCount: 4,
     frozenRowCount: HEADER_ROWS,
     autoWrapText: false,
     rowSeriesNumber: {
       width: ROW_NUMBER_WIDTH,
       title: '#',
-      format: (_col, row) => (row ?? HEADER_ROWS) - HEADER_ROWS + 1,
+      format: (_col, row) =>
+        (row ?? 0) >=
+        HEADER_ROWS + (getController().data.manifest?.totalRows ?? 0)
+          ? ''
+          : (row ?? HEADER_ROWS) - HEADER_ROWS + 1,
       style: {
         color: '#8b9daa',
         fontSize: 11,
@@ -47,6 +52,16 @@ export function createTableOptions({
       headerStyle: { bgColor: '#e4eef7' },
     },
     customMergeCell: (col, row) => {
+      const c = getController();
+      if (row === HEADER_ROWS + (c.data.manifest?.totalRows ?? 0))
+        return {
+          text: '',
+          range: {
+            start: { col: 0, row },
+            end: { col: c.visibleColumns.length, row },
+          },
+          style: { bgColor: '#fff', borderLineWidth: 0, cursor: 'default' },
+        };
       if (col !== 1 || row < HEADER_ROWS) return;
       const block = getBlock(row - HEADER_ROWS);
       if (!block || block.productRowSpan <= 1) return;
@@ -73,6 +88,8 @@ export function createTableOptions({
       };
     },
     select: {
+      disableSelect: (_col, row) =>
+        row >= HEADER_ROWS + (getController().data.manifest?.totalRows ?? 0),
       disableHeaderSelect: true,
       highlightMode: 'cell',
       // Controller navigation handles scrolling. Selecting a huge range must

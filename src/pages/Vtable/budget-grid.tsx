@@ -46,6 +46,12 @@ import {
   syncTableSelection,
 } from './grid-selection';
 import { MAX_ROW_HEIGHT, MIN_ROW_HEIGHT, useRowResize } from './use-row-resize';
+import {
+  restoreViewport,
+  updateViewportSpace,
+  withStableViewport,
+  type ViewportAnchor,
+} from './grid-viewport';
 
 type Rect = { left: number; top: number; width: number; height: number };
 const sameRange = (a: CellRange, b: CellRange) =>
@@ -69,6 +75,7 @@ export const VTableBudgetGrid = forwardRef<
   const blocks = useRef(new Map<number, OrganizationBlock>());
   const syncing = useRef(false);
   const viewport = useRef({ first: 0, last: 15 });
+  const foldAnchor = useRef<ViewportAnchor>();
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [initializationError, setInitializationError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -121,8 +128,13 @@ export const VTableBudgetGrid = forwardRef<
     const manifest = current.data.manifest;
     if (!table || !manifest || current.data.loading || current.data.error)
       return;
+    // Release trailing space as the user scrolls up, without moving the viewport.
+    updateViewportSpace(table, manifest.totalRows);
     const visible = table.getBodyVisibleRowRange();
-    const first = Math.max(0, visible.rowStart - HEADER_ROWS);
+    const first = Math.max(
+      0,
+      Math.min(manifest.totalRows - 1, visible.rowStart - HEADER_ROWS),
+    );
     const last = Math.min(manifest.totalRows - 1, visible.rowEnd - HEADER_ROWS);
     viewport.current = { first, last };
     if (current.data.pageError) return;
@@ -206,7 +218,9 @@ export const VTableBudgetGrid = forwardRef<
       });
     };
     const source = new data.CachedDataSource({
-      length: c.data.manifest.totalRows,
+      // A zero-height presentation row can absorb space removed by a bottom fold.
+      // It is excluded from business coordinates, selection, counts and paging.
+      length: c.data.manifest.totalRows + 1,
       // Synchronous cache reads avoid a second unbounded Promise/record cache in VTable.
       // Missing rows are filled exclusively by the deduplicated viewport page loader.
       get: (index: number) => latest.current.data.rowAt(index),
@@ -219,6 +233,7 @@ export const VTableBudgetGrid = forwardRef<
         getBlock: captureBlock,
       });
       table = new ListTable(host.current, options);
+      updateViewportSpace(table, c.data.manifest.totalRows, 0);
       instance.current = table;
       projectionId.current = c.data.manifest.id;
       setInitializationError('');
@@ -259,6 +274,7 @@ export const VTableBudgetGrid = forwardRef<
           latest.current.busy ||
           latest.current.data.loading ||
           latest.current.data.error ||
+          row >= HEADER_ROWS + (latest.current.data.manifest?.totalRows ?? 0) ||
           targetIcon
         )
           return;
@@ -307,7 +323,11 @@ export const VTableBudgetGrid = forwardRef<
         }
         if (point.col === 0) {
           const block = captureBlock(point.row);
-          if (block?.productIsGroup)
+          if (block?.productIsGroup) {
+            foldAnchor.current = {
+              row: point.row,
+              top: table!.getCellRelativeRect(col, point.row + HEADER_ROWS).top,
+            };
             current.changeQuery(
               {
                 ...current.data.query,
@@ -318,9 +338,14 @@ export const VTableBudgetGrid = forwardRef<
               },
               { viewport: viewport.current, selection: point },
             );
+          }
         } else if (point.col === 1) {
           const record = current.data.rowAt(point.row);
-          if (record?.regionIsGroup)
+          if (record?.regionIsGroup) {
+            foldAnchor.current = {
+              row: point.row,
+              top: table!.getCellRelativeRect(col, point.row + HEADER_ROWS).top,
+            };
             current.changeQuery(
               {
                 ...current.data.query,
@@ -331,6 +356,7 @@ export const VTableBudgetGrid = forwardRef<
               },
               { viewport: viewport.current, selection: point },
             );
+          }
         }
         focus();
       });
@@ -383,9 +409,8 @@ export const VTableBudgetGrid = forwardRef<
       observer = new ResizeObserver(([entry]) => {
         if (!table || disposed) return;
         adjustFrozenColumns(table, entry.contentRect.width);
-        table.resize();
-        latest.current.gridRef.current?.scrollToCell(
-          latest.current.range.focus,
+        withStableViewport(table, latest.current.data.manifest!.totalRows, () =>
+          table!.resize(),
         );
         schedule();
       });
@@ -419,12 +444,18 @@ export const VTableBudgetGrid = forwardRef<
     // The data hook has already loaded the new visible pages at this point.
     syncing.current = true;
     table.dataSource = new data.CachedDataSource({
-      length: manifest.totalRows,
+      length: manifest.totalRows + 1,
       get: (index: number) => latest.current.data.rowAt(index),
     });
     projectionId.current = manifest.id;
-    table.scrollTop = top;
-    table.scrollLeft = left;
+    restoreViewport(
+      table,
+      manifest.totalRows,
+      top,
+      left,
+      c.data.preserveScroll ? foldAnchor.current : undefined,
+    );
+    foldAnchor.current = undefined;
     table.render();
     syncing.current = false;
     loadViewport();
@@ -434,8 +465,10 @@ export const VTableBudgetGrid = forwardRef<
   useLayoutEffect(() => {
     const table = instance.current;
     if (!table) return;
-    table.updateColumns(
-      createColumns(() => latest.current, widths.current, captureBlock),
+    withStableViewport(table, c.data.manifest!.totalRows, () =>
+      table.updateColumns(
+        createColumns(() => latest.current, widths.current, captureBlock),
+      ),
     );
     loadViewport();
     setLayoutVersion((value) => value + 1);
@@ -445,7 +478,9 @@ export const VTableBudgetGrid = forwardRef<
     const table = instance.current;
     if (!table) return;
     // Refresh only the viewport; never walk all 101,100 records after an edit or a page response.
-    table.renderWithRecreateCells();
+    withStableViewport(table, c.data.manifest!.totalRows, () =>
+      table.renderWithRecreateCells(),
+    );
     loadViewport();
     setLayoutVersion((value) => value + 1);
   }, [c.data.version, c.comments, c.attachments, loadViewport]);
@@ -590,7 +625,11 @@ export const VTableBudgetGrid = forwardRef<
     const visible = table.getBodyVisibleRowRange();
     for (
       let row = Math.max(HEADER_ROWS, visible.rowStart);
-      row <= Math.min(table.rowCount - 1, visible.rowEnd);
+      row <=
+      Math.min(
+        HEADER_ROWS + (c.data.manifest?.totalRows ?? 0) - 1,
+        visible.rowEnd,
+      );
       row++
     ) {
       const { bottom } = table.getCellRelativeRect(0, row);
