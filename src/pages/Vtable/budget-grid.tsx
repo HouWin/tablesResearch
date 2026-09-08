@@ -29,16 +29,23 @@ import {
   HEADER_ROWS,
   HEADER_HEIGHT,
   ROW_HEIGHT,
+  ROW_NUMBER_WIDTH,
   toBusinessPosition,
   toTableCell,
   type OrganizationBlock,
 } from './grid-model';
-import { handleGridKey } from './grid-keyboard';
+import { handleGridKey, type GridNavigation } from './grid-keyboard';
 import { useGridDrag } from './use-grid-drag';
 import { GridEditor } from './grid-editor';
 import { GridContextMenu } from './grid-context-menu';
 import { createTableOptions } from './grid-options';
 import { adjustFrozenColumns, useColumnSizing } from './use-column-sizing';
+import {
+  organizationPosition,
+  organizationSelection,
+  syncTableSelection,
+} from './grid-selection';
+import { MAX_ROW_HEIGHT, MIN_ROW_HEIGHT, useRowResize } from './use-row-resize';
 
 type Rect = { left: number; top: number; width: number; height: number };
 const sameRange = (a: CellRange, b: CellRange) =>
@@ -69,6 +76,7 @@ export const VTableBudgetGrid = forwardRef<
   const closeContext = useCallback(() => setContext(null), []);
   const shiftAnchor = useRef<CellPosition | null>(null);
   const pointerSelecting = useRef(false);
+  const keyboardNavigation = useRef<GridNavigation>({});
   const visibleKey = c.visibleColumns.join(',');
   const hasManifest = Boolean(c.data.manifest);
   const focus = () => root.current?.focus({ preventScroll: true });
@@ -145,6 +153,14 @@ export const VTableBudgetGrid = forwardRef<
     captureBlock,
     loadViewport,
     onLayout: () => setLayoutVersion((value) => value + 1),
+  });
+  const rowResize = useRowResize({
+    instance,
+    controller: c,
+    onLayout: () => {
+      loadViewport();
+      setLayoutVersion((value) => value + 1);
+    },
   });
   useImperativeHandle(ref, () => ({
     focus,
@@ -229,10 +245,13 @@ export const VTableBudgetGrid = forwardRef<
           position(selected.start.col, selected.start.row);
         const end = position(selected.end.col, selected.end.row);
         if (anchor && end) {
-          const next = { anchor, focus: end };
+          const next = organizationSelection(
+            { anchor, focus: end },
+            captureBlock,
+          );
           if (!sameRange(next, latest.current.range))
             latest.current.setRange(next);
-          void latest.current.data.ensurePage(end.row).catch(() => {});
+          void latest.current.data.ensurePage(next.focus.row).catch(() => {});
         }
       });
       table.on('click_cell', ({ col, row, targetIcon }) => {
@@ -277,8 +296,9 @@ export const VTableBudgetGrid = forwardRef<
           focus();
           return;
         }
-        const point = position(col, row);
-        if (!point) return;
+        const hit = position(col, row);
+        if (!hit) return;
+        const point = organizationPosition(hit, captureBlock);
         if (current.editing) {
           void current.finishEdit().then((ok) => {
             if (ok) current.select(point);
@@ -316,11 +336,12 @@ export const VTableBudgetGrid = forwardRef<
       });
       table.on('dblclick_cell', ({ col, row }) => {
         const point = position(col, row);
-        if (point) void latest.current.startEdit(point);
+        if (point && point.col > 1) void latest.current.startEdit(point);
       });
       table.on('icon_click', ({ col, row, name }) => {
-        const point = position(col, row);
-        if (!point) return;
+        const hit = position(col, row);
+        if (!hit) return;
+        const point = organizationPosition(hit, captureBlock);
         latest.current.select(point);
         if (name === 'budget-comment') latest.current.setPanel('comment');
         if (name === 'budget-attachment') latest.current.setPanel('attachment');
@@ -333,8 +354,12 @@ export const VTableBudgetGrid = forwardRef<
           latest.current.data.error
         )
           return;
-        const point = position(col, row);
-        if (!point || !event || !('clientX' in event)) return;
+        const hit = position(col, row);
+        if (!hit || !event || !('clientX' in event)) return;
+        // The menu opens on right-pointerdown. Prevent the browser's subsequent
+        // default focus action from moving focus back from the menu to Canvas.
+        event.preventDefault();
+        const point = organizationPosition(hit, captureBlock);
         const box = bounds(latest.current.range);
         if (
           point.row < box.top ||
@@ -429,9 +454,20 @@ export const VTableBudgetGrid = forwardRef<
     const table = instance.current;
     if (!table) return;
     if (pointerSelecting.current && !drag.current) return;
+    const selected = organizationSelection(c.range, captureBlock);
+    if (!c.data.loading && !sameRange(selected, c.range)) {
+      c.setRange(selected);
+      return;
+    }
+    if (
+      !c.data.loading &&
+      selected.focus.col === 0 &&
+      !c.data.rowAt(selected.focus.row)
+    )
+      void c.data.ensurePage(selected.focus.row).catch(() => {});
     syncing.current = true;
-    let start = toTableCell(c.range.anchor, c.visibleColumns);
-    let end = toTableCell(c.range.focus, c.visibleColumns);
+    let start = toTableCell(selected.anchor, c.visibleColumns);
+    let end = toTableCell(selected.focus, c.visibleColumns);
     if (Math.abs(end.row - start.row) > 200) {
       // VTable 1.26.7 expands merges by walking every selected cell, including
       // unloaded rows. Draw only the visible slice; the controller keeps the
@@ -450,20 +486,20 @@ export const VTableBudgetGrid = forwardRef<
         row: c.range.anchor.row <= c.range.focus.row ? bottom : top,
       };
     }
-    table.selectCells([
-      {
-        start,
-        end,
-      },
-    ]);
+    syncTableSelection(table, { start, end });
     syncing.current = false;
-  }, [c.range, visibleKey, c.data.manifest?.id, layoutVersion]);
+  }, [c.range, visibleKey, c.data.manifest?.id, c.data.loading, layoutVersion]);
 
   useEffect(() => {
     const element = root.current;
     if (!element) return;
     const key = (event: KeyboardEvent) => {
-      if ((event.target as Element).closest('input,button,textarea')) return;
+      if (
+        (event.target as Element).closest(
+          'input,button,textarea,[role="separator"]',
+        )
+      )
+        return;
       if (
         (event.key === 'ContextMenu' ||
           (event.shiftKey && event.key === 'F10')) &&
@@ -498,6 +534,8 @@ export const VTableBudgetGrid = forwardRef<
             (element.clientHeight - HEADER_ROWS * HEADER_HEIGHT) / ROW_HEIGHT,
           ),
         ),
+        captureBlock,
+        keyboardNavigation.current,
       );
     };
     element.addEventListener('keydown', key, true);
@@ -546,6 +584,23 @@ export const VTableBudgetGrid = forwardRef<
   }, [editorOffscreen, c.editing?.position, layoutVersion]);
   const selection = bounds(c.range);
   const fillRect = cellRect({ row: selection.bottom, col: selection.right });
+  const rowHandles: { row: number; bottom: number; height: number }[] = [];
+  const table = instance.current;
+  if (table) {
+    const visible = table.getBodyVisibleRowRange();
+    for (
+      let row = Math.max(HEADER_ROWS, visible.rowStart);
+      row <= Math.min(table.rowCount - 1, visible.rowEnd);
+      row++
+    ) {
+      const { bottom } = table.getCellRelativeRect(0, row);
+      if (
+        bottom > HEADER_ROWS * HEADER_HEIGHT &&
+        bottom < (host.current?.clientHeight ?? 0) - 10
+      )
+        rowHandles.push({ row, bottom, height: table.getRowHeight(row) });
+    }
+  }
   return (
     <div
       className="tb-grid-wrap vt-grid-wrap"
@@ -582,6 +637,10 @@ export const VTableBudgetGrid = forwardRef<
         aria-busy={c.busy || c.data.loading}
         aria-activedescendant="vtable-active-cell"
         aria-describedby="vtable-grid-help"
+        onPointerUpCapture={() => {
+          pointerSelecting.current = false;
+          setLayoutVersion((value) => value + 1);
+        }}
         onPaste={(event) => {
           if (!c.editing && !c.busy && !c.data.loading && !c.data.error) {
             event.preventDefault();
@@ -614,6 +673,7 @@ export const VTableBudgetGrid = forwardRef<
           }
         }}
         onPointerDownCapture={(event) => {
+          keyboardNavigation.current = {};
           pointerSelecting.current =
             event.button === 0 &&
             Boolean((event.target as Element).closest('.vt-host'));
@@ -655,9 +715,43 @@ export const VTableBudgetGrid = forwardRef<
         }}
       >
         <div ref={host} className="vt-host" aria-hidden="true" />
+        {rowHandles.map(({ row, bottom, height }) => (
+          <div
+            key={row}
+            className="vt-row-resizer"
+            role="separator"
+            aria-label={`调整第 ${row - HEADER_ROWS + 1} 行高度`}
+            aria-orientation="horizontal"
+            aria-valuemin={MIN_ROW_HEIGHT}
+            aria-valuemax={MAX_ROW_HEIGHT}
+            aria-valuenow={height}
+            aria-disabled={rowResize.blocked}
+            tabIndex={rowResize.blocked ? -1 : 0}
+            title="拖动调整行高；上下方向键微调；双击恢复默认行高"
+            style={{ top: bottom - 3, width: ROW_NUMBER_WIDTH }}
+            onPointerDown={(event) => rowResize.start(event, row)}
+            onDoubleClick={() => rowResize.resize(row, ROW_HEIGHT)}
+            onKeyDown={(event) => {
+              if (
+                event.key === 'ArrowUp' ||
+                event.key === 'ArrowDown' ||
+                event.key === 'Home'
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                rowResize.resize(
+                  row,
+                  event.key === 'Home'
+                    ? ROW_HEIGHT
+                    : height + (event.key === 'ArrowUp' ? -4 : 4),
+                );
+              }
+            }}
+          />
+        ))}
         <span id="vtable-grid-help" className="vt-sr-only">
           方向键移动，Shift 扩选，Enter 或 F2 编辑，Ctrl 或 Command 加 F
-          搜索。组织与科目展开按钮位于单元格中，也可使用上方层级控制。
+          搜索。点击组织合并区域展开或收起；拖动行号分隔线调整行高。
         </span>
         <span className="vt-sr-only" role="row">
           <span

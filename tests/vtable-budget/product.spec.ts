@@ -124,7 +124,18 @@ test('方向键停留在边界，Tab 换行；键盘菜单只读保护与焦点�
   await grid(page).press('ArrowRight');
   await expect(page.locator('.tb-address')).toHaveText('P1');
   await grid(page).press('Tab');
-  await expect(page.locator('.tb-address')).toHaveText('A2');
+  // SpreadJS displays the merge origin, while continuing across the second row.
+  await expect(page.locator('.tb-address')).toHaveText('A1');
+  await grid(page).press('Tab');
+  await expect(page.locator('.tb-address')).toHaveText('B2');
+  await grid(page).press('ArrowLeft');
+  await expect(page.locator('.tb-address')).toHaveText('A1');
+  await grid(page).press('ArrowRight');
+  await expect(page.locator('.tb-address')).toHaveText('B2');
+  await grid(page).press('Shift+Tab');
+  await expect(page.locator('.tb-address')).toHaveText('A1');
+  await grid(page).press('Shift+Tab');
+  await expect(page.locator('.tb-address')).toHaveText('P1');
 });
 
 test('菜单打开侧栏后可立即输入批注，Escape 返回表格', async ({ page }) => {

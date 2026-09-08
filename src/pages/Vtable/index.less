@@ -35,6 +35,19 @@
     z-index: 20;
     font-size: 13px;
   }
+  .vt-row-resizer {
+    position: absolute;
+    left: 0;
+    height: 7px;
+    z-index: 14;
+    cursor: row-resize;
+    touch-action: none;
+  }
+  .vt-row-resizer:hover,
+  .vt-row-resizer:focus-visible {
+    background: rgba(38, 138, 148, 0.2);
+    outline: 1px solid #268a94;
+  }
   .vt-editor[aria-invalid='true'] {
     border-color: #bb473e;
   }

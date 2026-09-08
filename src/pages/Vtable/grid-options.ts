@@ -95,7 +95,9 @@ export function createTableOptions({
     },
     resize: {
       columnResizeMode: 'header',
-      rowResizeMode: 'all',
+      // Body merge interiors must never act as row-height handles.
+      // Accessible handles in the row-number gutter use setRowHeight instead.
+      rowResizeMode: 'none',
       disableDblclickAutoResizeColWidth: true,
     },
     dragOrder: { dragHeaderMode: 'none' },

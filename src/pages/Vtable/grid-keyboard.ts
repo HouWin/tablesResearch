@@ -1,5 +1,15 @@
-import { bounds } from '../TanStackBudget/core/types';
+import { bounds, type CellPosition } from '../TanStackBudget/core/types';
 import type { BudgetController } from '../TanStackBudget/core/use-budget-controller';
+import {
+  organizationPosition,
+  type GetOrganizationBlock,
+} from './grid-selection';
+
+export type GridNavigation = {
+  point?: CellPosition;
+  origin?: CellPosition;
+  projectionId?: string;
+};
 
 export function moveFocus(
   c: BudgetController,
@@ -7,9 +17,27 @@ export function moveFocus(
   columnDelta: number,
   extend = false,
   wrap = false,
+  getBlock: GetOrganizationBlock = (row) => c.data.rowAt(row),
+  navigation?: GridNavigation,
 ) {
   const visible = c.visibleColumns;
-  let row = c.range.focus.row + rowDelta;
+  // Preserve the physical row while crossing a merge horizontally, as SpreadJS
+  // does: P1 → Tab → A1 (merged A1:A4) → Tab → B2.
+  const from =
+    navigation?.point &&
+    navigation.projectionId === c.data.manifest?.id &&
+    navigation.origin?.row === c.range.focus.row &&
+    navigation.origin?.col === c.range.focus.col
+      ? navigation.point
+      : c.range.focus;
+  let row = from.row + rowDelta;
+  const block =
+    c.range.focus.col === 0 ? getBlock(c.range.focus.row) : undefined;
+  if (block && columnDelta === 0 && Math.abs(rowDelta) === 1)
+    row =
+      rowDelta > 0
+        ? block.blockStart + block.productRowSpan
+        : block.blockStart - 1;
   let column = Math.max(0, visible.indexOf(c.range.focus.col)) + columnDelta;
   if (column >= visible.length) {
     column = wrap ? 0 : visible.length - 1;
@@ -19,14 +47,17 @@ export function moveFocus(
     column = wrap ? visible.length - 1 : 0;
     if (wrap) row -= 1;
   }
-  c.select(
-    {
-      row: Math.max(0, Math.min((c.data.manifest?.totalRows ?? 1) - 1, row)),
-      col: visible[column],
-    },
-    extend,
-    true,
-  );
+  const point = {
+    row: Math.max(0, Math.min((c.data.manifest?.totalRows ?? 1) - 1, row)),
+    col: visible[column],
+  };
+  const origin = organizationPosition(point, getBlock);
+  if (navigation) {
+    navigation.point = point;
+    navigation.origin = origin;
+    navigation.projectionId = c.data.manifest?.id;
+  }
+  c.select(origin, extend, true);
 }
 
 /** Keyboard commands use the same transactions as toolbar and pointer operations. */
@@ -34,6 +65,8 @@ export function handleGridKey(
   event: KeyboardEvent,
   c: BudgetController,
   pageRows: number,
+  getBlock: GetOrganizationBlock = (row) => c.data.rowAt(row),
+  navigation?: GridNavigation,
 ) {
   if (
     event.isComposing ||
@@ -45,6 +78,20 @@ export function handleGridKey(
     return;
   const key = event.key.toLowerCase();
   const command = event.ctrlKey || event.metaKey;
+  if (
+    navigation &&
+    (command ||
+      ![
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+        'Tab',
+        'PageUp',
+        'PageDown',
+      ].includes(event.key))
+  )
+    navigation.point = undefined;
   const box = bounds(c.range);
   const stop = () => {
     event.preventDefault();
@@ -113,25 +160,33 @@ export function handleGridKey(
     stop();
   switch (event.key) {
     case 'ArrowDown':
-      moveFocus(c, 1, 0, event.shiftKey);
+      moveFocus(c, 1, 0, event.shiftKey, false, getBlock, navigation);
       break;
     case 'ArrowUp':
-      moveFocus(c, -1, 0, event.shiftKey);
+      moveFocus(c, -1, 0, event.shiftKey, false, getBlock, navigation);
       break;
     case 'ArrowLeft':
-      moveFocus(c, 0, -1, event.shiftKey);
+      moveFocus(c, 0, -1, event.shiftKey, false, getBlock, navigation);
       break;
     case 'ArrowRight':
-      moveFocus(c, 0, 1, event.shiftKey);
+      moveFocus(c, 0, 1, event.shiftKey, false, getBlock, navigation);
       break;
     case 'Tab':
-      moveFocus(c, 0, event.shiftKey ? -1 : 1, false, true);
+      moveFocus(
+        c,
+        0,
+        event.shiftKey ? -1 : 1,
+        false,
+        true,
+        getBlock,
+        navigation,
+      );
       break;
     case 'PageDown':
-      moveFocus(c, pageRows, 0, event.shiftKey);
+      moveFocus(c, pageRows, 0, event.shiftKey, false, getBlock, navigation);
       break;
     case 'PageUp':
-      moveFocus(c, -pageRows, 0, event.shiftKey);
+      moveFocus(c, -pageRows, 0, event.shiftKey, false, getBlock, navigation);
       break;
     case 'Home':
       c.select(

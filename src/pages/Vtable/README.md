@@ -86,6 +86,8 @@ pnpm serve:budget
 - `budget-grid.tsx`：Canvas 实例、可视分页、合并、选区同步、尺寸与拖拽生命周期。
 - `grid-model.ts`：原列树到 VTable 的纯转换、坐标映射与图标。
 - `grid-options.ts`：声明式 VTable 配置、主题与合并展示，不承担 React 状态或事件生命周期。
+- `grid-selection.ts`：组织合并范围与起始地址归一化，只查询边界元数据，避免遍历大选区。
+- `use-row-resize.ts`：行号分隔线调整行高的指针生命周期、取消与键盘微调，通过公开 `setRowHeight` 更新表格。
 - `column-sizing.ts`：实际显示文本测量、字体/留白约定与多层表头宽度分配。
 - `use-column-sizing.ts`：分页测量、取消和过期结果校验，以及响应式冻结列计算。
 - `use-grid-drag.ts`：拖拽填充/移动、边缘滚动、Escape 和窗口失焦取消，统一回收事件与动画帧。
@@ -170,3 +172,22 @@ VTABLE_BASE_URL=http://127.0.0.1:8000 pnpm test:vtable:e2e
 - `use-delayed-pending.ts` 统一短请求的反馈时机，避免仅靠透明度隐藏仍被辅助技术播报的加载节点。新增 `interaction-stability.spec.ts` 验证慢请求保护、快速请求静默、Canvas 合并文字位置、月份操作和统计连续性。
 
 本轮验收：生产构建、VTable/TanStack 类型检查、11 项逻辑测试通过。VTable 完整回归首轮 36/37 通过，十万行列宽用例在等待适配完成时超时；未调整断言或超时设置，单独复验 1/1 通过（32.3s），37 项用例均已逐项验证。共用 TanStack 工作台 15/15 通过。完整首轮报告位于 `playwright-report/vtable-interaction-full/`，列宽复验报告位于 `playwright-report/vtable-budget/`。开发预览已恢复，最终浏览器检查无页面错误。
+
+### 组织合并区交互修正
+
+- 对照 `/spreadjs-demo/business` 实际操作：组织名称、空白处、内部行边界都属于同一个合并区；叶子组织整块选中，父组织点击整块切换层级。地址、业务上下文、批注及附件统一使用合并区起始格。
+- VTable 1.26.7 的 `selectCells` 默认跳过合并范围扩展。同步 Canvas 前显式归一化组织范围，保留完整业务选区；十万行仅绘制可见部分，最多补取起始格所在的一页，不遍历或下载整块数据。
+- 关闭正文原生行高拖拽，避免居中文字被内部行边界截获。行号分隔线提供独立拖拽入口，支持上下方向键微调、双击或 Home 恢复默认行高、Escape 取消拖拽。
+- 上下方向键按完整组织块移动；横向导航保留进入合并区时的实际行。例如 `P1 → Tab → A1 → Tab → B2`，与 SpreadJS 一致。重复点击组织和科目名称不触发多余的只读编辑提示。
+- 右键打开菜单时阻止原生指针事件抢回焦点，菜单保持可用的键盘导航和 Escape 关闭行为。
+- 新增 `organization.spec.ts`，直接对照 SpreadJS、检查 Canvas 真实选区边框、内部行边界点击、行高调整、菜单关联与十万行离屏合并区；补充合并选区边界和读取次数的逻辑测试。
+
+本轮最终验收：生产构建、VTable 类型检查与格式检查通过；5 项选区逻辑测试、9 项业务测试通过；最终生产浏览器回归 **42/42** 通过（本机 Chrome，2 分钟），报告位于 `playwright-report/vtable-budget/`。开发服务已恢复至 8000 端口，最终预览检查无页面错误，截图位于 `test-results/vtable-organization-final.png`。构建仍有原多表格研究项目的大体积依赖提示。
+
+### 选中组织后滑动变深色的修正
+
+用户复现路径为选中组织合并区后向上滑动。原选区同步在每次滚动布局更新时重新调用 `selectCells`，触发 VTable 1.26.7 自定义合并区的选中图元残留：12 次小幅滚动后，背景由 1 层累积至 13 层，遮盖文字。
+
+`syncTableSelection` 在范围不变时保留已有选区，由引擎更新滚动位置；范围变化时通过公开 `clearSelected` 清除旧图元后再选择，避免残留。组织测试新增 1600px、700px 下反复上下滑动与切换选区的像素颜色和实际绘制层数量检查；十万行测试也检查可见选区随滚动变化时始终只有一层选中背景。
+
+本次验收：开发服务完整浏览器回归 **44/44** 通过（2 分钟），类型检查、格式检查与 5 项选区逻辑测试通过。当前浏览器中也按用户步骤完成滑动验证。截图位于 `test-results/organization-scroll-1600.png` 和 `test-results/organization-scroll-700.png`；本次未重新运行生产构建。
