@@ -214,16 +214,16 @@ test('十万行尾部科目折叠/展开保持锚点和横向位置，仅加载�
   await page.getByRole('button', { name: '体验 10 万行数据' }).click();
   await expect(grid(page)).toHaveAttribute('aria-rowcount', '101104');
   await read(page, (table) => {
-    table.scrollTop = 100999 * 32;
+    table.scrollTop = 101009 * 32;
     table.scrollLeft = 150;
   });
   await expect
     .poll(() =>
-      read(page, (table) => Boolean(table.getCellOriginRecord(2, 101003))),
+      read(page, (table) => Boolean(table.getCellOriginRecord(2, 101013))),
     )
     .toBe(true);
   const host = (await page.locator('.vt-host').boundingBox())!;
-  const before = await geometry(page, 100999, 2);
+  const before = await geometry(page, 101009, 2);
   const offsets: number[] = [];
   page.on('request', (request) => {
     if (request.url().endsWith('/page'))
@@ -233,10 +233,10 @@ test('十万行尾部科目折叠/展开保持锚点和横向位置，仅加载�
     await page.mouse.click(host.x + before.left + 42, host.y + before.top + 16);
     await expect(grid(page)).toHaveAttribute(
       'aria-rowcount',
-      expanded ? '101104' : '101004',
+      expanded ? '101104' : '101014',
     );
     await nextPaint(page);
-    expect(await geometry(page, 100999, 2)).toMatchObject({
+    expect(await geometry(page, 101009, 2)).toMatchObject({
       top: before.top,
       scroll: before.scroll,
       horizontal: 150,

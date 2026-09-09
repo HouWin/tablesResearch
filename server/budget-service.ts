@@ -183,7 +183,9 @@ function createStressOrganizations() {
           id: `${id}-subject-${group}`,
           name: `${name}合计`,
           memberCode: `MEM_SUBJECT_STRESS_${group}`,
-          detailCount: unit < 0 ? 0 : 100,
+          // Every organization owns subject details, just like regular mode.
+          // Per region: 10 × 100 + 10 centers × 10 × 90 = 10,000 details.
+          detailCount: unit < 0 ? 100 : 90,
           group,
         })),
       });

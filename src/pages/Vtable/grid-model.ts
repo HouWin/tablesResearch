@@ -195,6 +195,8 @@ export function createColumns(
                     14,
               ],
               textStick: col === 0 ? 'vertical' : false,
+              // Sticky layout reads the column style, not customMergeCell.style.
+              textStickBaseOnAlign: col === 0,
               cursor:
                 col < 2 &&
                 (col === 0 ? record?.productIsGroup : record?.regionIsGroup)

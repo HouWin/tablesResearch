@@ -710,8 +710,7 @@ for (const stress of [false, true]) {
       .elementHandle();
     const total = stress ? 101104 : 40;
     for (const col of [0, 1]) {
-      // The first ten stress rows are summaries without subject children.
-      const row = stress && col === 1 ? 10 : 0;
+      const row = 0;
       for (const expanding of [false, true]) {
         let release!: () => void;
         const held = new Promise<void>((resolve) => {
@@ -746,7 +745,7 @@ for (const stress of [false, true]) {
           String(
             expanding
               ? total
-              : total - (col === 0 ? (stress ? 10100 : 32) : stress ? 100 : 3),
+              : total - (col === 0 ? (stress ? 9100 : 32) : stress ? 100 : 3),
           ),
         );
         expect(await canvas!.evaluate((element) => element.isConnected)).toBe(
@@ -768,9 +767,9 @@ test('十万模式远处科目折叠保留滚动位置，仅加载当前分页�
   await ready(page, true);
   const canvas = await page.locator('.vt-host canvas').first().elementHandle();
   const rect = await page.locator('.vt-host').boundingBox();
-  // Subject summary at index 414 (10 root summaries + four groups of 101 rows).
+  // The fifth regional subject begins at index 404 (four groups of 101 rows).
   await page.mouse.move(rect!.x + 760, rect!.y + 200);
-  await page.mouse.wheel(0, 414 * 32);
+  await page.mouse.wheel(0, 404 * 32);
   const target = { x: (await point(page, 0, 1)).x, y: rect!.y + 128 };
   const valueX = (await point(page, 0, 3)).x;
   await expect
@@ -778,7 +777,7 @@ test('十万模式远处科目折叠保留滚动位置，仅加载当前分页�
       await page.mouse.click(valueX, target.y);
       return page.locator('.tb-address').innerText();
     })
-    .toMatch(/415$/);
+    .toMatch(/405$/);
   const offsets: number[] = [];
   let fail = true;
   await page.route('**/api/tanstack-budget/page', async (route) => {
@@ -799,13 +798,13 @@ test('十万模式远处科目折叠保留滚动位置，仅加载当前分页�
   await page.getByRole('button', { name: '重新加载', exact: true }).click();
   await expect(grid(page)).toHaveAttribute('aria-rowcount', '101004');
   await page.mouse.click(valueX, target.y);
-  await expect(page.locator('.tb-address')).toHaveText('D415');
+  await expect(page.locator('.tb-address')).toHaveText('D405');
   expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
   expect(offsets.length).toBeGreaterThan(0);
   expect(offsets.every((offset) => offset >= 400 && offset <= 600)).toBe(true);
   await page.mouse.click(target.x, target.y);
   await expect(grid(page)).toHaveAttribute('aria-rowcount', '101104');
   await page.mouse.click(valueX, target.y);
-  await expect(page.locator('.tb-address')).toHaveText('D415');
+  await expect(page.locator('.tb-address')).toHaveText('D405');
   await page.screenshot({ path: 'test-results/vtable-fold-restored.png' });
 });

@@ -15,7 +15,10 @@ import {
   parseTsv,
   shiftFormula,
 } from '../../src/pages/TanStackBudget/core/clipboard';
-import type { BudgetQuery } from '../../src/pages/TanStackBudget/core/types';
+import {
+  toggleExpanded,
+  type BudgetQuery,
+} from '../../src/pages/TanStackBudget/core/types';
 
 const expanded = (mode: BudgetQuery['mode'] = 'regular'): BudgetQuery => ({
   mode,
@@ -70,7 +73,7 @@ test('10 万条明细按需分页、尾页和独立组织汇总正确', () => {
     first.rows[0].sourceNodes[0].id,
     tail.rows[0].sourceNodes[0].id,
   );
-  assert.equal(tail.rows[0].blockStart, 100090);
+  assert.equal(tail.rows[0].blockStart, 100190);
   const row = tail.rows.at(-1)!;
   assert.equal(
     row.annualTotal,
@@ -96,6 +99,125 @@ test('10 万条明细按需分页、尾页和独立组织汇总正确', () => {
   const restored = service.project(expanded('stress'));
   assert.equal(service.page(restored.id, 101000).rows.at(-1)!.january, 4567);
 });
+test('十万模式所有 1,100 个科目都有自己的明细，逐项收起只隐藏当前科目', () => {
+  const service = new BudgetService();
+  const query = expanded('stress');
+  const summaries = service.project({
+    ...query,
+    subjects: { all: false, ids: [] },
+  });
+  assert.equal(summaries.subjectGroups, 1100);
+  assert.equal(summaries.subjectExpanded, 0);
+  const rows = Array.from(
+    { length: 6 },
+    (_, page) => service.page(summaries.id, page * 200).rows,
+  ).flat();
+  assert.equal(rows.length, 1100);
+  for (const row of rows) {
+    assert.equal(
+      row.regionIsGroup,
+      true,
+      `${row.productLabel} / ${row.regionLabel}`,
+    );
+    assert.equal(row.regionExpanded, false);
+    const details = row.productIsGroup ? 100 : 90;
+    const id = row.sourceNodes[0].id;
+    const full = service.project(query);
+    const start = service.position(full.id, id);
+    assert.equal(
+      service.position(full.id, `${id}-detail-${details - 1}`),
+      start + details,
+    );
+    assert.equal(service.position(full.id, `${id}-detail-${details}`), -1);
+    const folded = service.project({
+      ...query,
+      subjects: toggleExpanded(query.subjects, row.regionRootId),
+    });
+    assert.equal(folded.totalRows, 101100 - details);
+    assert.equal(folded.subjectExpanded, 1099);
+    assert.equal(service.position(folded.id, id), start);
+    assert.equal(service.position(folded.id, `${id}-detail-0`), -1);
+  }
+});
+
+for (const mode of ['regular', 'stress'] as const) {
+  test(`${mode} 模式组织与科目独立收展，恢复后保留各自状态及数据`, () => {
+    const service = new BudgetService();
+    const query = expanded(mode);
+    const full = service.project(query);
+    const summaries = service.project({
+      ...query,
+      subjects: { all: false, ids: [] },
+    });
+    const rows = service.page(summaries.id, 0).rows;
+    const parent = rows.find((row) => row.productIsGroup && row.regionIsGroup)!;
+    const child = rows.find(
+      (row) => row.productParentId === parent.productId && row.regionIsGroup,
+    )!;
+    assert.ok(parent && child);
+    const parentDetail = service.page(
+      full.id,
+      service.position(full.id, parent.sourceNodes[0].id) + 1,
+    ).rows[0];
+    const childDetail = service.page(
+      full.id,
+      service.position(full.id, child.sourceNodes[0].id) + 1,
+    ).rows[0];
+    service.write(
+      full.id,
+      [{ recordId: parentDetail.sourceNodes[0].id, col: 4, input: 12345 }],
+      '编辑',
+    );
+    const subjectQuery = {
+      ...query,
+      subjects: toggleExpanded(query.subjects, parent.regionRootId),
+    };
+    const subjectFold = service.project(subjectQuery);
+    assert.equal(
+      service.position(subjectFold.id, parentDetail.sourceNodes[0].id),
+      -1,
+    );
+    assert.ok(
+      service.position(subjectFold.id, childDetail.sourceNodes[0].id) >= 0,
+    );
+    const orgFold = service.project({
+      ...subjectQuery,
+      organizations: toggleExpanded(query.organizations, parent.productId),
+    });
+    assert.ok(service.position(orgFold.id, parent.sourceNodes[0].id) >= 0);
+    assert.equal(service.position(orgFold.id, child.sourceNodes[0].id), -1);
+    const orgRestore = service.project(subjectQuery);
+    assert.equal(
+      service.position(orgRestore.id, parentDetail.sourceNodes[0].id),
+      -1,
+    );
+    assert.ok(
+      service.position(orgRestore.id, childDetail.sourceNodes[0].id) >= 0,
+    );
+    const restored = service.project(query);
+    assert.equal(restored.totalRows, full.totalRows);
+    assert.equal(
+      service.page(
+        restored.id,
+        service.position(restored.id, parentDetail.sourceNodes[0].id),
+      ).rows[0].january,
+      12345,
+    );
+    const drilled = service.project({
+      ...subjectQuery,
+      drillPath: [parent.productId],
+    });
+    assert.equal(service.position(drilled.id, parent.sourceNodes[0].id), -1);
+    assert.ok(service.position(drilled.id, childDetail.sourceNodes[0].id) >= 0);
+    const allFolded = service.project({
+      ...query,
+      organizations: { all: false, ids: [] },
+      subjects: { all: false, ids: [] },
+    });
+    assert.equal(allFolded.organizationExpanded, 0);
+    assert.equal(allFolded.subjectExpanded, 0);
+  });
+}
 test('批量校验具备原子性，金额和属性沿用原有修改载荷', () => {
   const service = new BudgetService();
   const manifest = service.project(expanded());
