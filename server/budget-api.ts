@@ -17,6 +17,10 @@ export function dispatchBudgetRequest(
     throw new BudgetError('请求体必须是对象。');
   if (!/^[\w-]{8,80}$/.test(sessionId))
     throw new BudgetError('缺少有效的会话标识。');
+  if (action === 'close') {
+    sessions.delete(sessionId);
+    return { closed: true };
+  }
   let session = sessions.get(sessionId);
   if (!session) {
     for (const [id, item] of sessions)

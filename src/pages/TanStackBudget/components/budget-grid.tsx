@@ -213,16 +213,8 @@ export const BudgetGrid = forwardRef<
   }, []);
   useEffect(() => {
     const manifest = c.data.manifest;
-    if (!manifest || c.data.pageError) return;
-    const offsetsToLoad = new Set([
-      Math.floor(first / manifest.pageSize) * manifest.pageSize,
-      Math.floor(last / manifest.pageSize) * manifest.pageSize,
-      (Math.floor(last / manifest.pageSize) + 1) * manifest.pageSize,
-    ]);
-    offsetsToLoad.forEach((offset) => {
-      if (offset < manifest.totalRows)
-        void c.data.ensurePage(offset).catch(() => {});
-    });
+    if (!manifest) return;
+    c.data.loadViewport(first, last);
   }, [first, last, c.data.manifest?.id, c.data.version, c.data.pageError]);
   useEffect(() => {
     if (c.editing) {

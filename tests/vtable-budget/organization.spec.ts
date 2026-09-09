@@ -194,9 +194,18 @@ for (const width of [1600, 700]) {
             ),
           };
         });
+    // The address/scenegraph updates before the Canvas paint. Sample the painted
+    // selection, not the preceding unselected background (247, 250, 252).
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
     const before = await paint();
     expect(before.layers).toEqual([1]);
     expect(before.pixel[0]).toBeGreaterThan(210);
+    expect(before.pixel[0]).toBeLessThan(240);
     const expectStablePaint = () =>
       expect
         .poll(async () => {

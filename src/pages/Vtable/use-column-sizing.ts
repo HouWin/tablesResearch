@@ -10,6 +10,7 @@ import { COLUMNS } from '../TanStackBudget/core/columns';
 import type { BudgetController } from '../TanStackBudget/core/use-budget-controller';
 import { createColumns, type OrganizationBlock } from './grid-model';
 import { contentWidth, fitHeaders, MIN_COLUMN_WIDTH } from './column-sizing';
+import { withStableViewport } from './grid-viewport';
 
 export const adjustFrozenColumns = (table: ListTable, available: number) => {
   let count = available >= 760 ? 4 : available >= 560 ? 2 : 1;
@@ -131,18 +132,16 @@ export function useColumnSizing({
         (col) => table.getColWidth(current.visibleColumns.indexOf(col) + 1),
         current.collapsedColumns,
       );
-      const top = table.scrollTop;
-      const left = table.scrollLeft;
       for (const [col, width] of next) widths.current.set(col, width);
       // Apply all measured widths in one layout pass. Resizing each column in
       // turn repeatedly rebuilds merged cells and stalls the final paint.
-      table.updateColumns(
-        createColumns(() => latest.current, widths.current, captureBlock),
-        { clearColWidthCache: true, clearRowHeightCache: false },
+      withStableViewport(table, manifest.totalRows, () =>
+        table.updateColumns(
+          createColumns(() => latest.current, widths.current, captureBlock),
+          { clearColWidthCache: true, clearRowHeightCache: false },
+        ),
       );
       adjustFrozenColumns(table, host.current?.clientWidth ?? 0);
-      table.scrollTop = top;
-      table.scrollLeft = left;
       table.render();
       loadViewport();
       onLayout();

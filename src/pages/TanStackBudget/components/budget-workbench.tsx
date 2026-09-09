@@ -40,10 +40,12 @@ import { Inspector } from './inspector';
 import { BudgetToolbar } from './budget-toolbar';
 import { BudgetCommand } from './budget-command';
 import { useDelayedPending } from '../core/use-delayed-pending';
+import type { BudgetGateway } from '../core/types';
 import '../index.less';
 
 type BudgetWorkbenchProps = {
   engineName: string;
+  gateway?: BudgetGateway;
   Grid: ForwardRefExoticComponent<
     { controller: BudgetController } & RefAttributes<GridHandle>
   >;
@@ -57,8 +59,9 @@ export function BudgetWorkbench({
   engineName,
   Grid,
   onBusinessCellChange,
+  gateway,
 }: BudgetWorkbenchProps) {
-  const c = useBudgetController({ onBusinessCellChange });
+  const c = useBudgetController({ onBusinessCellChange, gateway });
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [fullscreen, setFullscreen] = useState(false);

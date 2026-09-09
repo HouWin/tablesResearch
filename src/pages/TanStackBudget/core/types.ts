@@ -90,6 +90,8 @@ export type ColumnSizePage = {
   nextOffset: number | null;
 };
 export type BudgetGateway = {
+  /** Optional cleanup for an ephemeral demo session; production adapters may omit it. */
+  dispose?: () => void;
   project: (query: BudgetQuery, signal?: AbortSignal) => Promise<Manifest>;
   page: (id: string, offset: number, signal?: AbortSignal) => Promise<Page>;
   columnSizes: (

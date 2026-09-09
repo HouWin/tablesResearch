@@ -4,6 +4,7 @@ import {
   INITIAL_PRODUCT_EXPANDED,
 } from '../../SpreadJSDemo/spreadsheet/model';
 import { createHttpBudgetGateway } from './gateway';
+import { BudgetPageCache } from './page-cache';
 import type { BudgetGateway, BudgetQuery, BudgetRow, Manifest } from './types';
 
 export function initialQuery(mode: BudgetQuery['mode']): BudgetQuery {
@@ -23,7 +24,6 @@ export function initialQuery(mode: BudgetQuery['mode']): BudgetQuery {
     },
   };
 }
-const CACHE_PAGES = 10;
 export type QueryViewport = { first: number; last: number };
 export function useBudgetData(providedGateway?: BudgetGateway) {
   const [gateway] = useState(
@@ -37,44 +37,45 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [pageError, setPageError] = useState('');
   const [version, setVersion] = useState(0);
   const [reload, setReload] = useState(0);
-  const pages = useRef(new Map<number, BudgetRow[]>());
-  const requests = useRef(
-    new Map<
-      number,
-      { controller: AbortController; promise: Promise<BudgetRow[]> }
-    >(),
-  );
+  const cache = useRef<BudgetPageCache>();
   const epoch = useRef(0);
-  const manifestRef = useRef<Manifest | null>(null);
   const transitioning = useRef(true);
   const active = useRef(true);
   const refresh = useCallback(() => {
     if (active.current) setVersion((value) => value + 1);
   }, []);
   const cancelPages = useCallback(() => {
-    requests.current.forEach(({ controller }) => controller.abort());
-    requests.current.clear();
+    cache.current?.cancelPending();
   }, []);
   const setQuery = useCallback(
     (query: BudgetQuery, viewport?: QueryViewport) => {
       transitioning.current = true;
+      cancelPages();
       setLoading(true);
       setError('');
       setRequest({ query, viewport });
     },
-    [],
+    [cancelPages],
   );
   useEffect(() => {
     active.current = true;
+    const exit = (event: PageTransitionEvent) => {
+      if (!event.persisted) gateway.dispose?.();
+    };
+    window.addEventListener('pagehide', exit);
     return () => {
       active.current = false;
       epoch.current += 1;
       cancelPages();
+      window.removeEventListener('pagehide', exit);
+      // StrictMode's effect replay keeps the same gateway alive.
+      queueMicrotask(() => {
+        if (!active.current) gateway.dispose?.();
+      });
     };
-  }, [cancelPages]);
+  }, [cancelPages, gateway]);
   useEffect(() => {
     const controller = new AbortController();
     const current = ++epoch.current;
@@ -84,10 +85,18 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
     transitioning.current = true;
     setLoading(true);
     setError('');
-    setPageError('');
+    let nextCache: BudgetPageCache | undefined;
     gateway
       .project(query, controller.signal)
       .then(async (result) => {
+        controller.signal.throwIfAborted();
+        nextCache = new BudgetPageCache(
+          result,
+          (...args) => gateway.page(...args),
+          () => {
+            if (cache.current === nextCache) refresh();
+          },
+        );
         const count = viewport ? viewport.last - viewport.first + 3 : 1;
         const first = viewport
           ? Math.max(0, Math.min(viewport.first, result.totalRows - count))
@@ -100,16 +109,9 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
           offset += result.pageSize
         )
           offsets.push(offset);
-        const nextPages = await Promise.all(
-          offsets.map((offset) =>
-            gateway.page(result.id, offset, controller.signal),
-          ),
-        );
+        await Promise.all(offsets.map((offset) => nextCache!.load(offset)));
         if (current !== epoch.current || controller.signal.aborted) return;
-        pages.current = new Map(
-          nextPages.map((page) => [page.offset, page.rows]),
-        );
-        manifestRef.current = result;
+        cache.current = nextCache;
         transitioning.current = false;
         setManifest(result);
         setLoading(false);
@@ -120,85 +122,41 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
         setError(cause instanceof Error ? cause.message : '预算表加载失败。');
         setLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      nextCache?.cancelPending();
+    };
   }, [query, viewport, reload, gateway, cancelPages, refresh]);
 
-  const ensurePage = useCallback(
-    (index: number): Promise<BudgetRow[]> => {
-      const currentManifest = manifestRef.current;
-      if (
-        transitioning.current ||
-        !currentManifest ||
-        index < 0 ||
-        index >= currentManifest.totalRows
-      )
-        return Promise.resolve([]);
-      const offset =
-        Math.floor(index / currentManifest.pageSize) * currentManifest.pageSize;
-      const cached = pages.current.get(offset);
-      if (cached) {
-        pages.current.delete(offset);
-        pages.current.set(offset, cached);
-        return Promise.resolve(cached);
-      }
-      const pending = requests.current.get(offset);
-      if (pending) return pending.promise;
-      const controller = new AbortController();
-      const current = epoch.current;
-      const promise = gateway
-        .page(currentManifest.id, offset, controller.signal)
-        .then((page) => {
-          if (
-            current !== epoch.current ||
-            controller.signal.aborted ||
-            manifestRef.current?.id !== page.projectionId
-          )
-            throw new DOMException('已切换视图', 'AbortError');
-          pages.current.set(offset, page.rows);
-          while (pages.current.size > CACHE_PAGES)
-            pages.current.delete(pages.current.keys().next().value!);
-          setPageError('');
-          refresh();
-          return page.rows;
-        })
-        .catch((cause: unknown) => {
-          if (!controller.signal.aborted && current === epoch.current)
-            setPageError(
-              cause instanceof Error ? cause.message : '该页加载失败。',
-            );
-          throw cause;
-        })
-        .finally(() => {
-          if (requests.current.get(offset)?.controller === controller)
-            requests.current.delete(offset);
-        });
-      requests.current.set(offset, { controller, promise });
-      return promise;
-    },
-    [gateway, refresh],
-  );
-  const rowAt = useCallback((index: number) => {
-    const size = manifestRef.current?.pageSize ?? 200;
-    return pages.current.get(Math.floor(index / size) * size)?.[index % size];
+  const ensurePage = useCallback((index: number): Promise<BudgetRow[]> => {
+    if (transitioning.current || !cache.current) return Promise.resolve([]);
+    return cache.current.load(index);
   }, []);
+  const loadViewport = useCallback((first: number, last: number) => {
+    if (!transitioning.current) cache.current?.loadViewport(first, last);
+  }, []);
+  const rowAt = useCallback((index: number) => cache.current?.rowAt(index), []);
   const readRow = useCallback(
     async (index: number) => {
-      await ensurePage(index);
-      const row = rowAt(index);
+      const snapshot = cache.current;
+      const rows = await ensurePage(index);
+      if (!snapshot || snapshot !== cache.current || transitioning.current)
+        throw new DOMException('已切换视图', 'AbortError');
+      // Read from the resolved page even if another completion just evicted it.
+      const row = rows[index % snapshot.manifest.pageSize];
       if (!row) throw new Error('该行尚未加载，请重试。');
       return row;
     },
-    [ensurePage, rowAt],
+    [ensurePage],
   );
   const invalidate = useCallback(
     async (preferredRow: number) => {
       epoch.current += 1;
       cancelPages();
-      pages.current.clear();
-      refresh();
+      cache.current?.clear();
       await ensurePage(preferredRow);
     },
-    [cancelPages, ensurePage, refresh],
+    [cancelPages, ensurePage],
   );
   return {
     gateway,
@@ -208,20 +166,15 @@ export function useBudgetData(providedGateway?: BudgetGateway) {
     manifest,
     loading,
     error,
-    pageError,
+    pageError: cache.current?.error ?? '',
     version,
     rowAt,
     readRow,
     ensurePage,
+    loadViewport,
     invalidate,
-    cachedRows: [...pages.current.values()].reduce(
-      (sum, rows) => sum + rows.length,
-      0,
-    ),
-    retryPages: () => {
-      setPageError('');
-      refresh();
-    },
+    cachedRows: cache.current?.cachedRows ?? 0,
+    retryPages: () => cache.current?.retry(),
     retry: () => setReload((value) => value + 1),
   };
 }

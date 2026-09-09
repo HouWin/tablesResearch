@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Request } from '@playwright/test';
 import type { Page as BudgetPage } from '../../src/pages/TanStackBudget/core/types';
 import type { BusinessCellChangePayload } from '../../src/pages/SpreadJSDemo/spreadsheet/business-cell-change';
 
@@ -325,10 +325,22 @@ test('10 万行按页加载、缓存上限、远端编辑和全数据搜索', as
   const pages: BudgetPage[] = [];
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('response', async (response) => {
-    if (response.url().endsWith('/page') && response.status() === 200)
-      pages.push((await response.json()).data);
-  });
+  const captures = new Set<Promise<void>>();
+  const capture = (request: Request) => {
+    if (!request.url().endsWith('/page')) return;
+    const pending = (async () => {
+      const response = await request.response();
+      if (response?.status() === 200) pages.push((await response.json()).data);
+    })()
+      .catch((error) => {
+        errors.push(String(error));
+      })
+      .finally(() => captures.delete(pending));
+    captures.add(pending);
+  };
+  // Obsolete prefetches can be aborted after headers arrive. Only completed
+  // requests have a readable body; aborted requests are intentionally absent.
+  page.on('requestfinished', capture);
   await ready(page);
   pages.length = 0;
   await page.getByRole('button', { name: '体验 10 万行数据' }).click();
@@ -337,13 +349,18 @@ test('10 万行按页加载、缓存上限、远端编辑和全数据搜索', as
     '101104',
   );
   await expect(page.locator('.tb-status-bar')).toContainText('101,100 行');
+  await expect
+    .poll(() => pages.some((item) => item.rows.length === 200))
+    .toBe(true);
   expect(pages.every((item) => item.rows.length <= 200)).toBeTruthy();
   expect(pages.flatMap((item) => item.rows).length).toBeLessThanOrEqual(600);
   await page.locator('.tb-grid-scroll').evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
   await expect(cell(page, 101099, 4)).toHaveAttribute('data-value', /\d/);
-  expect(pages.some((item) => item.offset >= 101000)).toBeTruthy();
+  await expect
+    .poll(() => pages.some((item) => item.offset >= 101000))
+    .toBe(true);
   await edit(page, 101099, 4, '98765');
   await expect(cell(page, 101099, 4)).toHaveAttribute('data-value', '98765');
   await page.getByRole('button', { name: '撤销', exact: true }).click();
@@ -371,6 +388,8 @@ test('10 万行按页加载、缓存上限、远端编辑和全数据搜索', as
   await page.getByRole('textbox', { name: '搜索完整预算数据' }).press('Enter');
   await expect(page.locator('.tb-search')).toContainText('1 /');
   await expect(page.locator('.tb-formula-value')).toHaveText('98765');
+  page.off('requestfinished', capture);
+  await Promise.all(captures);
   expect(errors).toEqual([]);
 });
 test('网络失败可重试，切换视图丢弃旧页响应', async ({ page }) => {

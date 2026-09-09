@@ -1,25 +1,19 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type SetStateAction,
 } from 'react';
-import {
-  BUSINESS_DIMENSION_CODES,
-  type CellAttachment,
-} from '../../SpreadJSDemo/spreadsheet/model';
-import {
-  isAcceptedAttachment,
-  MAX_ATTACHMENTS_PER_CELL,
-  MAX_ATTACHMENT_SIZE,
-} from '../../SpreadJSDemo/spreadsheet/attachments';
+import { BUSINESS_DIMENSION_CODES } from '../../SpreadJSDemo/spreadsheet/model';
 import { isBusinessCellDimension } from '../../SpreadJSDemo/spreadsheet/business-cell-coordinate';
 import type { BusinessCellChangePayload } from '../../SpreadJSDemo/spreadsheet/business-cell-change';
 import { COLUMNS, cellAddress, cellKey, rawValue } from './columns';
 import { parseTsv, serializeRows, shiftFormula } from './clipboard';
 import { visibleBudgetColumns, visibleRange } from './selection';
 import { useTransactionHistory } from './use-transaction-history';
+import { useCellAnnotations } from './use-cell-annotations';
 import {
   initialQuery,
   useBudgetData,
@@ -127,13 +121,7 @@ export function useBudgetController(options: Options = {}) {
   const visibleColumnsKey = visibleColumns.join(',');
   const history = useTransactionHistory();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [panel, setPanel] = useState<Panel>(null);
-  const [comments, setComments] = useState(new Map<string, string>());
-  const [attachments, setAttachments] = useState(
-    new Map<string, CellAttachment[]>(),
-  );
-  const attachmentRef = useRef(attachments);
-  attachmentRef.current = attachments;
+  const [panel, updatePanel] = useState<Panel>(null);
   const [searchText, setSearchText] = useState('');
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -155,13 +143,17 @@ export function useBudgetController(options: Options = {}) {
     setToast({ message, error });
     toastTimer.current = setTimeout(() => setToast(null), error ? 7000 : 3500);
   }, []);
+  const {
+    comments,
+    attachments,
+    saveComment,
+    addAttachments,
+    removeAttachment,
+  } = useCellAnnotations(selectedKey, notify);
   useEffect(
     () => () => {
       clearTimeout(toastTimer.current);
       searchRequest.current?.abort();
-      attachmentRef.current.forEach((files) =>
-        files.forEach((file) => URL.revokeObjectURL(file.objectUrl)),
-      );
     },
     [],
   );
@@ -379,6 +371,7 @@ export function useBudgetController(options: Options = {}) {
   const recordTransaction = async (transaction: Transaction) => {
     if (!transaction.patches.length) return;
     setTransactions((current) => [...current, transaction].slice(-100));
+    let sliceStart = performance.now();
     for (const patch of transaction.patches) {
       try {
         await callbackRef.current?.(patch.payload);
@@ -389,6 +382,11 @@ export function useBudgetController(options: Options = {}) {
           }`,
           true,
         );
+      }
+      if (performance.now() - sliceStart > 8) {
+        // Timers also progress in background tabs; rAF can suspend a saved transaction.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        sliceStart = performance.now();
       }
     }
     setSearchResult(null);
@@ -523,6 +521,19 @@ export function useBudgetController(options: Options = {}) {
     finishingEdit.current = pending;
     return pending;
   };
+  const panelRequest = useRef(0);
+  const setPanel = (next: Panel) => {
+    const request = ++panelRequest.current;
+    if (!editingRef.current) {
+      updatePanel(next);
+      return;
+    }
+    void finishEdit().then((ok) => {
+      if (request !== panelRequest.current) return;
+      if (ok) updatePanel(next);
+      else gridRef.current?.focus();
+    });
+  };
   // Keep a paged clipboard/fill operation on one projection until its atomic write completes.
   const beginPreparation = () => {
     if (busyRef.current || preparingRef.current || data.loading) return false;
@@ -615,10 +626,10 @@ export function useBudgetController(options: Options = {}) {
     if (!beginPreparation()) return;
     try {
       const content = text ?? (await navigator.clipboard.readText());
-      const matrix = parseTsv(content);
+      const matrix = parseTsv(content, 20_000);
       const box = bounds(range);
       const start = visibleColumns.indexOf(box.left);
-      const width = Math.max(...matrix.map((row) => row.length));
+      const width = matrix.reduce((max, row) => Math.max(max, row.length), 0);
       const height = matrix.length;
       if (
         width * height > 20_000 ||
@@ -778,67 +789,6 @@ export function useBudgetController(options: Options = {}) {
       endPreparation();
     }
   };
-  const saveComment = (text: string) => {
-    if (!selectedKey) return;
-    setComments((current) => {
-      const next = new Map(current);
-      if (text.trim()) next.set(selectedKey, text.trim());
-      else next.delete(selectedKey);
-      return next;
-    });
-    notify(text.trim() ? '批注已保存。' : '批注已删除。');
-  };
-  const addAttachments = (files: File[]) => {
-    if (!selectedKey) return;
-    const previous = attachments.get(selectedKey) ?? [];
-    const accepted: CellAttachment[] = [];
-    const signatures = new Set(
-      previous.map((file) => `${file.name}/${file.size}/${file.lastModified}`),
-    );
-    const rejected: string[] = [];
-    for (const file of files) {
-      const signature = `${file.name}/${file.size}/${file.lastModified}`;
-      if (
-        !isAcceptedAttachment(file) ||
-        file.size > MAX_ATTACHMENT_SIZE ||
-        previous.length + accepted.length >= MAX_ATTACHMENTS_PER_CELL ||
-        signatures.has(signature)
-      ) {
-        rejected.push(file.name);
-        continue;
-      }
-      signatures.add(signature);
-      accepted.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        size: file.size,
-        mimeType: file.type,
-        objectUrl: URL.createObjectURL(file),
-        lastModified: file.lastModified,
-        createdAt: Date.now(),
-      });
-    }
-    setAttachments((current) =>
-      new Map(current).set(selectedKey, [...previous, ...accepted]),
-    );
-    notify(
-      rejected.length
-        ? `已添加 ${accepted.length} 个附件；${rejected.length} 个因类型、大小、数量限制或重复被跳过。`
-        : `已添加 ${accepted.length} 个附件。`,
-      Boolean(rejected.length),
-    );
-  };
-  const removeAttachment = (id: string) => {
-    const files = attachments.get(selectedKey) ?? [];
-    const removed = files.find((file) => file.id === id);
-    if (removed) URL.revokeObjectURL(removed.objectUrl);
-    setAttachments((current) =>
-      new Map(current).set(
-        selectedKey,
-        files.filter((file) => file.id !== id),
-      ),
-    );
-  };
   const setColumnVisible = (col: number, visible: boolean) => {
     if (col < 3) return;
     if (editingRef.current) {
@@ -867,24 +817,29 @@ export function useBudgetController(options: Options = {}) {
     );
     setCollapsedColumns((current) => !current);
   };
-  const selectedHistory = selectedRow
-    ? transactions
-        .flatMap((transaction) =>
-          transaction.patches
-            .filter(
-              (patch) =>
-                patch.recordId === selectedRow.sourceNodes[0].id &&
-                patch.col === range.focus.col,
+  const selectedRecordId = selectedRow?.sourceNodes[0].id;
+  const selectedHistory = useMemo(
+    () =>
+      panel === 'history' && selectedRecordId
+        ? transactions
+            .flatMap((transaction) =>
+              transaction.patches
+                .filter(
+                  (patch) =>
+                    patch.recordId === selectedRecordId &&
+                    patch.col === range.focus.col,
+                )
+                .map((patch) => ({
+                  ...patch,
+                  source: transaction.source,
+                  createdAt: transaction.createdAt,
+                  id: transaction.id,
+                })),
             )
-            .map((patch) => ({
-              ...patch,
-              source: transaction.source,
-              createdAt: transaction.createdAt,
-              id: transaction.id,
-            })),
-        )
-        .reverse()
-    : [];
+            .reverse()
+        : [],
+    [panel, selectedRecordId, range.focus.col, transactions],
+  );
   return {
     data,
     gridRef,

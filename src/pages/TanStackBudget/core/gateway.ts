@@ -39,6 +39,18 @@ export function createHttpBudgetGateway(
     return result.data;
   }
   return {
+    dispose: () => {
+      // keepalive lets navigation release server resources after the document exits.
+      void fetch('/api/tanstack-budget/close', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Budget-Session': sessionId,
+        },
+        body: '{}',
+        keepalive: true,
+      }).catch(() => {});
+    },
     project: (query, signal) => request('project', { query }, signal),
     page: (id, offset, signal) => request('page', { id, offset }, signal),
     columnSizes: (id, columns, offset, signal) =>

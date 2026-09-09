@@ -2,11 +2,22 @@ import { COLUMNS, formattedValue, rawValue } from './columns';
 import type { BudgetRow } from './types';
 
 /** Excel TSV supports tabs, quotes and newlines inside quoted fields. */
-export function parseTsv(text: string): string[][] {
+export function parseTsv(text: string, maxCells = Infinity): string[][] {
+  if (text.length > 8 * 1024 * 1024)
+    throw new Error('粘贴内容过大，请分批粘贴。');
   const result: string[][] = [];
   let row: string[] = [];
   let value = '';
   let quoted = false;
+  let cells = 0;
+  const append = () => {
+    if (++cells > maxCells)
+      throw new Error(
+        `粘贴内容超过单次 ${maxCells.toLocaleString()} 个单元格限制，请分批粘贴。`,
+      );
+    row.push(value);
+    value = '';
+  };
   const input = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   for (let index = 0; index < input.length; index += 1) {
     const char = input[index];
@@ -16,8 +27,7 @@ export function parseTsv(text: string): string[][] {
         index += 1;
       } else quoted = !quoted;
     } else if (!quoted && (char === '\t' || char === '\n')) {
-      row.push(value);
-      value = '';
+      append();
       if (char === '\n') {
         result.push(row);
         row = [];
@@ -25,7 +35,7 @@ export function parseTsv(text: string): string[][] {
     } else value += char;
   }
   if (value !== '' || row.length || !result.length) {
-    row.push(value);
+    append();
     result.push(row);
   }
   return result;

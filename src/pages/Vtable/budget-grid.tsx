@@ -86,7 +86,12 @@ export const VTableBudgetGrid = forwardRef<
   const keyboardNavigation = useRef<GridNavigation>({});
   const visibleKey = c.visibleColumns.join(',');
   const hasManifest = Boolean(c.data.manifest);
-  const focus = () => root.current?.focus({ preventScroll: true });
+  const focus = () => {
+    const editor = latest.current.editing
+      ? root.current?.querySelector<HTMLInputElement>('.vt-editor')
+      : null;
+    (editor ?? root.current)?.focus({ preventScroll: true });
+  };
 
   const captureBlock = (index: number) => {
     const row = latest.current.data.rowAt(index);
@@ -137,17 +142,7 @@ export const VTableBudgetGrid = forwardRef<
     );
     const last = Math.min(manifest.totalRows - 1, visible.rowEnd - HEADER_ROWS);
     viewport.current = { first, last };
-    if (current.data.pageError) return;
-    const pageSize = manifest.pageSize;
-    const offsets = new Set([
-      Math.floor(first / pageSize) * pageSize,
-      Math.floor(last / pageSize) * pageSize,
-      (Math.floor(last / pageSize) + 1) * pageSize,
-    ]);
-    offsets.forEach((offset) => {
-      if (offset < manifest.totalRows)
-        void current.data.ensurePage(offset).catch(() => {});
-    });
+    current.data.loadViewport(first, last);
   }, []);
   const drag = useGridDrag({
     instance,
